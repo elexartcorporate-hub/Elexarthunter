@@ -1,0 +1,84 @@
+# .github/workflows/deploy.yml
+# Auto-deploy full-stack React + FastAPI ke VPS Contabo
+#
+# Secrets yang dibutuhkan (Repo → Settings → Secrets and variables → Actions):
+#   SSH_HOST          → hunter.elexart.com
+#   SSH_USER          → deploy
+#   SSH_PORT          → 22
+#   SSH_PRIVATE_KEY   → isi /home/deploy/.ssh/gh_actions (private key)
+#   DEPLOY_PATH       → /var/www/hunter.elexart.com
+
+name: Deploy to Contabo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          # Sesuaikan: env var React di build time
+          REACT_APP_BACKEND_URL: https://hunter.elexart.com
+        run: |
+          yarn install --frozen-lockfile
+          yarn build
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ secrets.SSH_PORT }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Rsync frontend build → server
+        run: |
+          rsync -avz --delete \
+            -e "ssh -p ${{ secrets.SSH_PORT }}" \
+            frontend/build/ \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}/frontend/build/
+
+      - name: Deploy backend (git pull + pip install + restart)
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
+            set -euo pipefail
+            cd ${{ secrets.DEPLOY_PATH }}
+            git fetch --all
+            git reset --hard origin/main
+            cd backend
+            source venv/bin/activate
+            pip install -r requirements.txt
+            deactivate
+            sudo supervisorctl restart hunter-backend
+            sudo systemctl reload nginx
+            echo "✅ Deploy selesai pada $(date)"
+          EOF
+
+      - name: Health check
+        run: |
+          sleep 5
+          curl -fsS -o /dev/null -w "Status: %{http_code}\n" https://hunter.elexart.com || exit 1
