@@ -5,7 +5,7 @@ import { Card, TermInput, TermSelect, TermTextarea, PrimaryButton, GhostButton, 
 import {
   ArrowLeft, Buildings, At, Phone, MapPin, LinkedinLogo, Globe,
   PaperPlaneTilt, Plus, Trash, PencilSimple, X, ClockCounterClockwise,
-  EnvelopeSimple, CheckCircle, Cursor, ChatCircle, Tag, NotePencil, Eye,
+  EnvelopeSimple, CheckCircle, Cursor, ChatCircle, Tag, NotePencil, Eye, Lock,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -31,6 +31,7 @@ export default function ProspectDetail() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
+  const [quota, setQuota] = useState(null);
   const [showSend, setShowSend] = useState(params.get("send") === "1");
   const [showEdit, setShowEdit] = useState(false);
   const [noteText, setNoteText] = useState("");
@@ -42,7 +43,19 @@ export default function ProspectDetail() {
       setData(data);
     } catch (err) { toast.error(formatApiError(err)); }
   };
-  useEffect(() => { load(); }, [id]);
+  const loadQuota = async () => {
+    try { const { data } = await api.get("/prospects/quota"); setQuota(data); }
+    catch (err) { /* ignore */ }
+  };
+  useEffect(() => { load(); loadQuota(); }, [id]);
+
+  const trySend = () => {
+    if (quota?.locked && !quota?.can_bypass) {
+      toast.error(`🔒 Daily quota not met — add ${quota.remaining} more prospect(s) before sending emails`, { duration: 4000 });
+      return;
+    }
+    setShowSend(true);
+  };
 
   const updateField = async (field, value) => {
     try {
@@ -112,7 +125,18 @@ export default function ProspectDetail() {
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </TermSelect>
           <GhostButton onClick={() => setShowEdit(true)} data-testid="edit-btn"><PencilSimple size={14} weight="bold" /> Edit</GhostButton>
-          <PrimaryButton onClick={() => setShowSend(true)} data-testid="send-email-btn"><PaperPlaneTilt size={14} weight="bold" /> Send Email</PrimaryButton>
+          {quota?.locked && !quota?.can_bypass ? (
+            <button
+              onClick={trySend}
+              data-testid="send-email-btn"
+              className="px-3 py-1.5 rounded-lg bg-slate-200 text-slate-500 text-sm font-medium flex items-center gap-1.5 cursor-not-allowed border border-slate-300"
+              title={`Locked — add ${quota.remaining} more prospect(s) today`}
+            >
+              <Lock size={14} weight="bold" /> Send Email
+            </button>
+          ) : (
+            <PrimaryButton onClick={trySend} data-testid="send-email-btn"><PaperPlaneTilt size={14} weight="bold" /> Send Email</PrimaryButton>
+          )}
           <GhostButton onClick={deleteProspect} className="text-rose-600 hover:bg-rose-50" data-testid="delete-btn"><Trash size={14} weight="bold" /></GhostButton>
         </div>
       </div>

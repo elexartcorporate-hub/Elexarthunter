@@ -292,6 +292,11 @@ class NoteAdd(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
 
 
+class WorkingConfigUpdate(BaseModel):
+    working_days: Optional[List[Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]]] = None
+    holidays: Optional[List[str]] = None  # ISO YYYY-MM-DD list
+
+
 # ─── Permission catalog (frontend uses these keys to filter menus) ───
 ALL_PERMISSIONS = [
     {"key": "dashboard",          "label": "View Dashboard",                    "menu": True},
@@ -306,6 +311,7 @@ ALL_PERMISSIONS = [
     {"key": "delete_prospects",   "label": "Delete prospects",                  "menu": False},
     {"key": "send_emails",        "label": "Send emails to prospects",          "menu": False},
     {"key": "set_team_targets",   "label": "Set daily targets for team",        "menu": False},
+    {"key": "bypass_daily_lock",  "label": "Bypass daily quota lock",           "menu": False},
 ]
 PERMISSION_KEYS = {p["key"] for p in ALL_PERMISSIONS}
 
@@ -321,7 +327,7 @@ DEFAULT_ROLES = [
         "permissions": [
             "dashboard", "prospects", "email_activity", "templates", "settings",
             "manage_users", "manage_company", "manage_api_keys",
-            "delete_prospects", "send_emails", "set_team_targets",
+            "delete_prospects", "send_emails", "set_team_targets", "bypass_daily_lock",
         ],
     },
     {
@@ -1612,6 +1618,106 @@ async def _log_activity(prospect_id: str, tenant_id: str, type_: str, user_id: s
     })
 
 
+# ─── Daily quota state (UTC-based) ───
+DEFAULT_WORKING_DAYS = ["mon", "tue", "wed", "thu", "fri"]
+_DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+async def _quota_state(user: dict) -> dict:
+    """Return {is_working_day, daily_target, prospects_today, locked, remaining, working_days, holidays, today}"""
+    tenant = await db.tenants.find_one({"id": user["tenant_id"]}) or {}
+    working_days = tenant.get("working_days") or DEFAULT_WORKING_DAYS
+    holidays = tenant.get("holidays") or []
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_str = today.strftime("%Y-%m-%d")
+    today_dow = _DAY_KEYS[today.weekday()]
+    is_holiday = today_str in holidays
+    is_working_day = (today_dow in working_days) and not is_holiday
+
+    target = (await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1})).get("daily_target") or 0
+    tomorrow = today + timedelta(days=1)
+    prospects_today = await db.prospects.count_documents({
+        "tenant_id": user["tenant_id"], "assigned_user_id": user["id"],
+        "created_at": {"$gte": today.isoformat(), "$lt": tomorrow.isoformat()},
+    })
+    # Determine lock: only locked when working day + target > 0 AND haven't met target
+    locked = bool(is_working_day and target > 0 and prospects_today < target)
+    remaining = max(0, target - prospects_today) if is_working_day else 0
+    return {
+        "today": today_str,
+        "is_working_day": is_working_day,
+        "is_holiday": is_holiday,
+        "working_days": working_days,
+        "holidays": holidays,
+        "daily_target": target,
+        "prospects_today": prospects_today,
+        "remaining": remaining,
+        "locked": locked,
+    }
+
+
+async def _can_bypass_lock(user: dict) -> bool:
+    if user["role"] == "Owner":
+        return True
+    perms = await get_user_permissions(user)
+    return "bypass_daily_lock" in perms
+
+
+@api.get("/prospects/quota")
+async def get_quota(user: dict = Depends(get_current_user)):
+    state = await _quota_state(user)
+    state["can_bypass"] = await _can_bypass_lock(user)
+    return state
+
+
+@api.get("/prospects/today")
+async def list_today_prospects(user: dict = Depends(get_current_user)):
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow = today + timedelta(days=1)
+    rows = await db.prospects.find({
+        "tenant_id": user["tenant_id"],
+        "assigned_user_id": user["id"],
+        "created_at": {"$gte": today.isoformat(), "$lt": tomorrow.isoformat()},
+    }, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return rows
+
+
+@api.get("/working-config")
+async def get_working_config(user: dict = Depends(get_current_user)):
+    tenant = await db.tenants.find_one({"id": user["tenant_id"]}) or {}
+    return {
+        "working_days": tenant.get("working_days") or DEFAULT_WORKING_DAYS,
+        "holidays": tenant.get("holidays") or [],
+    }
+
+
+@api.patch("/working-config")
+async def update_working_config(payload: WorkingConfigUpdate, user: dict = Depends(get_current_user)):
+    perms = await get_user_permissions(user)
+    if user["role"] != "Owner" and "manage_company" not in perms:
+        raise HTTPException(403, "Missing permission: manage_company")
+    upd = {}
+    if payload.working_days is not None:
+        upd["working_days"] = payload.working_days
+    if payload.holidays is not None:
+        # validate ISO format YYYY-MM-DD
+        valid = []
+        for h in payload.holidays:
+            try:
+                datetime.strptime(h, "%Y-%m-%d")
+                valid.append(h)
+            except ValueError:
+                continue
+        upd["holidays"] = sorted(set(valid))
+    if upd:
+        await db.tenants.update_one({"id": user["tenant_id"]}, {"$set": upd})
+    tenant = await db.tenants.find_one({"id": user["tenant_id"]}) or {}
+    return {
+        "working_days": tenant.get("working_days") or DEFAULT_WORKING_DAYS,
+        "holidays": tenant.get("holidays") or [],
+    }
+
+
 @api.post("/prospects/discover")
 async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_current_user)):
     """Discover company info + emails for a domain (without saving). Front-end displays results."""
@@ -1844,6 +1950,10 @@ async def send_prospect_email(pid: str, payload: SendEmailReq, background: Backg
     p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
     if not p:
         raise HTTPException(404, "Prospect not found")
+    # Daily quota lock check
+    state = await _quota_state(user)
+    if state["locked"] and not await _can_bypass_lock(user):
+        raise HTTPException(423, f"Daily quota not met — add {state['remaining']} more prospect(s) before sending emails.")
     smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id or p.get("sub_company_id"))
     if not smtp_src:
         raise HTTPException(400, "SMTP not configured (sub-company / user / tenant).")
@@ -1902,6 +2012,9 @@ async def send_prospect_email(pid: str, payload: SendEmailReq, background: Backg
 
 @api.post("/prospects/bulk-send-email")
 async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    state = await _quota_state(user)
+    if state["locked"] and not await _can_bypass_lock(user):
+        raise HTTPException(423, f"Daily quota not met — add {state['remaining']} more prospect(s) before sending emails.")
     smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id)
     if not smtp_src:
         raise HTTPException(400, "SMTP not configured.")

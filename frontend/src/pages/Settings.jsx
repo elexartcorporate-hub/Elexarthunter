@@ -4,7 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { PageHeader, Card, TermInput, TermSelect, TermTextarea, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
 import {
   Buildings, UsersThree, ShieldCheck, Tag, MapPin, Key,
-  Plus, Trash, PencilSimple, X, Lock, EnvelopeSimple,
+  Plus, Trash, PencilSimple, X, Lock, EnvelopeSimple, CalendarBlank,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -12,6 +12,7 @@ const SUB_NAV = [
   { key: "companies",  label: "Companies",    icon: Buildings,    desc: "Sub-companies under your tenant" },
   { key: "users",      label: "Users",         icon: UsersThree,   desc: "Team members & access" },
   { key: "roles",      label: "Roles",         icon: ShieldCheck,  desc: "Permissions per role" },
+  { key: "schedule",   label: "Working Days",  icon: CalendarBlank, desc: "Working days & holidays" },
   { key: "categories", label: "Categories",    icon: Tag,          desc: "Industry / vertical tags" },
   { key: "locations",  label: "Locations",     icon: MapPin,       desc: "Cities / regions" },
   { key: "api",        label: "Hunter.io API", icon: Key,          desc: "External API key" },
@@ -49,6 +50,7 @@ export default function Settings() {
           {section === "companies"  && <CompaniesSection />}
           {section === "users"      && <UsersSection currentUser={user} />}
           {section === "roles"      && <RolesSection currentUser={user} />}
+          {section === "schedule"   && <ScheduleSection />}
           {section === "categories" && <SimpleListSection title="Categories" subtitle="Industry, niche or vertical — used to organize your saved leads." path="categories" icon={Tag} placeholder="e.g. Travel, SaaS, E-commerce" />}
           {section === "locations"  && <SimpleListSection title="Locations" subtitle="City, country or region — to filter your leads geographically." path="locations" icon={MapPin} placeholder="e.g. Jakarta, Bali, Singapore" />}
           {section === "api"        && <ApiSection />}
@@ -57,6 +59,110 @@ export default function Settings() {
     </div>
   );
 }
+
+/* ──────────── SCHEDULE (Working Days & Holidays) ──────────── */
+function ScheduleSection() {
+  const DAYS = [
+    { key: "mon", label: "Mon" }, { key: "tue", label: "Tue" }, { key: "wed", label: "Wed" },
+    { key: "thu", label: "Thu" }, { key: "fri", label: "Fri" }, { key: "sat", label: "Sat" }, { key: "sun", label: "Sun" },
+  ];
+  const [config, setConfig] = useState({ working_days: [], holidays: [] });
+  const [newDate, setNewDate] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    try { const { data } = await api.get("/working-config"); setConfig(data); }
+    catch (err) { /* ignore */ }
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async (patch, after) => {
+    setLoading(true);
+    try {
+      const { data } = await api.patch("/working-config", patch);
+      setConfig(data);
+      toast.success("Saved");
+      if (after) after();
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setLoading(false); }
+  };
+
+  const toggleDay = (k) => {
+    const next = config.working_days.includes(k)
+      ? config.working_days.filter((d) => d !== k)
+      : [...config.working_days, k];
+    save({ working_days: next });
+  };
+
+  const addHoliday = () => {
+    if (!newDate) return;
+    if (config.holidays.includes(newDate)) return toast.error("Already added");
+    save({ holidays: [...config.holidays, newDate] }, () => setNewDate(""));
+  };
+  const removeHoliday = (d) => save({ holidays: config.holidays.filter((x) => x !== d) });
+
+  return (
+    <Card className="p-6">
+      <h2 className="font-display text-xl text-slate-900">Working Days &amp; Holidays</h2>
+      <p className="text-sm text-slate-500 mb-5">Used by the daily-quota lock — emails auto-unlock on non-working days &amp; holidays.</p>
+
+      <div className="mb-6">
+        <div className="text-sm font-semibold text-slate-700 mb-2">Working days</div>
+        <div className="flex flex-wrap gap-2">
+          {DAYS.map((d) => {
+            const on = config.working_days.includes(d.key);
+            return (
+              <button
+                key={d.key}
+                onClick={() => toggleDay(d.key)}
+                disabled={loading}
+                data-testid={`day-${d.key}`}
+                className={`px-4 py-2 rounded-lg text-xs font-medium border transition-all ${
+                  on ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                {d.label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-slate-500 mt-2">Tick the days your team works. Default: Mon–Fri.</p>
+      </div>
+
+      <div>
+        <div className="text-sm font-semibold text-slate-700 mb-2">Holidays (one-off dates)</div>
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            type="date"
+            value={newDate}
+            onChange={(e) => setNewDate(e.target.value)}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+            data-testid="holiday-date-input"
+          />
+          <PrimaryButton onClick={addHoliday} disabled={!newDate || loading} data-testid="add-holiday-btn">
+            <Plus size={14} weight="bold" /> Add holiday
+          </PrimaryButton>
+        </div>
+        {config.holidays.length === 0 ? (
+          <div className="text-xs text-slate-400 py-4 text-center border border-dashed border-slate-200 rounded-lg">No holidays set</div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {config.holidays.map((d) => (
+              <div key={d} className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-full text-xs" data-testid={`holiday-${d}`}>
+                <CalendarBlank size={12} weight="bold" />
+                {new Date(d).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" })}
+                <button onClick={() => removeHoliday(d)} className="text-amber-500 hover:text-rose-600" data-testid={`remove-holiday-${d}`}>
+                  <X size={12} weight="bold" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 
 /* ──────────── COMPANIES (sub-companies) ──────────── */
 function CompaniesSection() {
