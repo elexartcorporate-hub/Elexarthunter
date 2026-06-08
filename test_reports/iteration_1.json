@@ -1,0 +1,46 @@
+{
+  "summary": "First-run backend integration testing for Lead Hunter & Email Marketing Platform. 29/29 pytest tests passed against external REACT_APP_BACKEND_URL. Covered auth (register/login/me/duplicate/invalid), dashboard overview (8 KPI cards + 14-day trends + recent lists), full 7-step hunter pipeline incl. Playwright deep crawl on stripe.com (verified [STEP 1-4]+[DONE] log markers, >=6 contacts, confidence scoring rules website=100 / hunter 95/85/70), cache hit on 2nd search (Global DB Check status='hit'), duplicate prevention via unique index, bulk job polling to status='done', companies w/ contacts_count, contacts with enriched company_name/domain/industry/country, multi-tenant isolation (tenant1 cannot see tenant2's shopify.com and vice versa), settings PATCH persist + GET verify, team CRUD, RBAC (Staff blocked from PATCH /settings → 403 and DELETE /team → 403; Owner allowed), campaign create + metrics object, send-without-SMTP → 400, tracking pixel returns image/gif, click returns 302 to ?u target. Found and fixed 1 backend bug (ObjectId serialization on POST /api/team).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/team",
+        "issue": "Returned 500 due to MongoDB ObjectId leaking into response body. Fixed by adding new_user.pop('_id', None) after insert_one in server.py::invite_user. Verified passing afterwards."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_lead_hunter_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Background task in POST /api/hunter/bulk calls hunter_search(payload, user) directly — works because FastAPI Depends defaults are bypassed when called as plain function, but a search history record will get user_id from the passed dict (OK). However the BackgroundTask captures the `user` dict at request time; if token is revoked mid-flight that is not checked — acceptable for MVP.",
+    "(Optional) Consider adding pagination meta (total) to /api/companies and /api/contacts list endpoints — currently only returns array.",
+    "(Optional) /api/track/open and /api/track/click silently increment counters even when recipient_id does not exist (no 404). Acceptable for tracking pixels but logging unknown IDs would help debugging.",
+    "(Optional) /api/dashboard/overview open_rate computed with `total = max(a['total'], 1)` even when a['total']==0 (then short-circuited to 0). Logic is correct but the max(...,1) line is misleading dead code — minor cleanup."
+  ],
+  "critical_code_review_comments": [
+    "ObjectId leak in POST /api/team fixed (was returning Mongo's _id which is not JSON serializable).",
+    "server.py is 944 lines — borderline; consider splitting into modules (auth.py, hunter.py, campaigns.py, dashboard.py) as the codebase grows beyond MVP.",
+    "Good: All endpoints use uuid string `id` (not _id), tenant_id filter on every query, unique indexes on (tenant_id, email) and (tenant_id, domain) — strong multi-tenant guarantees verified by tenant isolation tests.",
+    "Good: bcrypt with gensalt, JWT secret from env, httpOnly cookie + Bearer header both supported.",
+    "Good: Hunter mock returns 9 emails, dedupe and confidence scoring (100/95/85/70) verified end-to-end.",
+    "Minor: CORSMiddleware uses allow_credentials=True with allow_origins=['*'] (CORS_ORIGINS default). Browsers reject credentialed CORS with wildcard origin — fine for current backend-only testing but the FE may need explicit origin in production."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (1 line fix in invite_user — added pop('_id'))",
+    "/app/backend/tests/test_lead_hunter_backend.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
+  "test_credentials": "Tests dynamically register fresh tenants per run using POST /api/auth/register with TEST_*@example.com emails (uuid suffix). Pre-existing demo@test.com / demo1234 from /app/memory/test_credentials.md was not used.",
+  "seed_data_creation": "Each pytest run creates 2 fresh tenants (Owner) + 1 Staff (deleted at end). It also populates global_hunter_cache with stripe.com, microsoft.com, apple.com, shopify.com after first run — these will be hit-from-cache on subsequent runs (test_09 uses force_refresh=True to guarantee full pipeline).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 29 backend tests in /app/backend/tests/test_lead_hunter_backend.py pass. The file is self-contained, runs against REACT_APP_BACKEND_URL, uses unique TEST_ prefixed emails per run so it's idempotent. Hunter.io is MOCKED — do not expect real email data. Playwright deep crawl runs against real internet for stripe.com (test_09 with force_refresh=True takes ~5-10s). Bulk test polls up to 180s. SMTP is intentionally unconfigured for tenant2 in test_27. The ObjectId leak bug in POST /api/team has been fixed by this run.",
+  "rca of the issue": "Bug: POST /api/team returned 500. RCA: invite_user() inserts new_user dict via Motor's insert_one, which mutates the dict in-place adding the generated MongoDB _id (an ObjectId instance). The code popped password_hash but not _id before returning. FastAPI's jsonable_encoder cannot serialize ObjectId → ValueError → 500. Repro: register a tenant, POST /api/team with valid Owner token and Staff payload → 500. Mitigation: added new_user.pop('_id', None) immediately after insert (1-line fix in server.py). Verified by re-running TestSettingsAndTeam — all 6 tests pass."
+}

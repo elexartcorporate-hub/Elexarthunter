@@ -1,56 +1,60 @@
-import { useEffect } from "react";
-import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
+import { Toaster } from "@/components/ui/sonner";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import AppShell from "@/components/layout/AppShell";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import Login from "@/pages/Login";
+import Register from "@/pages/Register";
+import Dashboard from "@/pages/Dashboard";
+import Hunter from "@/pages/Hunter";
+import Database from "@/pages/Database";
+import EmailMarketing from "@/pages/EmailMarketing";
+import Settings from "@/pages/Settings";
+import "@/index.css";
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+function Protected() {
+  const { user, loading } = useAuth();
+  if (loading)
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="font-mono text-green-500">Loading... [|||      ]</div>
+      </div>
+    );
+  if (!user) return <Navigate to="/login" replace />;
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <AppShell>
+      <Outlet />
+    </AppShell>
   );
 }
 
-export default App;
+function PublicOnly({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (user) return <Navigate to="/" replace />;
+  return children;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
+          <Route path="/register" element={<PublicOnly><Register /></PublicOnly>} />
+
+          <Route element={<Protected />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/hunter" element={<Hunter />} />
+            <Route path="/database" element={<Database />} />
+            <Route path="/email" element={<EmailMarketing />} />
+            <Route path="/settings" element={<Settings />} />
+          </Route>
+
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+        <Toaster theme="dark" richColors position="top-right" />
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}
