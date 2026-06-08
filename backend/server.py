@@ -130,7 +130,7 @@ class InviteUserReq(BaseModel):
     name: str
     email: EmailStr
     password: str = Field(min_length=6)
-    role: Literal["Admin", "Staff"]
+    role: str = Field(min_length=1)
 
 
 class UpdateUserReq(BaseModel):
@@ -150,6 +150,93 @@ class UpdateUserReq(BaseModel):
 class HunterSearchReq(BaseModel):
     domain: str
     force_refresh: bool = False
+
+
+class RoleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    permissions: List[str] = []
+
+
+class RoleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    permissions: Optional[List[str]] = None
+
+
+# ─── Permission catalog (frontend uses these keys to filter menus) ───
+ALL_PERMISSIONS = [
+    {"key": "dashboard",          "label": "View Dashboard",                    "menu": True},
+    {"key": "hunter",             "label": "Hunter (lead discovery)",           "menu": True},
+    {"key": "database",           "label": "Database (companies & contacts)",   "menu": True},
+    {"key": "email_marketing",    "label": "Email Marketing (campaigns)",       "menu": True},
+    {"key": "settings",           "label": "Settings page access",              "menu": True},
+    {"key": "manage_users",       "label": "Add / edit / delete users",         "menu": False},
+    {"key": "manage_roles",       "label": "Create / edit / delete roles",      "menu": False},
+    {"key": "manage_company",     "label": "Edit company info & SMTP",          "menu": False},
+    {"key": "manage_api_keys",    "label": "Edit Hunter.io API key",            "menu": False},
+    {"key": "delete_records",     "label": "Delete companies / contacts",       "menu": False},
+    {"key": "send_campaigns",     "label": "Send email campaigns",              "menu": False},
+]
+PERMISSION_KEYS = {p["key"] for p in ALL_PERMISSIONS}
+
+DEFAULT_ROLES = [
+    {
+        "name": "Owner",
+        "is_system": True,
+        "permissions": [p["key"] for p in ALL_PERMISSIONS],  # all
+    },
+    {
+        "name": "Admin",
+        "is_system": True,
+        "permissions": [
+            "dashboard", "hunter", "database", "email_marketing", "settings",
+            "manage_users", "manage_company", "manage_api_keys",
+            "delete_records", "send_campaigns",
+        ],
+    },
+    {
+        "name": "Staff",
+        "is_system": True,
+        "permissions": [
+            "dashboard", "hunter", "database", "email_marketing", "send_campaigns",
+        ],
+    },
+]
+
+
+async def ensure_tenant_roles(tenant_id: str):
+    """Seed default roles if not exist (lazy/idempotent)."""
+    existing = await db.roles.count_documents({"tenant_id": tenant_id})
+    if existing == 0:
+        for r in DEFAULT_ROLES:
+            await db.roles.insert_one({
+                "id": str(uuid.uuid4()),
+                "tenant_id": tenant_id,
+                "name": r["name"],
+                "permissions": r["permissions"],
+                "is_system": r["is_system"],
+                "created_at": now_iso(),
+            })
+
+
+async def get_user_permissions(user: dict) -> List[str]:
+    """Return list of permission keys for this user (based on their role doc)."""
+    await ensure_tenant_roles(user["tenant_id"])
+    role = await db.roles.find_one({"tenant_id": user["tenant_id"], "name": user["role"]})
+    return list(role.get("permissions", [])) if role else []
+
+
+def require_permission(*perm_keys: str):
+    async def _checker(user: dict = Depends(get_current_user)):
+        # Owner shortcut: always allow
+        if user.get("role") == "Owner":
+            return user
+        perms = await get_user_permissions(user)
+        for p in perm_keys:
+            if p not in perms:
+                raise HTTPException(403, f"Missing permission: {p}")
+        return user
+    return _checker
+
 
 class BulkSearchReq(BaseModel):
     domains: List[str]
@@ -263,6 +350,7 @@ async def register(payload: RegisterReq, response: Response):
     }
     await db.tenants.insert_one(tenant_doc)
     await db.users.insert_one(user_doc)
+    await ensure_tenant_roles(tenant_id)
     token = create_access_token(user_id, tenant_id, "Owner", email)
     response.set_cookie("access_token", token, httponly=True, samesite="lax", max_age=ACCESS_EXPIRE_MIN * 60, path="/")
     return {
@@ -297,10 +385,102 @@ async def logout(response: Response):
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     tenant = await db.tenants.find_one({"id": user["tenant_id"]})
+    perms = await get_user_permissions(user)
     return {
-        "user": {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"], "tenant_id": user["tenant_id"]},
+        "user": {
+            "id": user["id"], "name": user["name"], "email": user["email"],
+            "role": user["role"], "tenant_id": user["tenant_id"],
+            "permissions": perms,
+        },
         "tenant": strip_id(tenant) if tenant else None,
     }
+
+
+# ────────────────────────────────────────────────────────────
+# ROLES MANAGEMENT
+# ────────────────────────────────────────────────────────────
+@api.get("/permissions")
+async def list_permissions(user: dict = Depends(get_current_user)):
+    """Catalog of all available permission keys & their labels."""
+    return ALL_PERMISSIONS
+
+
+@api.get("/roles")
+async def list_roles(user: dict = Depends(get_current_user)):
+    await ensure_tenant_roles(user["tenant_id"])
+    rows = await db.roles.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", 1).to_list(100)
+    # attach user_count for each role
+    for r in rows:
+        r["user_count"] = await db.users.count_documents({"tenant_id": user["tenant_id"], "role": r["name"]})
+    return rows
+
+
+@api.post("/roles")
+async def create_role(payload: RoleCreate, user: dict = Depends(require_permission("manage_roles"))):
+    name = payload.name.strip()
+    # Validate permissions
+    bad = [p for p in payload.permissions if p not in PERMISSION_KEYS]
+    if bad:
+        raise HTTPException(400, f"Unknown permissions: {bad}")
+    existing = await db.roles.find_one({"tenant_id": user["tenant_id"], "name": name})
+    if existing:
+        raise HTTPException(400, "Role name already exists")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": user["tenant_id"],
+        "name": name,
+        "permissions": payload.permissions,
+        "is_system": False,
+        "created_at": now_iso(),
+    }
+    await db.roles.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/roles/{role_id}")
+async def update_role(role_id: str, payload: RoleUpdate, user: dict = Depends(require_permission("manage_roles"))):
+    role = await db.roles.find_one({"id": role_id, "tenant_id": user["tenant_id"]})
+    if not role:
+        raise HTTPException(404, "Role not found")
+    upd: dict = {}
+    if payload.permissions is not None:
+        bad = [p for p in payload.permissions if p not in PERMISSION_KEYS]
+        if bad:
+            raise HTTPException(400, f"Unknown permissions: {bad}")
+        upd["permissions"] = payload.permissions
+    if payload.name is not None and payload.name != role["name"]:
+        # System roles cannot be renamed
+        if role.get("is_system"):
+            raise HTTPException(400, "Cannot rename a system role")
+        new_name = payload.name.strip()
+        conflict = await db.roles.find_one({"tenant_id": user["tenant_id"], "name": new_name})
+        if conflict:
+            raise HTTPException(400, "Role name already exists")
+        # Cascade rename to all users with this role
+        await db.users.update_many(
+            {"tenant_id": user["tenant_id"], "role": role["name"]},
+            {"$set": {"role": new_name}},
+        )
+        upd["name"] = new_name
+    if upd:
+        upd["updated_at"] = now_iso()
+        await db.roles.update_one({"id": role_id}, {"$set": upd})
+    return await db.roles.find_one({"id": role_id}, {"_id": 0})
+
+
+@api.delete("/roles/{role_id}")
+async def delete_role(role_id: str, user: dict = Depends(require_permission("manage_roles"))):
+    role = await db.roles.find_one({"id": role_id, "tenant_id": user["tenant_id"]})
+    if not role:
+        raise HTTPException(404, "Role not found")
+    if role.get("is_system"):
+        raise HTTPException(400, "Cannot delete a system role")
+    in_use = await db.users.count_documents({"tenant_id": user["tenant_id"], "role": role["name"]})
+    if in_use > 0:
+        raise HTTPException(400, f"Cannot delete: {in_use} user(s) still assigned to this role")
+    await db.roles.delete_one({"id": role_id})
+    return {"deleted": 1}
 
 
 # ────────────────────────────────────────────────────────────
@@ -313,10 +493,17 @@ async def list_team(user: dict = Depends(get_current_user)):
 
 
 @api.post("/team")
-async def invite_user(payload: InviteUserReq, user: dict = Depends(require_role("Owner", "Admin"))):
+async def invite_user(payload: InviteUserReq, user: dict = Depends(require_permission("manage_users"))):
     email = payload.email.lower().strip()
     if await db.users.find_one({"email": email}):
         raise HTTPException(400, "Email already used")
+    # Validate role exists in this tenant; cannot assign Owner via invite
+    await ensure_tenant_roles(user["tenant_id"])
+    if payload.role == "Owner":
+        raise HTTPException(400, "Owner cannot be assigned via invite — promote an existing user instead")
+    role_doc = await db.roles.find_one({"tenant_id": user["tenant_id"], "name": payload.role})
+    if not role_doc:
+        raise HTTPException(400, f"Role '{payload.role}' does not exist")
     new_user = {
         "id": str(uuid.uuid4()),
         "tenant_id": user["tenant_id"],
@@ -364,6 +551,10 @@ async def update_user(user_id: str, payload: UpdateUserReq, user: dict = Depends
         elif k == "role":
             if user["role"] != "Owner":
                 raise HTTPException(403, "Only Owner can change role")
+            # Validate role exists
+            role_doc = await db.roles.find_one({"tenant_id": user["tenant_id"], "name": v})
+            if not role_doc:
+                raise HTTPException(400, f"Role '{v}' does not exist")
             if target["role"] == "Owner" and v != "Owner":
                 owner_count = await db.users.count_documents({"tenant_id": user["tenant_id"], "role": "Owner"})
                 if owner_count <= 1:

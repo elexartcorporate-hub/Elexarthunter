@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { PageHeader, Card, TermInput, TermSelect, PrimaryButton, GhostButton, Badge } from "@/components/term";
-import { UsersThree, Key, Plus, Trash, PencilSimple, X, Buildings, EnvelopeSimple, CaretDown, CaretUp } from "@phosphor-icons/react";
+import { UsersThree, Key, Plus, Trash, PencilSimple, X, Buildings, EnvelopeSimple, CaretDown, CaretUp, ShieldCheck, Lock } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const EMPTY_USER_FORM = {
@@ -21,15 +21,20 @@ const EMPTY_USER_FORM = {
 };
 
 export default function Settings() {
-  const { user, tenant, refreshTenant } = useAuth();
+  const { user, tenant, refreshTenant, hasPermission } = useAuth();
   const isOwnerOrAdmin = user?.role === "Owner" || user?.role === "Admin";
   const [tab, setTab] = useState("users");
   const [settings, setSettings] = useState(null);
   const [team, setTeam] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [permissionCatalog, setPermissionCatalog] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showCompany, setShowCompany] = useState(true);
-  const [editingUser, setEditingUser] = useState(null); // null | "new" | userId
+  const [showRoles, setShowRoles] = useState(true);
+  const [editingUser, setEditingUser] = useState(null);
   const [userForm, setUserForm] = useState(EMPTY_USER_FORM);
+  const [editingRole, setEditingRole] = useState(null); // null | "new" | roleId
+  const [roleForm, setRoleForm] = useState({ name: "", permissions: [] });
 
   const loadTeam = async () => {
     try {
@@ -40,14 +45,33 @@ export default function Settings() {
     }
   };
 
+  const loadRoles = async () => {
+    try {
+      const { data } = await api.get("/roles");
+      setRoles(data);
+    } catch (e) {
+      /* ignore */
+    }
+  };
+
+  const loadPermissions = async () => {
+    try {
+      const { data } = await api.get("/permissions");
+      setPermissionCatalog(data);
+    } catch (e) {
+      /* ignore */
+    }
+  };
+
   useEffect(() => {
     if (isOwnerOrAdmin) {
       api.get("/settings").then((r) => setSettings(r.data)).catch((e) => toast.error(formatApiError(e)));
     } else {
-      // Staff can still load their own settings (just refresh tenant data)
       setSettings({});
     }
     loadTeam();
+    loadRoles();
+    loadPermissions();
   }, [isOwnerOrAdmin]);
 
   if (!settings) return <div className="p-10 font-mono text-green-600">Loading...</div>;
@@ -179,6 +203,53 @@ export default function Settings() {
     }
   };
 
+  // ─── Role CRUD handlers ────────────────────────────────
+  const startNewRole = () => {
+    setRoleForm({ name: "", permissions: ["dashboard"] });
+    setEditingRole("new");
+  };
+
+  const startEditRole = (r) => {
+    setRoleForm({ name: r.name, permissions: [...(r.permissions || [])] });
+    setEditingRole(r.id);
+  };
+
+  const togglePermission = (key) => {
+    const p = roleForm.permissions.includes(key)
+      ? roleForm.permissions.filter((x) => x !== key)
+      : [...roleForm.permissions, key];
+    setRoleForm({ ...roleForm, permissions: p });
+  };
+
+  const saveRole = async () => {
+    if (!roleForm.name.trim()) return toast.error("Role name required");
+    try {
+      if (editingRole === "new") {
+        await api.post("/roles", roleForm);
+        toast.success("Role created");
+      } else {
+        await api.patch(`/roles/${editingRole}`, roleForm);
+        toast.success("Role updated");
+      }
+      setEditingRole(null);
+      loadRoles();
+      await refreshTenant();
+    } catch (err) {
+      toast.error(formatApiError(err));
+    }
+  };
+
+  const deleteRole = async (id) => {
+    if (!window.confirm("Delete this role?")) return;
+    try {
+      await api.delete(`/roles/${id}`);
+      toast.success("Role deleted");
+      loadRoles();
+    } catch (err) {
+      toast.error(formatApiError(err));
+    }
+  };
+
   // ─── Render ────────────────────────────────────────────
   return (
     <div className="p-6 md:p-8 fade-up">
@@ -267,6 +338,107 @@ export default function Settings() {
                     </div>
                   </>
                 )}
+              </div>
+            )}
+          </Card>
+
+          {/* ──── ROLES & PERMISSIONS SECTION ──── */}
+          <Card className="overflow-hidden">
+            <button
+              onClick={() => setShowRoles(!showRoles)}
+              className="w-full flex items-center justify-between px-5 py-3 border-b border-zinc-200 hover:bg-zinc-50 transition-colors"
+              data-testid="toggle-roles"
+            >
+              <div className="flex items-center gap-2">
+                <ShieldCheck size={18} weight="bold" className="text-green-600" />
+                <div className="text-left">
+                  <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ roles/permissions</div>
+                  <div className="font-display text-base text-zinc-900">Roles &amp; Menu Access ({roles.length})</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                {hasPermission && hasPermission("manage_roles") && (
+                  <PrimaryButton
+                    onClick={(e) => { e.stopPropagation(); startNewRole(); }}
+                    data-testid="add-role-btn"
+                  >
+                    <Plus size={14} weight="bold" /> Add Role
+                  </PrimaryButton>
+                )}
+                {showRoles ? <CaretUp size={16} className="text-zinc-500" /> : <CaretDown size={16} className="text-zinc-500" />}
+              </div>
+            </button>
+
+            {showRoles && (
+              <div className="p-5">
+                <div className="border border-zinc-200 rounded-sm overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-zinc-50 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+                      <tr>
+                        <th className="text-left p-3">Role</th>
+                        <th className="text-left p-3">Permissions</th>
+                        <th className="text-left p-3">Users</th>
+                        <th className="text-left p-3">Type</th>
+                        <th className="text-right p-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {roles.map((r) => (
+                        <tr key={r.id} className="border-t border-zinc-200 hover:bg-zinc-50">
+                          <td className="p-3 font-mono text-sm text-zinc-900">{r.name}</td>
+                          <td className="p-3">
+                            <div className="flex flex-wrap gap-1 max-w-md">
+                              {(r.permissions || []).slice(0, 6).map((p) => (
+                                <Badge key={p} tone="info">{p}</Badge>
+                              ))}
+                              {(r.permissions || []).length > 6 && (
+                                <Badge tone="neutral">+{r.permissions.length - 6} more</Badge>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-3"><Badge tone="success">{r.user_count}</Badge></td>
+                          <td className="p-3">
+                            <Badge tone={r.is_system ? "neutral" : "warning"}>
+                              {r.is_system ? "system" : "custom"}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-right space-x-1">
+                            {hasPermission("manage_roles") && (
+                              <>
+                                <button
+                                  onClick={() => startEditRole(r)}
+                                  className="text-zinc-500 hover:text-green-600 inline-flex items-center"
+                                  title="Edit"
+                                  data-testid={`edit-role-${r.id}`}
+                                >
+                                  <PencilSimple size={16} weight="bold" />
+                                </button>
+                                {!r.is_system && r.user_count === 0 && (
+                                  <button
+                                    onClick={() => deleteRole(r.id)}
+                                    className="text-zinc-500 hover:text-red-500 inline-flex items-center ml-2"
+                                    title="Delete"
+                                    data-testid={`del-role-${r.id}`}
+                                  >
+                                    <Trash size={16} weight="bold" />
+                                  </button>
+                                )}
+                                {r.is_system && (
+                                  <span className="text-zinc-300 ml-2 inline-flex items-center" title="System role — cannot delete">
+                                    <Lock size={14} weight="bold" />
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mt-3 text-[11px] font-mono text-zinc-500">
+                  System roles (Owner / Admin / Staff) tidak bisa dihapus tapi permissions bisa diatur ulang. Custom roles bisa dibuat bebas.
+                </div>
               </div>
             )}
           </Card>
@@ -374,13 +546,33 @@ export default function Settings() {
           onSave={saveUser}
           onClose={() => setEditingUser(null)}
           currentUserRole={user.role}
+          availableRoles={roles}
+        />
+      )}
+
+      {/* Role Edit/Create Modal */}
+      {editingRole && (
+        <RoleModal
+          isNew={editingRole === "new"}
+          form={roleForm}
+          setForm={setRoleForm}
+          togglePermission={togglePermission}
+          permissionCatalog={permissionCatalog}
+          onSave={saveRole}
+          onClose={() => setEditingRole(null)}
+          isSystem={editingRole !== "new" && roles.find((r) => r.id === editingRole)?.is_system}
         />
       )}
     </div>
   );
 }
 
-function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole }) {
+function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole, availableRoles = [] }) {
+  // Filter out 'Owner' from invite dropdown (can only be assigned by Owner via edit, not new invite)
+  const rolesForDropdown = availableRoles
+    .map((r) => r.name)
+    .filter((rn) => isNew ? rn !== "Owner" : true);
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 fade-up">
       <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
@@ -416,9 +608,9 @@ function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole }) {
                 disabled={currentUserRole !== "Owner"}
                 data-testid="user-form-role"
               >
-                {currentUserRole === "Owner" && <option value="Owner">Owner</option>}
-                <option value="Admin">Admin</option>
-                <option value="Staff">Staff</option>
+                {rolesForDropdown.map((rn) => (
+                  <option key={rn} value={rn}>{rn}</option>
+                ))}
               </TermSelect>
             </div>
           </div>
@@ -482,6 +674,98 @@ function SmtpMethodCard({ active, onClick, title, description, testid }) {
       <div className="font-mono text-xs text-zinc-900 font-bold mb-0.5">{title}</div>
       <div className="text-[11px] text-zinc-500">{description}</div>
     </button>
+  );
+}
+
+function RoleModal({ isNew, form, setForm, togglePermission, permissionCatalog, onSave, onClose, isSystem }) {
+  const menuPerms = permissionCatalog.filter((p) => p.menu);
+  const actionPerms = permissionCatalog.filter((p) => !p.menu);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 fade-up">
+      <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200">
+          <div>
+            <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ role/{isNew ? "new" : "edit"}</div>
+            <h2 className="font-display text-lg text-zinc-900 flex items-center gap-2">
+              {isNew ? "New Role" : "Edit Role"}
+              {isSystem && <Badge tone="neutral">system role</Badge>}
+            </h2>
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-red-500" data-testid="close-role-modal">
+            <X size={20} weight="bold" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          <TermInput
+            label="Role Name"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            disabled={isSystem}
+            placeholder="e.g. Sales Manager, Marketing Lead"
+            hint={isSystem ? "System roles cannot be renamed" : "Pick a unique name within your tenant"}
+            data-testid="role-form-name"
+          />
+
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Menu Access</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {menuPerms.map((p) => (
+                <PermCheckbox
+                  key={p.key}
+                  perm={p}
+                  checked={form.permissions.includes(p.key)}
+                  onChange={() => togglePermission(p.key)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Action Permissions</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {actionPerms.map((p) => (
+                <PermCheckbox
+                  key={p.key}
+                  perm={p}
+                  checked={form.permissions.includes(p.key)}
+                  onChange={() => togglePermission(p.key)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="text-[11px] font-mono text-zinc-500">
+            Tip: User dengan role ini cuma akan melihat menu yang dicentang di sidebar. Permission action mengontrol API endpoint yang boleh diakses.
+          </div>
+        </div>
+
+        <div className="px-6 py-4 border-t border-zinc-200 flex justify-end gap-2">
+          <GhostButton onClick={onClose} data-testid="cancel-role-modal">Cancel</GhostButton>
+          <PrimaryButton onClick={onSave} data-testid="save-role-modal">{isNew ? "Create Role" : "Save Changes"}</PrimaryButton>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function PermCheckbox({ perm, checked, onChange }) {
+  return (
+    <label className={`flex items-start gap-2 p-2.5 border rounded-sm cursor-pointer transition-all ${
+      checked ? "border-green-600 bg-green-50" : "border-zinc-200 hover:border-zinc-300 bg-white"
+    }`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        className="mt-0.5 accent-green-600"
+        data-testid={`perm-${perm.key}`}
+      />
+      <div className="min-w-0">
+        <div className="font-mono text-xs text-zinc-900">{perm.label}</div>
+        <div className="text-[10px] text-zinc-500 font-mono">{perm.key}</div>
+      </div>
+    </label>
   );
 }
 

@@ -12,21 +12,23 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 
 const NAV = [
-  { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard" },
-  { to: "/hunter", label: "Hunter", icon: Crosshair, testid: "nav-hunter" },
-  { to: "/database", label: "Database", icon: Database, testid: "nav-database" },
-  { to: "/email", label: "Email Marketing", icon: EnvelopeSimple, testid: "nav-email" },
-  { to: "/settings", label: "Settings", icon: Gear, testid: "nav-settings" },
+  { to: "/",         label: "Dashboard",       icon: ChartLineUp,    perm: "dashboard",       testid: "nav-dashboard" },
+  { to: "/hunter",   label: "Hunter",          icon: Crosshair,      perm: "hunter",          testid: "nav-hunter" },
+  { to: "/database", label: "Database",        icon: Database,       perm: "database",        testid: "nav-database" },
+  { to: "/email",    label: "Email Marketing", icon: EnvelopeSimple, perm: "email_marketing", testid: "nav-email" },
+  { to: "/settings", label: "Settings",        icon: Gear,           perm: "settings",        testid: "nav-settings" },
 ];
 
 export default function AppShell({ children }) {
-  const { user, tenant, logout } = useAuth();
+  const { user, tenant, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
     await logout();
     navigate("/login");
   };
+
+  const visibleNav = NAV.filter((n) => hasPermission(n.perm));
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">

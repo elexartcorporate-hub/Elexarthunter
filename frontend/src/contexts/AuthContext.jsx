@@ -55,11 +55,18 @@ export function AuthProvider({ children }) {
 
   const refreshTenant = async () => {
     const { data } = await api.get("/auth/me");
+    setUser(data.user);
     setTenant(data.tenant);
   };
 
+  const hasPermission = (key) => {
+    if (!user) return false;
+    if (user.role === "Owner") return true;
+    return (user.permissions || []).includes(key);
+  };
+
   return (
-    <AuthCtx.Provider value={{ user, tenant, loading, login, register, logout, refreshTenant }}>
+    <AuthCtx.Provider value={{ user, tenant, loading, login, register, logout, refreshTenant, hasPermission }}>
       {children}
     </AuthCtx.Provider>
   );
