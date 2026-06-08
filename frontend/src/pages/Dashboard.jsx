@@ -1,201 +1,270 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import { PageHeader, Card, Badge } from "@/components/term";
+import { useNavigate } from "react-router-dom";
+import { api, formatApiError } from "@/lib/api";
+import { PageHeader, Card, Badge, PrimaryButton, GhostButton } from "@/components/term";
 import {
-  Buildings, UsersThree, EnvelopeOpen, TrendUp, PaperPlaneTilt,
-  ChartLineUp, ChatTeardropDots, Warning, ArrowUpRight,
+  Target, UsersFour, PaperPlaneTilt, ChatTeardropDots, Star, Crown,
+  CheckCircle, Circle, PencilSimple, ArrowUpRight, Spinner,
 } from "@phosphor-icons/react";
 import {
-  LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid, AreaChart, Area,
+  AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from "recharts";
+import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
 
-const KPI_CONFIG = [
-  { key: "total_companies",   label: "Total Companies",   icon: Buildings,       color: "indigo",  suffix: "" },
-  { key: "total_contacts",    label: "Total Contacts",    icon: UsersThree,      color: "purple",  suffix: "" },
-  { key: "total_emails_found",label: "Emails Found",      icon: EnvelopeOpen,    color: "teal",    suffix: "" },
-  { key: "new_leads_today",   label: "New Leads Today",   icon: TrendUp,         color: "emerald", suffix: "" },
-  { key: "emails_sent_today", label: "Emails Sent Today", icon: PaperPlaneTilt,  color: "sky",     suffix: "" },
-  { key: "open_rate",         label: "Open Rate",         icon: ChartLineUp,     color: "emerald", suffix: "%" },
-  { key: "reply_rate",        label: "Reply Rate",        icon: ChatTeardropDots,color: "indigo",  suffix: "%" },
-  { key: "bounce_rate",       label: "Bounce Rate",       icon: Warning,         color: "red",     suffix: "%" },
+const TASKS = [
+  { key: "add_prospects",   label: "Add New Prospects",          condition: (d) => (d.cards?.prospects_today || 0) > 0 },
+  { key: "send_emails",     label: "Send Emails",                condition: (d) => (d.cards?.emails_sent_today || 0) > 0 },
+  { key: "check_replies",   label: "Check Email Replies",        condition: (d) => (d.cards?.replies_today || 0) > 0, optional: true },
+  { key: "review_interest", label: "Review Interested Leads",    condition: (d) => (d.cards?.interested_count || 0) > 0, optional: true },
+  { key: "update_notes",    label: "Update CRM Notes",           condition: () => false, manual: true },
 ];
 
-const COLOR_STYLES = {
-  indigo:  { iconBg: "bg-indigo-50",  iconText: "text-indigo-600",  ring: "ring-indigo-100" },
-  purple:  { iconBg: "bg-purple-50",  iconText: "text-purple-600",  ring: "ring-purple-100" },
-  teal:    { iconBg: "bg-teal-50",    iconText: "text-teal-600",    ring: "ring-teal-100" },
-  emerald: { iconBg: "bg-emerald-50", iconText: "text-emerald-600", ring: "ring-emerald-100" },
-  sky:     { iconBg: "bg-sky-50",     iconText: "text-sky-600",     ring: "ring-sky-100" },
-  red:     { iconBg: "bg-red-50",     iconText: "text-red-600",     ring: "ring-red-100" },
-};
-
 export default function Dashboard() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [editingTarget, setEditingTarget] = useState(false);
+  const [targetInput, setTargetInput] = useState("0");
+  const [manualDone, setManualDone] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("lh_manual_tasks") || "{}"); }
+    catch { return {}; }
+  });
 
-  useEffect(() => {
-    api.get("/dashboard/overview").then((r) => setData(r.data)).finally(() => setLoading(false));
-  }, []);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/dashboard/daily");
+      setData(data);
+      setTargetInput(String(data.daily_target || 0));
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setLoading(false); }
+  };
 
-  if (loading) {
-    return (
-      <div className="p-10 text-sm text-slate-500">Loading dashboard...</div>
-    );
+  useEffect(() => { load(); }, []);
+
+  const saveTarget = async () => {
+    const n = parseInt(targetInput, 10);
+    if (Number.isNaN(n) || n < 0) return toast.error("Enter a valid target");
+    try {
+      await api.patch("/me/target", { daily_target: n });
+      toast.success("Daily target updated");
+      setEditingTarget(false);
+      load();
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  const toggleManual = (key) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const next = { ...manualDone };
+    next[`${today}__${key}`] = !next[`${today}__${key}`];
+    setManualDone(next);
+    localStorage.setItem("lh_manual_tasks", JSON.stringify(next));
+  };
+  const isDone = (t) => {
+    if (t.manual) {
+      const today = new Date().toISOString().slice(0, 10);
+      return !!manualDone[`${today}__${t.key}`];
+    }
+    return t.condition(data || {});
+  };
+
+  if (loading || !data) {
+    return <div className="p-8 text-slate-500"><Spinner size={20} weight="bold" className="animate-spin inline" /> Loading dashboard...</div>;
   }
 
+  const target = data.daily_target || 0;
+  const added  = data.cards.prospects_today || 0;
+  const sentToday = data.cards.emails_sent_today || 0;
+  const progress = target > 0 ? Math.min(100, Math.round((added / target) * 100)) : 0;
+
   return (
-    <div className="p-8 max-w-[1600px] mx-auto fade-up">
+    <div className="p-6 md:p-8 fade-up max-w-[1600px] mx-auto">
       <PageHeader
-        title="Dashboard"
-        subtitle="Overview of your lead generation and email marketing performance"
+        title={`Good ${greet()}, ${user?.name?.split(" ")[0] || "there"}`}
+        subtitle="Your daily prospecting summary"
+        action={<PrimaryButton onClick={() => navigate("/prospects")} data-testid="dashboard-add-btn">
+          <UsersFour size={14} weight="bold" /> Add Prospect
+        </PrimaryButton>}
       />
 
-      {/* KPI grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" data-testid="kpi-grid">
-        {KPI_CONFIG.map((k) => {
-          const v = data.cards[k.key];
-          const c = COLOR_STYLES[k.color];
-          return (
-            <Card key={k.key} hoverable className="p-5">
-              <div className="flex items-start justify-between mb-3">
-                <span className="text-xs font-medium text-slate-500">{k.label}</span>
-                <div className={`w-9 h-9 rounded-lg ${c.iconBg} ${c.iconText} flex items-center justify-center`}>
-                  <k.icon size={18} weight="bold" />
+      {/* Daily target hero card */}
+      <Card className="p-6 mb-6 bg-gradient-to-br from-indigo-50 via-white to-purple-50 border-indigo-100">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest text-indigo-600 font-semibold">
+              <Target size={14} weight="bold" /> Daily Prospect Target
+            </div>
+            <div className="flex items-end gap-3 mt-1">
+              <div className="font-display text-4xl font-bold text-slate-900" data-testid="target-progress">{added}<span className="text-slate-400 text-2xl"> / {target || "∞"}</span></div>
+              {editingTarget ? (
+                <div className="flex items-center gap-1 ml-2">
+                  <input
+                    type="number"
+                    className="w-20 px-2 py-1 border border-indigo-300 rounded-lg text-sm"
+                    value={targetInput}
+                    onChange={(e) => setTargetInput(e.target.value)}
+                    data-testid="target-input"
+                  />
+                  <PrimaryButton onClick={saveTarget} data-testid="save-target-btn">Save</PrimaryButton>
+                  <GhostButton onClick={() => setEditingTarget(false)}>X</GhostButton>
                 </div>
+              ) : (
+                <button onClick={() => setEditingTarget(true)} className="text-xs text-indigo-600 hover:underline flex items-center gap-1 mb-1" data-testid="edit-target-btn">
+                  <PencilSimple size={12} weight="bold" /> set target
+                </button>
+              )}
+            </div>
+            {target > 0 && (
+              <div className="mt-3 w-full max-w-md">
+                <div className="h-2 bg-white rounded-full overflow-hidden border border-indigo-100">
+                  <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all" style={{ width: `${progress}%` }} />
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">{progress}% of today&apos;s target · {Math.max(0, target - added)} to go</div>
               </div>
-              <div className="font-display text-3xl font-bold text-slate-900 tracking-tight">
-                {v}{k.suffix}
-              </div>
-            </Card>
-          );
-        })}
+            )}
+          </div>
+        </div>
+      </Card>
+
+      {/* KPI grid */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+        <Kpi label="Prospects Today" value={added}                              icon={UsersFour}        tone="indigo"  testid="kpi-prospects" onClick={() => navigate("/prospects")} />
+        <Kpi label="Emails Sent"     value={sentToday}                          icon={PaperPlaneTilt}   tone="emerald" testid="kpi-sent"      onClick={() => navigate("/activity")} />
+        <Kpi label="Team Emails"     value={data.cards.team_emails_today || 0}  icon={PaperPlaneTilt}   tone="sky"     testid="kpi-team-sent" onClick={() => navigate("/activity")} />
+        <Kpi label="Replies Today"   value={data.cards.replies_today || 0}      icon={ChatTeardropDots} tone="purple"  testid="kpi-replies" />
+        <Kpi label="Interested"      value={data.cards.interested_count || 0}   icon={Star}             tone="amber"   testid="kpi-interested" onClick={() => navigate("/prospects")} />
+        <Kpi label="Customers Won"   value={data.cards.customers_won || 0}      icon={Crown}            tone="success" testid="kpi-customers" />
       </div>
 
-      {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        <Card className="p-6">
-          <div className="flex items-center justify-between mb-5">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Trend chart */}
+        <Card className="p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-3">
             <div>
-              <div className="font-display text-base font-semibold text-slate-900">Leads Growth</div>
-              <div className="text-xs text-slate-500 mt-0.5">New contacts discovered · last 14 days</div>
+              <h3 className="font-display text-base font-semibold text-slate-900">14-day activity</h3>
+              <p className="text-xs text-slate-500">Your prospects added &amp; emails sent</p>
             </div>
-            <Badge tone="success">● Live</Badge>
+            <Badge tone="success">Live</Badge>
           </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={data.trends} margin={{ left: -20 }}>
+          <ResponsiveContainer width="100%" height={240}>
+            <AreaChart data={data.trend}>
               <defs>
-                <linearGradient id="leadsGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6366f1" stopOpacity={0.25} />
+                <linearGradient id="addedGrad" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stopColor="#6366f1" stopOpacity={0.4} />
                   <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
                 </linearGradient>
+                <linearGradient id="sentGrad" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stopColor="#10b981" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
+                </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="0" stroke="#f1f5f9" vertical={false} />
-              <XAxis dataKey="label" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
-              <Tooltip
-                contentStyle={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  boxShadow: "0 4px 12px rgb(15 23 42 / 0.06)",
-                }}
-              />
-              <Area type="monotone" dataKey="leads" stroke="#6366f1" strokeWidth={2.5} fill="url(#leadsGradient)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+              <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#64748b" }} />
+              <YAxis tick={{ fontSize: 10, fill: "#64748b" }} allowDecimals={false} />
+              <Tooltip />
+              <Area type="monotone" dataKey="added" stroke="#6366f1" fillOpacity={1} fill="url(#addedGrad)" strokeWidth={2} />
+              <Area type="monotone" dataKey="sent"  stroke="#10b981" fillOpacity={1} fill="url(#sentGrad)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </Card>
 
-        <Card className="p-6">
-          <div className="flex items-center justify-between mb-5">
-            <div>
-              <div className="font-display text-base font-semibold text-slate-900">Emails Sent</div>
-              <div className="text-xs text-slate-500 mt-0.5">Delivered emails · last 14 days</div>
-            </div>
-            <Badge tone="info">14d</Badge>
+        {/* Today's Task Checklist */}
+        <Card className="p-5">
+          <h3 className="font-display text-base font-semibold text-slate-900 mb-1">Today&apos;s Tasks</h3>
+          <p className="text-xs text-slate-500 mb-3">Tick items off as you progress</p>
+          <div className="space-y-2">
+            {TASKS.map((t) => {
+              const done = isDone(t);
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => t.manual && toggleManual(t.key)}
+                  data-testid={`task-${t.key}`}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all text-left ${
+                    done ? "bg-emerald-50 border-emerald-200" : "bg-slate-50 border-slate-200 hover:border-slate-300"
+                  }`}
+                >
+                  {done ? <CheckCircle size={18} weight="fill" className="text-emerald-600 shrink-0" /> : <Circle size={18} weight="regular" className="text-slate-300 shrink-0" />}
+                  <span className={`text-sm flex-1 ${done ? "text-emerald-700 line-through" : "text-slate-700"}`}>{t.label}</span>
+                  {t.manual && <span className="text-[10px] text-slate-400">tap</span>}
+                </button>
+              );
+            })}
           </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={data.trends} margin={{ left: -20 }}>
-              <CartesianGrid strokeDasharray="0" stroke="#f1f5f9" vertical={false} />
-              <XAxis dataKey="label" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
-              <Tooltip
-                contentStyle={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  boxShadow: "0 4px 12px rgb(15 23 42 / 0.06)",
-                }}
-              />
-              <Line type="monotone" dataKey="sent" stroke="#14b8a6" strokeWidth={2.5} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
         </Card>
-      </div>
 
-      {/* Recent activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <RecentList
-          title="Recent Searches"
-          rows={data.recent_searches}
-          renderItem={(r) => (
-            <div className="flex items-center justify-between py-2.5 border-b border-slate-100 last:border-b-0" key={r.id}>
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-slate-900 truncate">{r.domain}</div>
-                <div className="text-xs text-slate-500 mt-0.5">{r.company_name || "—"}</div>
-              </div>
-              <Badge tone={r.from_cache ? "info" : "success"}>{r.contacts_found || 0} contacts</Badge>
+        {/* Recent prospects */}
+        <Card className="p-5 lg:col-span-3">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="font-display text-base font-semibold text-slate-900">Recent Prospects</h3>
+              <p className="text-xs text-slate-500">Latest prospects you added</p>
+            </div>
+            <button onClick={() => navigate("/prospects")} className="text-xs text-indigo-600 hover:underline flex items-center gap-1" data-testid="view-all-prospects">
+              View all <ArrowUpRight size={12} weight="bold" />
+            </button>
+          </div>
+          {(data.recent_prospects || []).length === 0 ? (
+            <div className="text-sm text-slate-400 py-6 text-center">No prospects yet · <a className="text-indigo-600 cursor-pointer underline" onClick={() => navigate("/prospects")}>add your first one</a></div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {data.recent_prospects.map((p) => {
+                const primary = (p.emails || []).find((e) => e.is_primary) || (p.emails || [])[0];
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => navigate(`/prospects/${p.id}`)}
+                    className="w-full text-left py-2.5 hover:bg-slate-50 px-2 rounded-lg flex items-center gap-3"
+                    data-testid={`recent-${p.id}`}
+                  >
+                    <div className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-lg grid place-items-center font-medium text-xs">
+                      {(p.company_name || "?").charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-slate-900 truncate">{p.company_name}</div>
+                      <div className="text-xs text-slate-500 truncate">{primary?.email || p.domain || "—"}</div>
+                    </div>
+                    <Badge tone={p.status === "Customer" ? "success" : p.status === "Lost" ? "error" : p.status === "Interested" ? "warning" : "neutral"}>{p.status}</Badge>
+                  </button>
+                );
+              })}
             </div>
           )}
-          empty="No searches yet"
-        />
-        <RecentList
-          title="Recent Leads"
-          rows={data.recent_leads}
-          renderItem={(r) => (
-            <div className="flex items-center justify-between py-2.5 border-b border-slate-100 last:border-b-0 gap-2" key={r.id}>
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-slate-900 truncate">{r.email}</div>
-                <div className="text-xs text-slate-500 mt-0.5 truncate">{r.name || r.job_title || "—"}</div>
-              </div>
-              <Badge tone={r.confidence_score >= 80 ? "success" : r.confidence_score >= 50 ? "warning" : "error"}>
-                {r.confidence_score}
-              </Badge>
-            </div>
-          )}
-          empty="No leads yet · run a Hunter search"
-        />
-        <RecentList
-          title="Recent Campaigns"
-          rows={data.recent_campaigns}
-          renderItem={(r) => (
-            <div className="flex items-center justify-between py-2.5 border-b border-slate-100 last:border-b-0 gap-2" key={r.id}>
-              <div className="text-sm font-medium text-slate-900 truncate">{r.name}</div>
-              <Badge tone={r.status === "sent" ? "success" : r.status === "sending" ? "warning" : "neutral"}>
-                {r.status}
-              </Badge>
-            </div>
-          )}
-          empty="No campaigns yet"
-        />
+        </Card>
       </div>
     </div>
   );
 }
 
-function RecentList({ title, rows, renderItem, empty }) {
+function Kpi({ label, value, icon: Icon, tone, testid, onClick }) {
+  const tones = {
+    indigo:  "bg-indigo-50 text-indigo-600",
+    emerald: "bg-emerald-50 text-emerald-600",
+    sky:     "bg-sky-50 text-sky-600",
+    purple:  "bg-purple-50 text-purple-600",
+    amber:   "bg-amber-50 text-amber-600",
+    success: "bg-emerald-50 text-emerald-700",
+  };
   return (
-    <Card className="p-5">
-      <div className="flex items-center justify-between mb-3">
-        <div className="font-display text-sm font-semibold text-slate-900">{title}</div>
-        <ArrowUpRight size={14} className="text-slate-300" />
+    <button
+      onClick={onClick}
+      data-testid={testid}
+      className={`text-left p-4 bg-white border border-slate-200 rounded-xl hover:border-slate-300 hover:shadow-sm transition-all ${onClick ? "cursor-pointer" : "cursor-default"}`}
+    >
+      <div className={`w-8 h-8 rounded-lg ${tones[tone] || tones.indigo} grid place-items-center mb-2`}>
+        <Icon size={16} weight="bold" />
       </div>
-      <div>
-        {rows && rows.length > 0 ? rows.map(renderItem) : (
-          <div className="text-sm text-slate-400 py-4 text-center">{empty}</div>
-        )}
-      </div>
-    </Card>
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">{label}</div>
+      <div className="text-2xl font-bold text-slate-900">{value}</div>
+    </button>
   );
+}
+
+function greet() {
+  const h = new Date().getHours();
+  if (h < 12) return "morning";
+  if (h < 18) return "afternoon";
+  return "evening";
 }

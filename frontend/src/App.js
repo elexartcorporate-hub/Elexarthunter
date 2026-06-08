@@ -7,9 +7,10 @@ import AppShell from "@/components/layout/AppShell";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
 import Dashboard from "@/pages/Dashboard";
-import Hunter from "@/pages/Hunter";
-import Database from "@/pages/Database";
-import EmailMarketing from "@/pages/EmailMarketing";
+import Prospects from "@/pages/Prospects";
+import ProspectDetail from "@/pages/ProspectDetail";
+import EmailActivity from "@/pages/EmailActivity";
+import Templates from "@/pages/Templates";
 import Settings from "@/pages/Settings";
 import "@/index.css";
 
@@ -94,9 +95,10 @@ export default function App() {
 
           <Route element={<Protected />}>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/hunter" element={<Hunter />} />
-            <Route path="/database" element={<Database />} />
-            <Route path="/email" element={<EmailMarketing />} />
+            <Route path="/prospects" element={<Prospects />} />
+            <Route path="/prospects/:id" element={<ProspectDetail />} />
+            <Route path="/activity" element={<EmailActivity />} />
+            <Route path="/templates" element={<Templates />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
 

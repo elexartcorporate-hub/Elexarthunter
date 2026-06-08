@@ -1,9 +1,9 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  Crosshair,
   ChartLineUp,
-  Database,
-  EnvelopeSimple,
+  UsersFour,
+  EnvelopeOpen,
+  ListChecks,
   Gear,
   SignOut,
   Buildings,
@@ -12,11 +12,11 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 
 const NAV = [
-  { to: "/",         label: "Dashboard",       icon: ChartLineUp,    perm: "dashboard",       testid: "nav-dashboard" },
-  { to: "/hunter",   label: "Hunter",          icon: Crosshair,      perm: "hunter",          testid: "nav-hunter" },
-  { to: "/database", label: "Database",        icon: Database,       perm: "database",        testid: "nav-database" },
-  { to: "/email",    label: "Email Marketing", icon: EnvelopeSimple, perm: "email_marketing", testid: "nav-email" },
-  { to: "/settings", label: "Settings",        icon: Gear,           perm: "settings",        testid: "nav-settings" },
+  { to: "/",           label: "Dashboard",       icon: ChartLineUp,  perm: "dashboard",      testid: "nav-dashboard" },
+  { to: "/prospects",  label: "Prospects",       icon: UsersFour,    perm: "prospects",      testid: "nav-prospects" },
+  { to: "/activity",   label: "Email Activity",  icon: EnvelopeOpen, perm: "email_activity", testid: "nav-activity" },
+  { to: "/templates",  label: "Templates",       icon: ListChecks,   perm: "templates",      testid: "nav-templates" },
+  { to: "/settings",   label: "Settings",        icon: Gear,         perm: "settings",       testid: "nav-settings" },
 ];
 
 export default function AppShell({ children }) {

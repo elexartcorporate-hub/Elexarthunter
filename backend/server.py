@@ -204,19 +204,108 @@ class SubCompanyUpdate(BaseModel):
     smtp_from_name: Optional[str] = None
 
 
+# ─── CRM Prospect models ───
+PROSPECT_STATUSES = ["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"]
+EMAIL_STATUSES = ["verified", "risky", "invalid"]
+
+
+class ProspectEmail(BaseModel):
+    email: EmailStr
+    is_primary: bool = False
+    status: Literal["verified", "risky", "invalid"] = "risky"
+    confidence: Optional[int] = None
+    source: Optional[str] = None  # website / hunter / manual
+
+
+class ProspectCreate(BaseModel):
+    company_name: str
+    website: Optional[str] = None
+    domain: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    phone: Optional[str] = None
+    linkedin: Optional[str] = None
+    emails: List[ProspectEmail] = []
+    notes: Optional[str] = None
+    sub_company_id: Optional[str] = None
+    assigned_user_id: Optional[str] = None
+    status: Literal["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"] = "New"
+
+
+class ProspectUpdate(BaseModel):
+    company_name: Optional[str] = None
+    website: Optional[str] = None
+    domain: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    phone: Optional[str] = None
+    linkedin: Optional[str] = None
+    notes: Optional[str] = None
+    sub_company_id: Optional[str] = None
+    assigned_user_id: Optional[str] = None
+    status: Optional[Literal["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"]] = None
+
+
+class ProspectEmailAdd(BaseModel):
+    email: EmailStr
+    is_primary: bool = False
+    status: Literal["verified", "risky", "invalid"] = "risky"
+
+
+class TemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    subject: str
+    body_html: str
+
+
+class TemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    subject: Optional[str] = None
+    body_html: Optional[str] = None
+
+
+class SendEmailReq(BaseModel):
+    to_email: EmailStr
+    subject: str
+    body_html: str
+    template_id: Optional[str] = None
+    sub_company_id: Optional[str] = None  # overrides default smtp profile
+    scheduled_at: Optional[str] = None    # ISO timestamp
+
+
+class BulkSendEmailReq(BaseModel):
+    prospect_ids: List[str] = Field(min_length=1)
+    subject: str
+    body_html: str
+    template_id: Optional[str] = None
+    sub_company_id: Optional[str] = None
+    scheduled_at: Optional[str] = None
+
+
+class DailyTargetUpdate(BaseModel):
+    daily_target: int = Field(ge=0, le=10000)
+
+
+class NoteAdd(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+
+
 # ─── Permission catalog (frontend uses these keys to filter menus) ───
 ALL_PERMISSIONS = [
     {"key": "dashboard",          "label": "View Dashboard",                    "menu": True},
-    {"key": "hunter",             "label": "Hunter (lead discovery)",           "menu": True},
-    {"key": "database",           "label": "Database (companies & contacts)",   "menu": True},
-    {"key": "email_marketing",    "label": "Email Marketing (campaigns)",       "menu": True},
+    {"key": "prospects",          "label": "Prospects (CRM)",                   "menu": True},
+    {"key": "email_activity",     "label": "Email Activity tracker",            "menu": True},
+    {"key": "templates",          "label": "Email Templates",                   "menu": True},
     {"key": "settings",           "label": "Settings page access",              "menu": True},
     {"key": "manage_users",       "label": "Add / edit / delete users",         "menu": False},
     {"key": "manage_roles",       "label": "Create / edit / delete roles",      "menu": False},
     {"key": "manage_company",     "label": "Edit company info & SMTP",          "menu": False},
     {"key": "manage_api_keys",    "label": "Edit Hunter.io API key",            "menu": False},
-    {"key": "delete_records",     "label": "Delete companies / contacts",       "menu": False},
-    {"key": "send_campaigns",     "label": "Send email campaigns",              "menu": False},
+    {"key": "delete_prospects",   "label": "Delete prospects",                  "menu": False},
+    {"key": "send_emails",        "label": "Send emails to prospects",          "menu": False},
+    {"key": "set_team_targets",   "label": "Set daily targets for team",        "menu": False},
 ]
 PERMISSION_KEYS = {p["key"] for p in ALL_PERMISSIONS}
 
@@ -230,26 +319,26 @@ DEFAULT_ROLES = [
         "name": "Admin",
         "is_system": True,
         "permissions": [
-            "dashboard", "hunter", "database", "email_marketing", "settings",
+            "dashboard", "prospects", "email_activity", "templates", "settings",
             "manage_users", "manage_company", "manage_api_keys",
-            "delete_records", "send_campaigns",
+            "delete_prospects", "send_emails", "set_team_targets",
         ],
     },
     {
         "name": "Staff",
         "is_system": True,
         "permissions": [
-            "dashboard", "hunter", "database", "email_marketing", "send_campaigns",
+            "dashboard", "prospects", "email_activity", "templates", "send_emails",
         ],
     },
 ]
 
 
 async def ensure_tenant_roles(tenant_id: str):
-    """Seed default roles if not exist (lazy/idempotent)."""
-    existing = await db.roles.count_documents({"tenant_id": tenant_id})
-    if existing == 0:
-        for r in DEFAULT_ROLES:
+    """Seed default roles if not exist, and keep system role permissions in sync with DEFAULT_ROLES."""
+    for r in DEFAULT_ROLES:
+        existing = await db.roles.find_one({"tenant_id": tenant_id, "name": r["name"]})
+        if not existing:
             await db.roles.insert_one({
                 "id": str(uuid.uuid4()),
                 "tenant_id": tenant_id,
@@ -258,6 +347,12 @@ async def ensure_tenant_roles(tenant_id: str):
                 "is_system": r["is_system"],
                 "created_at": now_iso(),
             })
+        elif existing.get("is_system"):
+            # Keep system role permissions in sync (idempotent migration)
+            await db.roles.update_one(
+                {"id": existing["id"]},
+                {"$set": {"permissions": r["permissions"], "is_system": True}},
+            )
 
 
 async def get_user_permissions(user: dict) -> List[str]:
@@ -359,6 +454,15 @@ async def startup():
     await db.categories.create_index([("tenant_id", 1), ("name", 1)], unique=True)
     await db.locations.create_index([("tenant_id", 1), ("name", 1)], unique=True)
     await db.my_leads.create_index([("tenant_id", 1), ("user_id", 1), ("contact_id", 1)], unique=True)
+    # ─── CRM collections ───
+    await db.prospects.create_index([("tenant_id", 1), ("domain", 1)])
+    await db.prospects.create_index([("tenant_id", 1), ("status", 1)])
+    await db.prospects.create_index([("tenant_id", 1), ("created_at", -1)])
+    await db.prospect_activity.create_index([("prospect_id", 1), ("created_at", -1)])
+    await db.email_templates.create_index([("tenant_id", 1), ("name", 1)])
+    await db.email_sends.create_index([("tenant_id", 1), ("status", 1)])
+    await db.email_sends.create_index([("tenant_id", 1), ("created_at", -1)])
+    await db.email_sends.create_index("prospect_id")
     logger.info("Indexes ready. DB=%s", DB_NAME)
 
 
@@ -1482,9 +1586,575 @@ async def dashboard_overview(user: dict = Depends(get_current_user)):
 
 
 # ────────────────────────────────────────────────────────────
+# CRM — PROSPECTS / TEMPLATES / EMAIL ACTIVITY
+# ────────────────────────────────────────────────────────────
+def _prospect_view(p: dict, users_map: dict = None, sub_map: dict = None) -> dict:
+    """Strip _id and attach assigned_user/sub_company display names."""
+    p.pop("_id", None)
+    if users_map is not None:
+        u = users_map.get(p.get("assigned_user_id"))
+        p["assigned_user_name"] = u.get("name") if u else None
+    if sub_map is not None:
+        s = sub_map.get(p.get("sub_company_id"))
+        p["sub_company_name"] = s.get("name") if s else None
+    return p
+
+
+async def _log_activity(prospect_id: str, tenant_id: str, type_: str, user_id: str = None, data: dict = None):
+    await db.prospect_activity.insert_one({
+        "id": str(uuid.uuid4()),
+        "prospect_id": prospect_id,
+        "tenant_id": tenant_id,
+        "type": type_,
+        "user_id": user_id,
+        "data": data or {},
+        "created_at": now_iso(),
+    })
+
+
+@api.post("/prospects/discover")
+async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_current_user)):
+    """Discover company info + emails for a domain (without saving). Front-end displays results."""
+    domain = _normalize_domain(payload.domain)
+    cached = await db.global_hunter_cache.find_one({"domain": domain})
+    if cached and not payload.force_refresh:
+        age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(cached["cached_at"])).days
+        if age_days < GLOBAL_CACHE_DAYS:
+            return {
+                "domain": domain,
+                "company": cached["company"],
+                "emails": [
+                    {
+                        "email": c["email"], "name": c.get("name"), "job_title": c.get("job_title"),
+                        "source": c.get("source"), "confidence": c.get("confidence_score", 50),
+                        "status": "verified" if c.get("confidence_score", 0) >= 80 else "risky",
+                    } for c in cached["contacts"]
+                ],
+                "cached": True, "age_days": age_days,
+            }
+    result = await run_hunter_workflow(domain)
+    # update global cache
+    await db.global_hunter_cache.update_one(
+        {"domain": domain},
+        {"$set": {"domain": domain, "company": result["company"], "contacts": result["contacts"],
+                  "company_name": result["company"].get("company_name"), "cached_at": now_iso()}},
+        upsert=True,
+    )
+    return {
+        "domain": domain,
+        "company": result["company"],
+        "emails": [
+            {
+                "email": c["email"], "name": c.get("name"), "job_title": c.get("job_title"),
+                "source": c.get("source"), "confidence": c.get("confidence_score", 50),
+                "status": "verified" if c.get("confidence_score", 0) >= 80 else "risky",
+            } for c in result["contacts"]
+        ],
+        "cached": False,
+    }
+
+
+@api.get("/prospects")
+async def list_prospects(
+    user: dict = Depends(get_current_user),
+    status: Optional[str] = None,
+    assigned_user_id: Optional[str] = None,
+    q: Optional[str] = None,
+    sub_company_id: Optional[str] = None,
+):
+    qdoc: dict = {"tenant_id": user["tenant_id"]}
+    if status: qdoc["status"] = status
+    if assigned_user_id: qdoc["assigned_user_id"] = assigned_user_id
+    if sub_company_id: qdoc["sub_company_id"] = sub_company_id
+    rows = await db.prospects.find(qdoc, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    if q:
+        ql = q.lower()
+        rows = [r for r in rows if ql in
+                f"{r.get('company_name','')} {r.get('website','')} {r.get('domain','')} {r.get('industry','')} {' '.join(e.get('email','') for e in r.get('emails',[]))}".lower()]
+    users_map = {u["id"]: u async for u in db.users.find({"tenant_id": user["tenant_id"]}, {"_id": 0, "password_hash": 0})}
+    sub_map = {s["id"]: s async for s in db.sub_companies.find({"tenant_id": user["tenant_id"]}, {"_id": 0})}
+    return [_prospect_view(r, users_map, sub_map) for r in rows]
+
+
+@api.post("/prospects")
+async def create_prospect(payload: ProspectCreate, user: dict = Depends(get_current_user)):
+    pid = str(uuid.uuid4())
+    domain = _normalize_domain(payload.domain or payload.website or "") if (payload.domain or payload.website) else None
+    emails = [e.model_dump() for e in payload.emails]
+    # Ensure at most one primary, default first if none
+    primary_count = sum(1 for e in emails if e.get("is_primary"))
+    if primary_count == 0 and emails:
+        emails[0]["is_primary"] = True
+    elif primary_count > 1:
+        seen = False
+        for e in emails:
+            if e.get("is_primary"):
+                if seen: e["is_primary"] = False
+                else: seen = True
+    # Add ids to emails
+    for e in emails:
+        e["id"] = str(uuid.uuid4())
+
+    doc = {
+        "id": pid,
+        "tenant_id": user["tenant_id"],
+        "company_name": payload.company_name,
+        "website": payload.website,
+        "domain": domain,
+        "industry": payload.industry,
+        "country": payload.country,
+        "city": payload.city,
+        "phone": payload.phone,
+        "linkedin": payload.linkedin,
+        "emails": emails,
+        "notes": payload.notes,
+        "sub_company_id": payload.sub_company_id,
+        "assigned_user_id": payload.assigned_user_id or user["id"],
+        "status": payload.status,
+        "created_by": user["id"],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "last_activity_at": now_iso(),
+    }
+    await db.prospects.insert_one(doc)
+    await _log_activity(pid, user["tenant_id"], "prospect_created", user["id"], {"company_name": payload.company_name})
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/prospects/{pid}")
+async def get_prospect(pid: str, user: dict = Depends(get_current_user)):
+    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    activity = await db.prospect_activity.find({"prospect_id": pid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    user_ids = list({a["user_id"] for a in activity if a.get("user_id")})
+    users = {u["id"]: u["name"] async for u in db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "name": 1})}
+    for a in activity:
+        a["user_name"] = users.get(a.get("user_id"))
+    # Email sends for this prospect
+    sends = await db.email_sends.find({"prospect_id": pid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"prospect": _prospect_view(p), "activity": activity, "email_sends": sends}
+
+
+@api.patch("/prospects/{pid}")
+async def update_prospect(pid: str, payload: ProspectUpdate, user: dict = Depends(get_current_user)):
+    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    upd = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "status" in upd and upd["status"] != p.get("status"):
+        await _log_activity(pid, user["tenant_id"], "status_changed", user["id"],
+                            {"from": p.get("status"), "to": upd["status"]})
+    if upd:
+        upd["updated_at"] = now_iso()
+        upd["last_activity_at"] = now_iso()
+        await db.prospects.update_one({"id": pid}, {"$set": upd})
+    out = await db.prospects.find_one({"id": pid}, {"_id": 0})
+    return _prospect_view(out)
+
+
+@api.delete("/prospects/{pid}")
+async def delete_prospect(pid: str, user: dict = Depends(get_current_user)):
+    perms = await get_user_permissions(user)
+    if user["role"] != "Owner" and "delete_prospects" not in perms:
+        raise HTTPException(403, "Missing permission: delete_prospects")
+    res = await db.prospects.delete_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if res.deleted_count:
+        await db.prospect_activity.delete_many({"prospect_id": pid})
+        await db.email_sends.delete_many({"prospect_id": pid})
+    return {"deleted": res.deleted_count}
+
+
+@api.post("/prospects/{pid}/emails")
+async def add_prospect_email(pid: str, payload: ProspectEmailAdd, user: dict = Depends(get_current_user)):
+    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    new_email = {"id": str(uuid.uuid4()), "email": payload.email, "is_primary": payload.is_primary,
+                 "status": payload.status, "source": "manual", "confidence": None}
+    emails = p.get("emails", [])
+    if any(e["email"].lower() == payload.email.lower() for e in emails):
+        raise HTTPException(400, "Email already exists for this prospect")
+    if payload.is_primary:
+        for e in emails:
+            e["is_primary"] = False
+    emails.append(new_email)
+    await db.prospects.update_one({"id": pid}, {"$set": {"emails": emails, "updated_at": now_iso()}})
+    return {"ok": True, "email": new_email}
+
+
+@api.delete("/prospects/{pid}/emails/{email_id}")
+async def remove_prospect_email(pid: str, email_id: str, user: dict = Depends(get_current_user)):
+    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    emails = [e for e in p.get("emails", []) if e.get("id") != email_id]
+    await db.prospects.update_one({"id": pid}, {"$set": {"emails": emails, "updated_at": now_iso()}})
+    return {"ok": True}
+
+
+@api.post("/prospects/{pid}/notes")
+async def add_prospect_note(pid: str, payload: NoteAdd, user: dict = Depends(get_current_user)):
+    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    await _log_activity(pid, user["tenant_id"], "note_added", user["id"], {"text": payload.text})
+    await db.prospects.update_one({"id": pid}, {"$set": {"last_activity_at": now_iso()}})
+    return {"ok": True}
+
+
+# ─── Email send (single + bulk) ───
+def _apply_template_vars(text: str, prospect: dict, primary_email: str) -> str:
+    """Replace {{name}}, {{company}}, {{email}}, {{industry}} variables."""
+    if not text: return text
+    # name = best email's local part as fallback name
+    name = (primary_email or "").split("@")[0].replace(".", " ").replace("_", " ").title()
+    repl = {
+        "name": name,
+        "company": prospect.get("company_name") or "",
+        "email": primary_email or "",
+        "industry": prospect.get("industry") or "",
+        "website": prospect.get("website") or "",
+        "city": prospect.get("city") or "",
+        "country": prospect.get("country") or "",
+    }
+    for k, v in repl.items():
+        text = text.replace("{{" + k + "}}", str(v))
+        text = text.replace("{{ " + k + " }}", str(v))
+    return text
+
+
+async def _resolve_smtp(tenant_id: str, user_doc: dict, sub_company_id: Optional[str]) -> dict:
+    """SMTP priority: sub-company > user's own (if smtp_use_company=False) > tenant default."""
+    if sub_company_id:
+        sc = await db.sub_companies.find_one({"id": sub_company_id, "tenant_id": tenant_id})
+        if sc and sc.get("smtp_host"):
+            return sc
+    if user_doc.get("smtp_use_company") is False and user_doc.get("smtp_host"):
+        return user_doc
+    tenant = await db.tenants.find_one({"id": tenant_id})
+    if tenant and tenant.get("smtp_host"):
+        return tenant
+    return None
+
+
+@api.post("/prospects/{pid}/send-email")
+async def send_prospect_email(pid: str, payload: SendEmailReq, background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id or p.get("sub_company_id"))
+    if not smtp_src:
+        raise HTTPException(400, "SMTP not configured (sub-company / user / tenant).")
+
+    subject = _apply_template_vars(payload.subject, p, payload.to_email)
+    body    = _apply_template_vars(payload.body_html, p, payload.to_email)
+
+    send_id = str(uuid.uuid4())
+    send_doc = {
+        "id": send_id,
+        "tenant_id": user["tenant_id"],
+        "prospect_id": pid,
+        "sender_user_id": user["id"],
+        "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
+        "template_id": payload.template_id,
+        "to_email": payload.to_email,
+        "subject": subject,
+        "body_html": body,
+        "scheduled_at": payload.scheduled_at,
+        "status": "queued",
+        "delivered": False, "opens": 0, "clicks": 0, "replied": False, "bounced": False,
+        "error": None,
+        "sent_at": None,
+        "created_at": now_iso(),
+    }
+    await db.email_sends.insert_one(send_doc)
+
+    async def _runner():
+        from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
+        from_name  = smtp_src.get("smtp_from_name")
+        tracked = inject_tracking(body, send_id, PUBLIC_BASE_URL or "")
+        result = await asyncio.to_thread(
+            send_smtp_email,
+            smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
+            smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
+            bool(smtp_src.get("smtp_use_tls", True)),
+            from_email, from_name, payload.to_email, subject, tracked,
+        )
+        if result["ok"]:
+            await db.email_sends.update_one({"id": send_id}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
+            await _log_activity(pid, user["tenant_id"], "email_sent", user["id"],
+                                {"to": payload.to_email, "subject": subject, "send_id": send_id})
+            # Auto-bump status from New → Contacted
+            await db.prospects.update_one(
+                {"id": pid, "status": "New"},
+                {"$set": {"status": "Contacted", "last_activity_at": now_iso()}},
+            )
+        else:
+            await db.email_sends.update_one({"id": send_id}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+            await _log_activity(pid, user["tenant_id"], "email_bounced", user["id"], {"to": payload.to_email, "error": result["error"]})
+        await db.prospects.update_one({"id": pid}, {"$set": {"last_activity_at": now_iso()}})
+
+    background.add_task(_runner)
+    return {"send_id": send_id, "status": "queued"}
+
+
+@api.post("/prospects/bulk-send-email")
+async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id)
+    if not smtp_src:
+        raise HTTPException(400, "SMTP not configured.")
+    prospects = await db.prospects.find({"tenant_id": user["tenant_id"], "id": {"$in": payload.prospect_ids}}, {"_id": 0}).to_list(2000)
+    queued = 0
+    for p in prospects:
+        primary = next((e for e in p.get("emails", []) if e.get("is_primary")), None) or (p.get("emails") or [{}])[0]
+        to_email = primary.get("email")
+        if not to_email:
+            continue
+        subject = _apply_template_vars(payload.subject, p, to_email)
+        body    = _apply_template_vars(payload.body_html, p, to_email)
+        send_id = str(uuid.uuid4())
+        await db.email_sends.insert_one({
+            "id": send_id, "tenant_id": user["tenant_id"], "prospect_id": p["id"],
+            "sender_user_id": user["id"],
+            "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
+            "template_id": payload.template_id, "to_email": to_email,
+            "subject": subject, "body_html": body,
+            "scheduled_at": payload.scheduled_at,
+            "status": "queued", "delivered": False, "opens": 0, "clicks": 0,
+            "replied": False, "bounced": False, "error": None, "sent_at": None,
+            "created_at": now_iso(),
+        })
+        queued += 1
+
+    async def _runner_all():
+        sends = await db.email_sends.find({"tenant_id": user["tenant_id"], "status": "queued",
+                                            "sender_user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(queued)
+        for s in sends[:queued]:
+            from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
+            from_name  = smtp_src.get("smtp_from_name")
+            tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+            result = await asyncio.to_thread(
+                send_smtp_email,
+                smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
+                smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
+                bool(smtp_src.get("smtp_use_tls", True)),
+                from_email, from_name, s["to_email"], s["subject"], tracked,
+            )
+            if result["ok"]:
+                await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
+                await _log_activity(s["prospect_id"], user["tenant_id"], "email_sent", user["id"], {"to": s["to_email"], "send_id": s["id"]})
+                await db.prospects.update_one({"id": s["prospect_id"], "status": "New"},
+                                              {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
+            else:
+                await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+            await asyncio.sleep(0.3)
+
+    background.add_task(_runner_all)
+    return {"queued": queued}
+
+
+# ─── Email Templates ───
+@api.get("/templates")
+async def list_templates(user: dict = Depends(get_current_user)):
+    rows = await db.email_templates.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return rows
+
+
+@api.post("/templates")
+async def create_template(payload: TemplateCreate, user: dict = Depends(get_current_user)):
+    tid = str(uuid.uuid4())
+    doc = {
+        "id": tid, "tenant_id": user["tenant_id"],
+        "name": payload.name, "subject": payload.subject, "body_html": payload.body_html,
+        "created_by": user["id"], "created_at": now_iso(), "updated_at": now_iso(),
+    }
+    await db.email_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/templates/{tid}")
+async def update_template(tid: str, payload: TemplateUpdate, user: dict = Depends(get_current_user)):
+    upd = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if upd:
+        upd["updated_at"] = now_iso()
+        res = await db.email_templates.update_one({"id": tid, "tenant_id": user["tenant_id"]}, {"$set": upd})
+        if not res.matched_count:
+            raise HTTPException(404, "Template not found")
+    return await db.email_templates.find_one({"id": tid}, {"_id": 0})
+
+
+@api.delete("/templates/{tid}")
+async def delete_template(tid: str, user: dict = Depends(get_current_user)):
+    res = await db.email_templates.delete_one({"id": tid, "tenant_id": user["tenant_id"]})
+    return {"deleted": res.deleted_count}
+
+
+@api.post("/templates/{tid}/duplicate")
+async def duplicate_template(tid: str, user: dict = Depends(get_current_user)):
+    src = await db.email_templates.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    if not src:
+        raise HTTPException(404, "Template not found")
+    new_id = str(uuid.uuid4())
+    doc = {
+        "id": new_id, "tenant_id": user["tenant_id"],
+        "name": f"{src['name']} (copy)", "subject": src["subject"], "body_html": src["body_html"],
+        "created_by": user["id"], "created_at": now_iso(), "updated_at": now_iso(),
+    }
+    await db.email_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+# ─── Email Activity ───
+@api.get("/email-sends")
+async def list_email_sends(
+    user: dict = Depends(get_current_user),
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    prospect_id: Optional[str] = None,
+    sender_user_id: Optional[str] = None,
+):
+    q = {"tenant_id": user["tenant_id"]}
+    if status: q["status"] = status
+    if prospect_id: q["prospect_id"] = prospect_id
+    if sender_user_id: q["sender_user_id"] = sender_user_id
+    if date_from or date_to:
+        q["created_at"] = {}
+        if date_from: q["created_at"]["$gte"] = date_from
+        if date_to: q["created_at"]["$lte"] = date_to
+    sends = await db.email_sends.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    # Enrich with prospect info
+    pids = list({s["prospect_id"] for s in sends if s.get("prospect_id")})
+    pmap = {p["id"]: p async for p in db.prospects.find({"id": {"$in": pids}}, {"_id": 0, "id": 1, "company_name": 1})}
+    uids = list({s["sender_user_id"] for s in sends if s.get("sender_user_id")})
+    umap = {u["id"]: u async for u in db.users.find({"id": {"$in": uids}}, {"_id": 0, "id": 1, "name": 1})}
+    for s in sends:
+        s["prospect_name"] = pmap.get(s.get("prospect_id"), {}).get("company_name")
+        s["sender_name"] = umap.get(s.get("sender_user_id"), {}).get("name")
+    return sends
+
+
+# ─── Tracking (also updates email_sends) ───
+@api.get("/track/open/{send_id}")
+async def track_open_v2(send_id: str):
+    # Update both old (campaign_recipients) and new (email_sends) for backward compat
+    res = await db.email_sends.update_one({"id": send_id}, {"$inc": {"opens": 1}, "$set": {"last_opened_at": now_iso(), "status": "opened"}})
+    if res.modified_count:
+        s = await db.email_sends.find_one({"id": send_id})
+        if s and s.get("prospect_id"):
+            await _log_activity(s["prospect_id"], s["tenant_id"], "email_opened", None, {"send_id": send_id})
+    else:
+        await db.campaign_recipients.update_one({"id": send_id}, {"$inc": {"opens": 1}, "$set": {"last_opened_at": now_iso()}})
+    return FastAPIResponse(content=PIXEL_GIF, media_type="image/gif",
+                           headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+
+
+@api.get("/track/click/{send_id}")
+async def track_click_v2(send_id: str, u: str = Query(...)):
+    res = await db.email_sends.update_one({"id": send_id}, {"$inc": {"clicks": 1}, "$set": {"last_clicked_at": now_iso(), "status": "clicked"}})
+    if res.modified_count:
+        s = await db.email_sends.find_one({"id": send_id})
+        if s and s.get("prospect_id"):
+            await _log_activity(s["prospect_id"], s["tenant_id"], "email_clicked", None, {"send_id": send_id, "url": u})
+    else:
+        await db.campaign_recipients.update_one({"id": send_id}, {"$inc": {"clicks": 1}, "$set": {"last_clicked_at": now_iso()}})
+    return RedirectResponse(url=u, status_code=302)
+
+
+# ─── Daily target per user ───
+@api.patch("/me/target")
+async def set_my_daily_target(payload: DailyTargetUpdate, user: dict = Depends(get_current_user)):
+    await db.users.update_one({"id": user["id"]}, {"$set": {"daily_target": payload.daily_target, "updated_at": now_iso()}})
+    return {"daily_target": payload.daily_target}
+
+
+@api.patch("/team/{uid}/target")
+async def set_team_member_target(uid: str, payload: DailyTargetUpdate, user: dict = Depends(get_current_user)):
+    perms = await get_user_permissions(user)
+    if user["role"] != "Owner" and "set_team_targets" not in perms:
+        raise HTTPException(403, "Missing permission: set_team_targets")
+    res = await db.users.update_one({"id": uid, "tenant_id": user["tenant_id"]}, {"$set": {"daily_target": payload.daily_target, "updated_at": now_iso()}})
+    if not res.matched_count:
+        raise HTTPException(404, "User not found")
+    return {"daily_target": payload.daily_target}
+
+
+# ─── New CRM Dashboard ───
+@api.get("/dashboard/daily")
+async def dashboard_daily(user: dict = Depends(get_current_user)):
+    tid = user["tenant_id"]
+    uid = user["id"]
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_iso = today.isoformat()
+    tomorrow_iso = (today + timedelta(days=1)).isoformat()
+
+    daily_target = (await db.users.find_one({"id": uid}, {"_id": 0, "daily_target": 1})).get("daily_target") or 0
+
+    prospects_today = await db.prospects.count_documents({
+        "tenant_id": tid, "assigned_user_id": uid,
+        "created_at": {"$gte": today_iso, "$lt": tomorrow_iso},
+    })
+    emails_sent_today = await db.email_sends.count_documents({
+        "tenant_id": tid, "sender_user_id": uid,
+        "delivered": True, "sent_at": {"$gte": today_iso, "$lt": tomorrow_iso},
+    })
+    # Total emails sent today across team
+    team_emails_today = await db.email_sends.count_documents({
+        "tenant_id": tid, "delivered": True,
+        "sent_at": {"$gte": today_iso, "$lt": tomorrow_iso},
+    })
+    # Replies received (today, scoped to my prospects)
+    replies = await db.email_sends.count_documents({
+        "tenant_id": tid, "sender_user_id": uid, "replied": True,
+        "created_at": {"$gte": today_iso, "$lt": tomorrow_iso},
+    })
+    interested = await db.prospects.count_documents({"tenant_id": tid, "assigned_user_id": uid, "status": "Interested"})
+    customers_won = await db.prospects.count_documents({"tenant_id": tid, "assigned_user_id": uid, "status": "Customer"})
+
+    # Last 14 days trend (prospects added + emails sent by this user)
+    trend = []
+    for i in range(13, -1, -1):
+        d = today - timedelta(days=i)
+        nd = d + timedelta(days=1)
+        added = await db.prospects.count_documents({
+            "tenant_id": tid, "assigned_user_id": uid,
+            "created_at": {"$gte": d.isoformat(), "$lt": nd.isoformat()},
+        })
+        sent = await db.email_sends.count_documents({
+            "tenant_id": tid, "sender_user_id": uid, "delivered": True,
+            "sent_at": {"$gte": d.isoformat(), "$lt": nd.isoformat()},
+        })
+        trend.append({"date": d.strftime("%Y-%m-%d"), "label": d.strftime("%b %d"), "added": added, "sent": sent})
+
+    # Recent prospects assigned to me
+    recent = await db.prospects.find({"tenant_id": tid, "assigned_user_id": uid}, {"_id": 0}).sort("created_at", -1).to_list(5)
+
+    return {
+        "daily_target": daily_target,
+        "cards": {
+            "prospects_today": prospects_today,
+            "emails_sent_today": emails_sent_today,
+            "team_emails_today": team_emails_today,
+            "replies_today": replies,
+            "interested_count": interested,
+            "customers_won": customers_won,
+        },
+        "trend": trend,
+        "recent_prospects": recent,
+    }
+
+
 @api.get("/")
 async def root():
-    return {"name": "Lead Hunter API", "ok": True, "version": "1.0"}
+    return {"name": "Lead Hunter CRM API", "ok": True, "version": "2.0-crm"}
+
+
+
+
 
 
 app.include_router(api)
