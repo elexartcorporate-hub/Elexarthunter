@@ -405,7 +405,11 @@ async def register(payload: RegisterReq, response: Response):
     response.set_cookie("access_token", token, httponly=True, samesite="lax", max_age=ACCESS_EXPIRE_MIN * 60, path="/")
     return {
         "token": token,
-        "user": {"id": user_id, "name": payload.name, "email": email, "role": "Owner", "tenant_id": tenant_id},
+        "user": {
+            "id": user_id, "name": payload.name, "email": email,
+            "role": "Owner", "tenant_id": tenant_id,
+            "permissions": [p["key"] for p in ALL_PERMISSIONS],  # Owner = all
+        },
         "tenant": {"id": tenant_id, "company_name": payload.company_name},
     }
 
@@ -417,11 +421,16 @@ async def login(payload: LoginReq, response: Response):
     if not user or not verify_pw(payload.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
     tenant = await db.tenants.find_one({"id": user["tenant_id"]})
+    perms = await get_user_permissions(user)
     token = create_access_token(user["id"], user["tenant_id"], user["role"], email)
     response.set_cookie("access_token", token, httponly=True, samesite="lax", max_age=ACCESS_EXPIRE_MIN * 60, path="/")
     return {
         "token": token,
-        "user": {"id": user["id"], "name": user["name"], "email": email, "role": user["role"], "tenant_id": user["tenant_id"]},
+        "user": {
+            "id": user["id"], "name": user["name"], "email": email,
+            "role": user["role"], "tenant_id": user["tenant_id"],
+            "permissions": perms,
+        },
         "tenant": {"id": tenant["id"], "company_name": tenant["company_name"]} if tenant else None,
     }
 

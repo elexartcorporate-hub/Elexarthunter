@@ -125,22 +125,28 @@ function CompaniesSection() {
         )}
       </div>
       {editing && (
-        <ModalShell title={editing === "new" ? "New Sub-Company" : "Edit Sub-Company"} onClose={() => setEditing(null)} onSave={save}>
-          <div className="space-y-4">
-            <div className="text-sm font-medium text-slate-700">Company info</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <ModalShell title={editing === "new" ? "New Sub-Company" : "Edit Sub-Company"} onClose={() => setEditing(null)} onSave={save} maxWidth="max-w-5xl">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-3">
+              <div className="text-sm font-semibold text-slate-700 flex items-center gap-2"><Buildings size={14} weight="bold" className="text-indigo-600" /> Company info</div>
               <TermInput label="Company Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="sc-name" />
               <TermInput label="Legal Name (Nama PT)" value={form.legal_name || ""} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} />
               <TermInput label="Phone" value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
             </div>
-            <div className="text-sm font-medium text-slate-700 pt-2 flex items-center gap-2"><EnvelopeSimple size={14} weight="bold" /> SMTP for this company</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <TermInput label="SMTP Host" value={form.smtp_host || ""} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} />
-              <TermInput label="SMTP Port" type="number" value={form.smtp_port || 587} onChange={(e) => setForm({ ...form, smtp_port: e.target.value })} />
-              <TermInput label="SMTP Username" value={form.smtp_user || ""} onChange={(e) => setForm({ ...form, smtp_user: e.target.value })} />
-              <TermInput label="SMTP Password" type="password" placeholder={editing === "new" ? "" : "(leave empty to keep)"} value={form.smtp_password || ""} onChange={(e) => setForm({ ...form, smtp_password: e.target.value })} />
-              <TermInput label="From Email" value={form.smtp_from_email || ""} onChange={(e) => setForm({ ...form, smtp_from_email: e.target.value })} />
-              <TermInput label="From Name" value={form.smtp_from_name || ""} onChange={(e) => setForm({ ...form, smtp_from_name: e.target.value })} />
+            <div className="space-y-3">
+              <div className="text-sm font-semibold text-slate-700 flex items-center gap-2"><EnvelopeSimple size={14} weight="bold" className="text-indigo-600" /> SMTP for this company</div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-2"><TermInput label="SMTP Host" value={form.smtp_host || ""} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} /></div>
+                <TermInput label="Port" type="number" value={form.smtp_port || 587} onChange={(e) => setForm({ ...form, smtp_port: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <TermInput label="SMTP Username" value={form.smtp_user || ""} onChange={(e) => setForm({ ...form, smtp_user: e.target.value })} />
+                <TermInput label="SMTP Password" type="password" placeholder={editing === "new" ? "" : "(leave empty)"} value={form.smtp_password || ""} onChange={(e) => setForm({ ...form, smtp_password: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <TermInput label="From Email" value={form.smtp_from_email || ""} onChange={(e) => setForm({ ...form, smtp_from_email: e.target.value })} />
+                <TermInput label="From Name" value={form.smtp_from_name || ""} onChange={(e) => setForm({ ...form, smtp_from_name: e.target.value })} />
+              </div>
             </div>
           </div>
         </ModalShell>
@@ -388,12 +394,12 @@ function ApiSection() {
 }
 
 /* ──────────── Modal shell ──────────── */
-function ModalShell({ title, children, onClose, onSave, saveLabel = "Save" }) {
+function ModalShell({ title, children, onClose, onSave, saveLabel = "Save", maxWidth = "max-w-3xl" }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/40 fade-up overflow-y-auto" onClick={onClose}>
       <div className="min-h-full flex items-start sm:items-center justify-center p-4 py-8">
         <Card
-          className="w-full max-w-3xl shadow-2xl flex flex-col my-auto"
+          className={`w-full ${maxWidth} shadow-2xl flex flex-col my-auto`}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-white rounded-t-xl">
