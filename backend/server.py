@@ -132,6 +132,21 @@ class InviteUserReq(BaseModel):
     password: str = Field(min_length=6)
     role: Literal["Admin", "Staff"]
 
+
+class UpdateUserReq(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    role: Optional[Literal["Owner", "Admin", "Staff"]] = None
+    smtp_use_company: Optional[bool] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_use_tls: Optional[bool] = None
+    smtp_from_email: Optional[EmailStr] = None
+    smtp_from_name: Optional[str] = None
+
 class HunterSearchReq(BaseModel):
     domain: str
     force_refresh: bool = False
@@ -179,6 +194,9 @@ class CampaignSendReq(BaseModel):
     send_now: bool = True
 
 class SettingsUpdate(BaseModel):
+    company_name: Optional[str] = None
+    legal_name: Optional[str] = None
+    phone: Optional[str] = None
     smtp_host: Optional[str] = None
     smtp_port: Optional[int] = None
     smtp_user: Optional[str] = None
@@ -221,6 +239,8 @@ async def register(payload: RegisterReq, response: Response):
     tenant_doc = {
         "id": tenant_id,
         "company_name": payload.company_name,
+        "legal_name": "",
+        "phone": "",
         "subscription_plan": "free",
         "status": "active",
         "created_at": now_iso(),
@@ -236,6 +256,9 @@ async def register(payload: RegisterReq, response: Response):
         "email": email,
         "password_hash": hash_pw(payload.password),
         "role": "Owner",
+        "smtp_use_company": True,
+        "smtp_host": None, "smtp_port": 587, "smtp_user": None, "smtp_password": None,
+        "smtp_use_tls": True, "smtp_from_email": None, "smtp_from_name": None,
         "created_at": now_iso(),
     }
     await db.tenants.insert_one(tenant_doc)
@@ -301,12 +324,58 @@ async def invite_user(payload: InviteUserReq, user: dict = Depends(require_role(
         "email": email,
         "password_hash": hash_pw(payload.password),
         "role": payload.role,
+        "smtp_use_company": True,
+        "smtp_host": None, "smtp_port": 587, "smtp_user": None, "smtp_password": None,
+        "smtp_use_tls": True, "smtp_from_email": None, "smtp_from_name": None,
         "created_at": now_iso(),
     }
     await db.users.insert_one(new_user)
     new_user.pop("password_hash", None)
     new_user.pop("_id", None)
     return new_user
+
+
+@api.patch("/team/{user_id}")
+async def update_user(user_id: str, payload: UpdateUserReq, user: dict = Depends(get_current_user)):
+    target = await db.users.find_one({"id": user_id, "tenant_id": user["tenant_id"]})
+    if not target:
+        raise HTTPException(404, "User not found")
+    can_edit = (
+        user["role"] == "Owner"
+        or user["id"] == user_id
+        or (user["role"] == "Admin" and target["role"] == "Staff")
+    )
+    if not can_edit:
+        raise HTTPException(403, "Cannot edit this user")
+
+    upd: dict = {}
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        if k == "password":
+            if v:
+                upd["password_hash"] = hash_pw(v)
+        elif k == "email":
+            if v:
+                ev = v.lower().strip()
+                existing = await db.users.find_one({"email": ev, "id": {"$ne": user_id}})
+                if existing:
+                    raise HTTPException(400, "Email already used")
+                upd["email"] = ev
+        elif k == "role":
+            if user["role"] != "Owner":
+                raise HTTPException(403, "Only Owner can change role")
+            if target["role"] == "Owner" and v != "Owner":
+                owner_count = await db.users.count_documents({"tenant_id": user["tenant_id"], "role": "Owner"})
+                if owner_count <= 1:
+                    raise HTTPException(400, "Cannot demote the last Owner")
+            upd["role"] = v
+        else:
+            upd[k] = v
+
+    if upd:
+        upd["updated_at"] = now_iso()
+        await db.users.update_one({"id": user_id}, {"$set": upd})
+    return await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
 
 
 @api.delete("/team/{user_id}")
@@ -785,6 +854,13 @@ async def send_campaign(campaign_id: str, req: CampaignSendReq, background: Back
 
     await db.campaigns.update_one({"id": campaign_id}, {"$set": {"status": "sending", "sent_at": now_iso()}})
 
+    # Resolve SMTP source: per-user override OR tenant default
+    sender_user = await db.users.find_one({"id": camp.get("created_by")}) if camp.get("created_by") else None
+    if sender_user and sender_user.get("smtp_use_company") is False and sender_user.get("smtp_host"):
+        smtp_src = sender_user
+    else:
+        smtp_src = tenant
+
     async def _runner():
         sent = 0
         failed = 0
@@ -793,12 +869,12 @@ async def send_campaign(campaign_id: str, req: CampaignSendReq, background: Back
             body = inject_tracking(camp["body_html"], rid, PUBLIC_BASE_URL or "")
             result = await asyncio.to_thread(
                 send_smtp_email,
-                tenant["smtp_host"], int(tenant.get("smtp_port") or 587),
-                tenant.get("smtp_user") or "",
-                tenant.get("smtp_password") or "",
-                bool(tenant.get("smtp_use_tls", True)),
-                camp.get("from_email") or tenant.get("smtp_from_email") or tenant.get("smtp_user") or "noreply@example.com",
-                camp.get("from_name") or tenant.get("smtp_from_name"),
+                smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
+                smtp_src.get("smtp_user") or "",
+                smtp_src.get("smtp_password") or "",
+                bool(smtp_src.get("smtp_use_tls", True)),
+                camp.get("from_email") or smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com",
+                camp.get("from_name") or smtp_src.get("smtp_from_name") or tenant.get("smtp_from_name"),
                 r["email"], camp["subject"], body,
             )
             if result["ok"]:
