@@ -1682,6 +1682,135 @@ async def list_today_prospects(user: dict = Depends(get_current_user)):
     return rows
 
 
+@api.get("/prospects/calendar")
+async def prospects_calendar(
+    user: dict = Depends(get_current_user),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+):
+    """Per-day aggregates for a month: prospects_added, emails_sent, emails_scheduled."""
+    import calendar as cal
+    tenant = await db.tenants.find_one({"id": user["tenant_id"]}) or {}
+    working_days = tenant.get("working_days") or DEFAULT_WORKING_DAYS
+    holidays = set(tenant.get("holidays") or [])
+    target = (await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1})).get("daily_target") or 0
+
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    days_in_month = cal.monthrange(year, month)[1]
+    last_exc = datetime(year, month, days_in_month, tzinfo=timezone.utc) + timedelta(days=1)
+
+    # Aggregate prospects per day for this user
+    p_pipeline = [
+        {"$match": {
+            "tenant_id": user["tenant_id"], "assigned_user_id": user["id"],
+            "created_at": {"$gte": first.isoformat(), "$lt": last_exc.isoformat()},
+        }},
+        {"$group": {"_id": {"$substr": ["$created_at", 0, 10]}, "n": {"$sum": 1}}},
+    ]
+    p_counts = {doc["_id"]: doc["n"] async for doc in db.prospects.aggregate(p_pipeline)}
+
+    # Aggregate emails SENT per day (sent_at)
+    e_sent_pipe = [
+        {"$match": {
+            "tenant_id": user["tenant_id"], "sender_user_id": user["id"],
+            "delivered": True,
+            "sent_at": {"$gte": first.isoformat(), "$lt": last_exc.isoformat()},
+        }},
+        {"$group": {"_id": {"$substr": ["$sent_at", 0, 10]}, "n": {"$sum": 1}}},
+    ]
+    e_sent = {doc["_id"]: doc["n"] async for doc in db.email_sends.aggregate(e_sent_pipe)}
+
+    # Aggregate scheduled emails per day (scheduled_at, status queued/scheduled)
+    e_sched_pipe = [
+        {"$match": {
+            "tenant_id": user["tenant_id"], "sender_user_id": user["id"],
+            "scheduled_at": {"$gte": first.isoformat(), "$lt": last_exc.isoformat()},
+            "status": {"$in": ["queued", "scheduled"]},
+        }},
+        {"$group": {"_id": {"$substr": ["$scheduled_at", 0, 10]}, "n": {"$sum": 1}}},
+    ]
+    e_sched = {doc["_id"]: doc["n"] async for doc in db.email_sends.aggregate(e_sched_pipe)}
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    days = []
+    for d in range(1, days_in_month + 1):
+        dt = datetime(year, month, d, tzinfo=timezone.utc)
+        iso = dt.strftime("%Y-%m-%d")
+        dow = _DAY_KEYS[dt.weekday()]
+        is_holiday = iso in holidays
+        is_working = (dow in working_days) and not is_holiday
+        added = p_counts.get(iso, 0)
+        sent = e_sent.get(iso, 0)
+        scheduled = e_sched.get(iso, 0)
+        if not is_working:
+            status = "off"
+        elif target > 0 and added >= target:
+            status = "hit"
+        elif added > 0:
+            status = "partial"
+        elif iso < today_str:
+            status = "missed"
+        else:
+            status = "open"
+        days.append({
+            "date": iso, "day": d, "dow": dow,
+            "is_working_day": is_working, "is_holiday": is_holiday,
+            "is_today": iso == today_str, "is_past": iso < today_str, "is_future": iso > today_str,
+            "prospects_added": added, "emails_sent": sent, "emails_scheduled": scheduled,
+            "status": status,
+        })
+    return {
+        "year": year, "month": month, "daily_target": target,
+        "working_days": working_days, "holidays": sorted(holidays),
+        "days": days,
+    }
+
+
+@api.get("/prospects/calendar/day/{date}")
+async def prospects_calendar_day(date: str, user: dict = Depends(get_current_user)):
+    """Detail for a single day: prospects added, emails sent, emails scheduled."""
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+    nxt = dt + timedelta(days=1)
+    prospects = await db.prospects.find({
+        "tenant_id": user["tenant_id"], "assigned_user_id": user["id"],
+        "created_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()},
+    }, {"_id": 0}).sort("created_at", -1).to_list(500)
+    sent_emails = await db.email_sends.find({
+        "tenant_id": user["tenant_id"], "sender_user_id": user["id"],
+        "sent_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()},
+    }, {"_id": 0}).sort("sent_at", -1).to_list(500)
+    scheduled_emails = await db.email_sends.find({
+        "tenant_id": user["tenant_id"], "sender_user_id": user["id"],
+        "scheduled_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()},
+        "status": {"$in": ["queued", "scheduled"]},
+    }, {"_id": 0}).sort("scheduled_at", 1).to_list(500)
+    # enrich prospect names
+    pids = list({s["prospect_id"] for s in (sent_emails + scheduled_emails) if s.get("prospect_id")})
+    pmap = {p["id"]: p["company_name"] async for p in db.prospects.find({"id": {"$in": pids}}, {"_id": 0, "id": 1, "company_name": 1})}
+    for s in sent_emails + scheduled_emails:
+        s["prospect_name"] = pmap.get(s.get("prospect_id"))
+    return {
+        "date": date,
+        "prospects": prospects,
+        "sent_emails": sent_emails,
+        "scheduled_emails": scheduled_emails,
+    }
+
+
+@api.post("/scheduled-emails/{send_id}/cancel")
+async def cancel_scheduled_email(send_id: str, user: dict = Depends(get_current_user)):
+    res = await db.email_sends.update_one(
+        {"id": send_id, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}},
+        {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
+    )
+    if not res.matched_count:
+        raise HTTPException(404, "Not found or already processed")
+    return {"ok": True}
+
+
 @api.get("/working-config")
 async def get_working_config(user: dict = Depends(get_current_user)):
     tenant = await db.tenants.find_one({"id": user["tenant_id"]}) or {}
@@ -2015,11 +2144,29 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
     state = await _quota_state(user)
     if state["locked"] and not await _can_bypass_lock(user):
         raise HTTPException(423, f"Daily quota not met — add {state['remaining']} more prospect(s) before sending emails.")
+
+    # Detect future schedule FIRST
+    is_scheduled = False
+    sched_iso = None
+    if payload.scheduled_at:
+        try:
+            sched_dt = datetime.fromisoformat(payload.scheduled_at.replace("Z", "+00:00"))
+            if sched_dt.tzinfo is None:
+                sched_dt = sched_dt.replace(tzinfo=timezone.utc)
+            if sched_dt > datetime.now(timezone.utc) + timedelta(minutes=1):
+                is_scheduled = True
+                sched_iso = sched_dt.isoformat()
+        except Exception:
+            pass
+
+    # SMTP only required for immediate send. Scheduled emails will resolve SMTP at send-time.
     smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id)
-    if not smtp_src:
+    if not is_scheduled and not smtp_src:
         raise HTTPException(400, "SMTP not configured.")
+
     prospects = await db.prospects.find({"tenant_id": user["tenant_id"], "id": {"$in": payload.prospect_ids}}, {"_id": 0}).to_list(2000)
     queued = 0
+    new_send_ids = []
     for p in prospects:
         primary = next((e for e in p.get("emails", []) if e.get("is_primary")), None) or (p.get("emails") or [{}])[0]
         to_email = primary.get("email")
@@ -2034,17 +2181,23 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
             "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
             "template_id": payload.template_id, "to_email": to_email,
             "subject": subject, "body_html": body,
-            "scheduled_at": payload.scheduled_at,
-            "status": "queued", "delivered": False, "opens": 0, "clicks": 0,
+            "scheduled_at": sched_iso,
+            "status": "scheduled" if is_scheduled else "queued",
+            "delivered": False, "opens": 0, "clicks": 0,
             "replied": False, "bounced": False, "error": None, "sent_at": None,
             "created_at": now_iso(),
         })
         queued += 1
+        new_send_ids.append(send_id)
+
+    # If scheduled, don't run now — scheduler worker picks it up
+    if is_scheduled:
+        return {"queued": queued, "scheduled_at": sched_iso, "scheduled": True}
 
     async def _runner_all():
-        sends = await db.email_sends.find({"tenant_id": user["tenant_id"], "status": "queued",
-                                            "sender_user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(queued)
-        for s in sends[:queued]:
+        for sid in new_send_ids:
+            s = await db.email_sends.find_one({"id": sid, "status": "queued"})
+            if not s: continue
             from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
             from_name  = smtp_src.get("smtp_from_name")
             tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
@@ -2283,4 +2436,65 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown():
+    _scheduler_state["running"] = False
     client.close()
+
+
+# ─── Scheduled-email worker (runs in background, polls every 60s) ───
+_scheduler_state = {"running": False, "task": None}
+
+
+async def _scheduler_loop():
+    _scheduler_state["running"] = True
+    while _scheduler_state["running"]:
+        try:
+            now = now_iso()
+            # Find due scheduled emails
+            due = await db.email_sends.find({
+                "status": "scheduled",
+                "scheduled_at": {"$lte": now},
+            }, {"_id": 0}).limit(50).to_list(50)
+            for s in due:
+                # Resolve SMTP per send
+                tenant = await db.tenants.find_one({"id": s["tenant_id"]}) or {}
+                sender = await db.users.find_one({"id": s["sender_user_id"]})
+                smtp_src = None
+                if s.get("sub_company_id"):
+                    sc = await db.sub_companies.find_one({"id": s["sub_company_id"], "tenant_id": s["tenant_id"]})
+                    if sc and sc.get("smtp_host"): smtp_src = sc
+                if smtp_src is None and sender and sender.get("smtp_use_company") is False and sender.get("smtp_host"):
+                    smtp_src = sender
+                if smtp_src is None and tenant.get("smtp_host"):
+                    smtp_src = tenant
+                if not smtp_src:
+                    await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": "SMTP not configured at send-time"}})
+                    continue
+                from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
+                from_name  = smtp_src.get("smtp_from_name")
+                tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+                result = await asyncio.to_thread(
+                    send_smtp_email,
+                    smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
+                    smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
+                    bool(smtp_src.get("smtp_use_tls", True)),
+                    from_email, from_name, s["to_email"], s["subject"], tracked,
+                )
+                if result["ok"]:
+                    await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
+                    if s.get("prospect_id"):
+                        await _log_activity(s["prospect_id"], s["tenant_id"], "email_sent", s["sender_user_id"],
+                                            {"to": s["to_email"], "send_id": s["id"], "scheduled": True})
+                        await db.prospects.update_one({"id": s["prospect_id"], "status": "New"},
+                                                       {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
+                else:
+                    await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+        except Exception as ex:
+            logger.error("scheduler error: %s", ex)
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def _start_scheduler():
+    if _scheduler_state.get("task") is None:
+        _scheduler_state["task"] = asyncio.create_task(_scheduler_loop())
+        logger.info("Scheduled-email worker started (60s poll)")

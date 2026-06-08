@@ -5,9 +5,10 @@ import { PageHeader, Card, TermInput, TermSelect, TermTextarea, PrimaryButton, G
 import {
   Plus, MagnifyingGlass, Crosshair, ListBullets, UsersFour, Globe, Buildings,
   CaretRight, Spinner, PaperPlaneTilt, FloppyDisk, CheckCircle, Lock, LockOpen,
-  Target, ArrowRight, X, Confetti,
+  Target, ArrowRight, X, CalendarCheck,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import Calendar from "./ProspectsCalendar";
 
 const STATUSES = ["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"];
 const STATUS_TONE = {
@@ -31,12 +32,14 @@ export default function Prospects() {
       <PageHeader title="Prospects" subtitle="Discover, save and engage prospects from one place" />
 
       <div className="flex border border-slate-200 rounded-lg overflow-hidden w-fit bg-white mb-6 shadow-sm">
-        <TabBtn active={tab === "add"}  onClick={() => setTab("add")}  icon={Crosshair}    label="Add Prospect"   testid="tab-add" />
-        <TabBtn active={tab === "list"} onClick={() => setTab("list")} icon={ListBullets}  label="Prospect List"  testid="tab-list" />
+        <TabBtn active={tab === "add"}      onClick={() => setTab("add")}      icon={Crosshair}       label="Add Prospect"   testid="tab-add" />
+        <TabBtn active={tab === "list"}     onClick={() => setTab("list")}     icon={ListBullets}     label="Prospect List"  testid="tab-list" />
+        <TabBtn active={tab === "calendar"} onClick={() => setTab("calendar")} icon={CalendarCheck}   label="Jadwal"         testid="tab-calendar" />
       </div>
 
-      {tab === "add"  && <AddProspect quota={quota} onProspectSaved={() => setRefreshKey((k) => k + 1)} />}
-      {tab === "list" && <ProspectList quota={quota} />}
+      {tab === "add"      && <AddProspect quota={quota} onProspectSaved={() => setRefreshKey((k) => k + 1)} />}
+      {tab === "list"     && <ProspectList quota={quota} />}
+      {tab === "calendar" && <Calendar quota={quota} onChanged={() => setRefreshKey((k) => k + 1)} />}
     </div>
   );
 }
