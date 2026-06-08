@@ -178,6 +178,32 @@ class MyLeadAdd(BaseModel):
     notes: Optional[str] = None
 
 
+class SubCompanyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    legal_name: Optional[str] = ""
+    phone: Optional[str] = ""
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = 587
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_use_tls: Optional[bool] = True
+    smtp_from_email: Optional[EmailStr] = None
+    smtp_from_name: Optional[str] = None
+
+
+class SubCompanyUpdate(BaseModel):
+    name: Optional[str] = None
+    legal_name: Optional[str] = None
+    phone: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_use_tls: Optional[bool] = None
+    smtp_from_email: Optional[EmailStr] = None
+    smtp_from_name: Optional[str] = None
+
+
 # ─── Permission catalog (frontend uses these keys to filter menus) ───
 ALL_PERMISSIONS = [
     {"key": "dashboard",          "label": "View Dashboard",                    "menu": True},
@@ -659,6 +685,51 @@ async def add_my_leads(payload: MyLeadAdd, user: dict = Depends(get_current_user
 @api.delete("/my-leads/{lead_id}")
 async def delete_my_lead(lead_id: str, user: dict = Depends(get_current_user)):
     res = await db.my_leads.delete_one({"id": lead_id, "tenant_id": user["tenant_id"], "user_id": user["id"]})
+    return {"deleted": res.deleted_count}
+
+
+# ────────────────────────────────────────────────────────────
+# SUB-COMPANIES (multi-company under one tenant)
+# ────────────────────────────────────────────────────────────
+@api.get("/sub-companies")
+async def list_sub_companies(user: dict = Depends(get_current_user)):
+    rows = await db.sub_companies.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("name", 1).to_list(200)
+    for r in rows:
+        r["user_count"] = await db.users.count_documents({
+            "tenant_id": user["tenant_id"],
+            "sub_company_ids": r["id"],
+        })
+    return rows
+
+
+@api.post("/sub-companies")
+async def create_sub_company(payload: SubCompanyCreate, user: dict = Depends(require_permission("manage_company"))):
+    doc = payload.model_dump()
+    doc.update({
+        "id": str(uuid.uuid4()),
+        "tenant_id": user["tenant_id"],
+        "created_at": now_iso(),
+    })
+    await db.sub_companies.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/sub-companies/{sc_id}")
+async def update_sub_company(sc_id: str, payload: SubCompanyUpdate, user: dict = Depends(require_permission("manage_company"))):
+    upd = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if upd:
+        upd["updated_at"] = now_iso()
+        await db.sub_companies.update_one({"id": sc_id, "tenant_id": user["tenant_id"]}, {"$set": upd})
+    return await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+
+
+@api.delete("/sub-companies/{sc_id}")
+async def delete_sub_company(sc_id: str, user: dict = Depends(require_permission("manage_company"))):
+    in_use = await db.users.count_documents({"tenant_id": user["tenant_id"], "sub_company_ids": sc_id})
+    if in_use > 0:
+        raise HTTPException(400, f"Cannot delete: {in_use} user(s) assigned to this sub-company")
+    res = await db.sub_companies.delete_one({"id": sc_id, "tenant_id": user["tenant_id"]})
     return {"deleted": res.deleted_count}
 
 
