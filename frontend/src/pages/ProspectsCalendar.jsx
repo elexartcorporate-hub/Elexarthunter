@@ -19,7 +19,7 @@ const STATUS_CONFIG = {
   off:     { bg: "bg-slate-50 border-slate-100",                                   text: "text-slate-400",   label: "Libur" },
 };
 
-export default function Calendar({ quota, onChanged }) {
+export default function Calendar({ quota, onChanged, onTaskCreated }) {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -148,6 +148,7 @@ export default function Calendar({ quota, onChanged }) {
           calendarTarget={data?.daily_target}
           onClose={() => setSelectedDate(null)}
           onScheduled={() => { load(); onChanged?.(); }}
+          onTaskCreated={(t) => { setSelectedDate(null); onTaskCreated?.(t); load(); }}
         />
       )}
     </div>
@@ -159,13 +160,17 @@ function LegendDot({ color, label }) {
 }
 
 /* ─────────────── Day Drawer ─────────────── */
-function DayDrawer({ date, calendarTarget, onClose, onScheduled }) {
+function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated }) {
   const [detail, setDetail] = useState(null);
+  const [tasks, setTasks] = useState([]);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [showNewTask, setShowNewTask] = useState(false);
 
   const load = async () => {
     try { const { data } = await api.get(`/prospects/calendar/day/${date}`); setDetail(data); }
     catch (err) { toast.error(formatApiError(err)); }
+    try { const { data } = await api.get("/tasks", { params: { date } }); setTasks(data); }
+    catch (err) { /* ignore */ }
   };
   useEffect(() => { load(); }, [date]);
 
@@ -202,14 +207,52 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled }) {
         </div>
 
         <div className="p-5 space-y-5">
-          {/* Action buttons */}
+          {/* New Task action — for today & future */}
+          {!isPast && (
+            <Card className="p-4 bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200">
+              <div className="flex items-start gap-3">
+                <CalendarCheck size={24} weight="duotone" className="text-indigo-600 shrink-0" />
+                <div className="flex-1">
+                  <div className="font-semibold text-slate-900 text-sm">Tambah Tugas Baru</div>
+                  <div className="text-xs text-slate-600 mt-0.5 mb-3">Buat tugas outreach untuk tanggal ini dengan target prospect.</div>
+                  <PrimaryButton onClick={() => setShowNewTask(true)} data-testid="new-task-btn">
+                    <Plus size={14} weight="bold" /> Tugas Baru
+                  </PrimaryButton>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* Existing tasks for this date */}
+          {tasks.length > 0 && (
+            <div>
+              <h3 className="text-[10px] uppercase tracking-widest text-indigo-600 font-semibold mb-2 flex items-center gap-2">
+                <CalendarCheck size={12} weight="bold" /> Tugas tanggal ini ({tasks.length})
+              </h3>
+              <div className="space-y-1.5">
+                {tasks.map((t) => (
+                  <div key={t.id} className="border border-indigo-200 bg-indigo-50/50 rounded-lg p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-slate-900 truncate">{t.name}</div>
+                        <div className="text-[11px] text-slate-600">{t.prospect_count} / {t.target} prospect · {t.status}</div>
+                      </div>
+                      <Badge tone={t.status === "completed" ? "success" : t.status === "scheduled" ? "purple" : t.status === "draft" ? "neutral" : "info"}>{t.status}</Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Schedule outreach (older flow, still available) */}
           {isFuture && (
-            <Card className="p-4 bg-gradient-to-br from-purple-50 to-indigo-50 border-purple-200">
+            <Card className="p-4 bg-gradient-to-br from-purple-50 to-pink-50 border-purple-200">
               <div className="flex items-start gap-3">
                 <Clock size={24} weight="duotone" className="text-purple-600 shrink-0" />
                 <div className="flex-1">
-                  <div className="font-semibold text-slate-900 text-sm">Jadwalkan Pengiriman Email</div>
-                  <div className="text-xs text-slate-600 mt-0.5 mb-3">Email akan otomatis terkirim pada tanggal &amp; jam yang dipilih.</div>
+                  <div className="font-semibold text-slate-900 text-sm">Quick Schedule Outreach</div>
+                  <div className="text-xs text-slate-600 mt-0.5 mb-3">Jadwalkan email tanpa membuat tugas — langsung pilih prospect existing.</div>
                   <PrimaryButton onClick={() => setShowSchedule(true)} data-testid="schedule-btn">
                     <Plus size={14} weight="bold" /> Jadwal Outreach
                   </PrimaryButton>
@@ -291,6 +334,58 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled }) {
       {showSchedule && (
         <ScheduleModal date={date} onClose={() => setShowSchedule(false)} onSaved={() => { setShowSchedule(false); load(); onScheduled?.(); }} />
       )}
+      {showNewTask && (
+        <NewTaskModal date={date} defaultTarget={calendarTarget} onClose={() => setShowNewTask(false)} onCreated={(t) => { setShowNewTask(false); onTaskCreated?.(t); }} />
+      )}
+    </div>
+  );
+}
+
+/* ─────────────── New Task Modal ─────────────── */
+function NewTaskModal({ date, defaultTarget, onClose, onCreated }) {
+  const [form, setForm] = useState({
+    name: `Outreach ${date}`,
+    target: defaultTarget || 10,
+    notes: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!form.target || form.target < 1) return toast.error("Target minimal 1");
+    setSaving(true);
+    try {
+      const { data } = await api.post("/tasks", { date, name: form.name, target: parseInt(form.target, 10), notes: form.notes || null });
+      toast.success(`Tugas dibuat: ${data.name}`);
+      onCreated(data);
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 fade-up overflow-y-auto" onClick={onClose}>
+      <div className="min-h-full flex items-start sm:items-center justify-center p-4 py-8">
+        <Card className="w-full max-w-md shadow-2xl my-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between rounded-t-xl">
+            <div>
+              <h2 className="font-display text-lg text-slate-900 flex items-center gap-2"><CalendarCheck size={18} weight="bold" className="text-indigo-600" /> Tugas Baru</h2>
+              <div className="text-xs text-slate-500">untuk tanggal <b>{date}</b></div>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-red-500"><X size={20} weight="bold" /></button>
+          </div>
+          <div className="p-6 space-y-3">
+            <TermInput label="Nama tugas" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="new-task-name" />
+            <TermInput label="Target prospect" type="number" min="1" max="200" value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} data-testid="new-task-target" />
+            <TermTextarea label="Catatan (opsional)" rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+            <div className="text-[11px] text-slate-500">
+              💡 Setelah tugas dibuat, Anda akan otomatis diarahkan ke tab Add Prospect. Tambah {form.target} prospect untuk membuka tab Email.
+            </div>
+          </div>
+          <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 rounded-b-xl">
+            <GhostButton onClick={onClose}>Cancel</GhostButton>
+            <PrimaryButton onClick={save} disabled={saving} data-testid="new-task-save">
+              <Plus size={14} weight="bold" /> {saving ? "Membuat..." : "Buat Tugas"}
+            </PrimaryButton>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }

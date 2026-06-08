@@ -5,7 +5,7 @@ import { PageHeader, Card, TermInput, TermSelect, TermTextarea, PrimaryButton, G
 import {
   Plus, MagnifyingGlass, Crosshair, ListBullets, UsersFour, Globe, Buildings,
   CaretRight, Spinner, PaperPlaneTilt, FloppyDisk, CheckCircle, Lock, LockOpen,
-  Target, ArrowRight, X, CalendarCheck,
+  Target, ArrowRight, X, CalendarCheck, Clock, Trash,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import Calendar from "./ProspectsCalendar";
@@ -17,9 +17,11 @@ const STATUS_TONE = {
 };
 
 export default function Prospects() {
-  const [tab, setTab] = useState("add");
+  const [tab, setTab] = useState("jadwal");
   const [quota, setQuota] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [activeTask, setActiveTask] = useState(null); // current task being worked on
+  const [tasksRefresh, setTasksRefresh] = useState(0);
 
   const loadQuota = async () => {
     try { const { data } = await api.get("/prospects/quota"); setQuota(data); }
@@ -27,30 +29,61 @@ export default function Prospects() {
   };
   useEffect(() => { loadQuota(); }, [refreshKey]);
 
+  // Auto-pick today's task as active (latest draft/ready for today)
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    api.get("/tasks", { params: { date: today } }).then(({ data }) => {
+      const active = data.find((t) => t.status === "draft" || t.status === "ready");
+      if (active && (!activeTask || activeTask.id !== active.id)) setActiveTask(active);
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasksRefresh]);
+
+  const refreshTask = async () => {
+    if (!activeTask) return;
+    try { const { data } = await api.get(`/tasks/${activeTask.id}`); setActiveTask(data); }
+    catch (err) { /* ignore */ }
+  };
+
+  const emailTabUnlocked = activeTask && (activeTask.prospect_count >= activeTask.target);
+
   return (
     <div className="p-6 md:p-8 fade-up max-w-[1600px] mx-auto">
       <PageHeader title="Prospects" subtitle="Discover, save and engage prospects from one place" />
 
-      <div className="flex border border-slate-200 rounded-lg overflow-hidden w-fit bg-white mb-6 shadow-sm">
-        <TabBtn active={tab === "add"}      onClick={() => setTab("add")}      icon={Crosshair}       label="Add Prospect"   testid="tab-add" />
-        <TabBtn active={tab === "list"}     onClick={() => setTab("list")}     icon={ListBullets}     label="Prospect List"  testid="tab-list" />
-        <TabBtn active={tab === "calendar"} onClick={() => setTab("calendar")} icon={CalendarCheck}   label="Jadwal"         testid="tab-calendar" />
+      <div className="flex flex-wrap border border-slate-200 rounded-lg overflow-hidden w-fit bg-white mb-6 shadow-sm">
+        <TabBtn active={tab === "jadwal"}    onClick={() => setTab("jadwal")}    icon={CalendarCheck} label="1 · Jadwal"       testid="tab-jadwal" />
+        <TabBtn active={tab === "add"}       onClick={() => setTab("add")}       icon={Crosshair}     label={`2 · Add Prospect${activeTask ? ` (${activeTask.prospect_count}/${activeTask.target})` : ""}`}  testid="tab-add" />
+        <TabBtn
+          active={tab === "email"}
+          onClick={() => emailTabUnlocked ? setTab("email") : toast.error("Selesaikan target dulu di tab Add Prospect")}
+          icon={emailTabUnlocked ? PaperPlaneTilt : Lock}
+          label="3 · Email"
+          testid="tab-email"
+          disabled={!emailTabUnlocked}
+        />
+        <TabBtn active={tab === "tersimpan"} onClick={() => setTab("tersimpan")} icon={ListBullets}   label="Tersimpan"        testid="tab-tersimpan" />
+        <TabBtn active={tab === "list"}      onClick={() => setTab("list")}      icon={UsersFour}     label="Prospect List"    testid="tab-list" />
       </div>
 
-      {tab === "add"      && <AddProspect quota={quota} onProspectSaved={() => setRefreshKey((k) => k + 1)} />}
-      {tab === "list"     && <ProspectList quota={quota} />}
-      {tab === "calendar" && <Calendar quota={quota} onChanged={() => setRefreshKey((k) => k + 1)} />}
+      {tab === "jadwal"    && <Calendar quota={quota} onChanged={() => { setRefreshKey((k) => k + 1); setTasksRefresh((k) => k + 1); }} onTaskCreated={(t) => { setActiveTask(t); setTab("add"); setTasksRefresh((k) => k + 1); }} />}
+      {tab === "add"       && <AddProspect quota={quota} activeTask={activeTask} refreshTask={refreshTask} onProspectSaved={() => setRefreshKey((k) => k + 1)} onGoEmail={() => setTab("email")} />}
+      {tab === "email"     && emailTabUnlocked && <EmailStep task={activeTask} onSubmitted={() => { setTab("tersimpan"); setActiveTask(null); setTasksRefresh((k) => k + 1); }} />}
+      {tab === "tersimpan" && <TasksList refreshKey={tasksRefresh} onPick={(t) => { setActiveTask(t); setTab("add"); }} onRefresh={() => setTasksRefresh((k) => k + 1)} />}
+      {tab === "list"      && <ProspectList quota={quota} />}
     </div>
   );
 }
 
-function TabBtn({ active, onClick, icon: Icon, label, testid }) {
+function TabBtn({ active, onClick, icon: Icon, label, testid, disabled }) {
   return (
     <button
       onClick={onClick}
       data-testid={testid}
       className={`px-4 py-2.5 text-sm font-medium flex items-center gap-2 transition-colors border-r border-slate-200 last:border-r-0 ${
-        active ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50"
+        active ? "bg-indigo-600 text-white"
+               : disabled ? "text-slate-300 bg-slate-50 cursor-not-allowed"
+                          : "text-slate-600 hover:bg-slate-50"
       }`}
     >
       <Icon size={16} weight="bold" />
@@ -175,7 +208,7 @@ function ConfettiBurst() {
 }
 
 /* ─────────────── TAB 1: ADD PROSPECT ─────────────── */
-function AddProspect({ quota, onProspectSaved }) {
+function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmail }) {
   const navigate = useNavigate();
   const [domain, setDomain] = useState("");
   const [loading, setLoading] = useState(false);
@@ -232,6 +265,12 @@ function AddProspect({ quota, onProspectSaved }) {
         })),
       };
       const { data } = await api.post("/prospects", payload);
+      // Attach to active task if any
+      if (activeTask) {
+        try { await api.post(`/tasks/${activeTask.id}/prospects/${data.id}`); }
+        catch (err) { /* ignore */ }
+        refreshTask?.();
+      }
       setSavedId(data.id);
       toast.success(`✓ ${data.company_name} (${selectedEmails.length} email${selectedEmails.length > 1 ? "s" : ""}) saved`);
       onProspectSaved();
@@ -255,6 +294,47 @@ function AddProspect({ quota, onProspectSaved }) {
 
   return (
     <div className="space-y-5">
+      {activeTask && (
+        <Card className="p-4 bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white grid place-items-center font-bold">{activeTask.prospect_count}</div>
+              <div>
+                <div className="text-[10px] uppercase tracking-widest text-indigo-600 font-semibold">Tugas Aktif</div>
+                <div className="font-display text-base font-semibold text-slate-900">{activeTask.name}</div>
+                <div className="text-xs text-slate-500">{activeTask.date} · target {activeTask.target} prospect</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="text-right">
+                <div className="text-2xl font-bold text-indigo-600">{activeTask.prospect_count}<span className="text-slate-400 text-base"> / {activeTask.target}</span></div>
+                <div className="text-[10px] text-slate-500">{activeTask.prospect_count >= activeTask.target ? "✓ Target tercapai" : `${activeTask.target - activeTask.prospect_count} lagi`}</div>
+              </div>
+              {activeTask.prospect_count >= activeTask.target && (
+                <PrimaryButton onClick={onGoEmail} data-testid="goto-email-btn">
+                  <PaperPlaneTilt size={14} weight="bold" /> Ke Tab Email →
+                </PrimaryButton>
+              )}
+            </div>
+          </div>
+          {activeTask.target > 0 && (
+            <div className="mt-3 h-2 bg-white rounded-full overflow-hidden border border-indigo-100">
+              <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all" style={{ width: `${Math.min(100, Math.round((activeTask.prospect_count / activeTask.target) * 100))}%` }} />
+            </div>
+          )}
+        </Card>
+      )}
+      {!activeTask && (
+        <Card className="p-4 bg-amber-50 border-amber-200">
+          <div className="flex items-center gap-3 text-sm text-amber-800">
+            <CalendarCheck size={20} weight="bold" />
+            <div>
+              <div className="font-semibold">Belum ada tugas aktif untuk hari ini</div>
+              <div className="text-xs text-amber-700">Buka tab <b>Jadwal</b> dan klik tanggal untuk buat tugas baru, atau lanjut tambah prospect bebas tanpa tugas.</div>
+            </div>
+          </div>
+        </Card>
+      )}
       <QuotaHero quota={quota} justHit={justHit} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -786,4 +866,264 @@ function fmtDate(iso) {
   if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
   if (diff < 604800) return `${Math.floor(diff/86400)}d ago`;
   return d.toLocaleDateString();
+}
+
+
+/* ─────────────── EMAIL STEP (Tab 3) ─────────────── */
+function EmailStep({ task, onSubmitted }) {
+  const [templates, setTemplates] = useState([]);
+  const [subCompanies, setSubCompanies] = useState([]);
+  const [prospects, setProspects] = useState([]);
+  const [form, setForm] = useState({
+    template_id: "",
+    subject: "Hi {{name}}, quick question about {{company}}",
+    body_html: "<p>Hi {{name}},</p>\n<p>I came across {{company}} and wanted to reach out.</p>\n<p>Best,<br/>Your Name</p>",
+    sub_company_id: "",
+    send_mode: "now",
+    scheduled_date: task?.date || new Date().toISOString().slice(0, 10),
+    scheduled_time: "09:00",
+  });
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
+    api.get("/sub-companies").then(({ data }) => setSubCompanies(data)).catch(() => {});
+    api.get(`/tasks/${task.id}`).then(({ data }) => setProspects(data.prospects || [])).catch(() => {});
+  }, [task.id]);
+
+  const pickTemplate = (tid) => {
+    setForm((f) => ({ ...f, template_id: tid }));
+    if (!tid) return;
+    const t = templates.find((x) => x.id === tid);
+    if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: t.body_html }));
+  };
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      const payload = {
+        template_id: form.template_id || null,
+        subject: form.subject,
+        body_html: form.body_html,
+        sub_company_id: form.sub_company_id || null,
+        send_mode: form.send_mode,
+      };
+      if (form.send_mode === "scheduled") {
+        const dt = new Date(`${form.scheduled_date}T${form.scheduled_time}:00`);
+        payload.scheduled_send_at = dt.toISOString();
+      }
+      const { data } = await api.post(`/tasks/${task.id}/submit`, payload);
+      toast.success(form.send_mode === "scheduled"
+        ? `✓ ${data.queued} email terjadwal pada ${form.scheduled_date} ${form.scheduled_time}`
+        : `✓ ${data.queued} email dikirim`);
+      onSubmitted();
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setSubmitting(false); }
+  };
+
+  return (
+    <div className="space-y-5">
+      <Card className="p-4 bg-emerald-50 border-emerald-200">
+        <div className="flex items-center gap-3">
+          <CheckCircle size={20} weight="fill" className="text-emerald-600" />
+          <div>
+            <div className="font-display text-sm font-semibold text-slate-900">Tugas Siap Dikirim: {task.name}</div>
+            <div className="text-xs text-slate-600">{task.prospect_count} prospect terkumpul · target {task.target} tercapai · {task.date}</div>
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card className="p-5">
+          <h3 className="font-display text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
+            <PaperPlaneTilt size={16} weight="bold" className="text-indigo-600" /> Konfigurasi Email
+          </h3>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="email-template">
+                <option value="">— blank —</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </TermSelect>
+              <TermSelect label="SMTP" value={form.sub_company_id} onChange={(e) => setForm({ ...form, sub_company_id: e.target.value })}>
+                <option value="">Default</option>
+                {subCompanies.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
+              </TermSelect>
+            </div>
+            <TermInput label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} data-testid="email-subject" />
+            <TermTextarea label="Body (HTML, supports {{name}} {{company}})" rows={10} value={form.body_html} onChange={(e) => setForm({ ...form, body_html: e.target.value })} data-testid="email-body" />
+          </div>
+
+          {/* Send mode */}
+          <div className="mt-4 border-t border-slate-200 pt-4">
+            <div className="text-sm font-medium text-slate-700 mb-2">Mode Pengiriman</div>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, send_mode: "now" })}
+                data-testid="mode-now"
+                className={`text-left border rounded-xl p-3 transition-all ${form.send_mode === "now" ? "border-emerald-500 ring-2 ring-emerald-100 bg-emerald-50" : "border-slate-200 hover:border-slate-300"}`}
+              >
+                <PaperPlaneTilt size={18} weight="bold" className={form.send_mode === "now" ? "text-emerald-600" : "text-slate-400"} />
+                <div className="font-medium text-slate-900 text-sm mt-1">Kirim Sekarang</div>
+                <div className="text-[11px] text-slate-500">Langsung antri & terkirim</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, send_mode: "scheduled" })}
+                data-testid="mode-scheduled"
+                className={`text-left border rounded-xl p-3 transition-all ${form.send_mode === "scheduled" ? "border-purple-500 ring-2 ring-purple-100 bg-purple-50" : "border-slate-200 hover:border-slate-300"}`}
+              >
+                <Clock size={18} weight="bold" className={form.send_mode === "scheduled" ? "text-purple-600" : "text-slate-400"} />
+                <div className="font-medium text-slate-900 text-sm mt-1">Jadwalkan</div>
+                <div className="text-[11px] text-slate-500">Tentukan jam & tanggal</div>
+              </button>
+            </div>
+            {form.send_mode === "scheduled" && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-medium mb-1">Tanggal</label>
+                  <input type="date" value={form.scheduled_date} onChange={(e) => setForm({ ...form, scheduled_date: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" data-testid="schedule-date" />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-medium mb-1">Jam (UTC)</label>
+                  <input type="time" value={form.scheduled_time} onChange={(e) => setForm({ ...form, scheduled_time: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" data-testid="schedule-time" />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-5 pt-4 border-t border-slate-200">
+            <PrimaryButton onClick={submit} disabled={submitting} data-testid="submit-task-btn" className="w-full justify-center">
+              {form.send_mode === "now"
+                ? <><PaperPlaneTilt size={14} weight="bold" /> {submitting ? "Mengirim..." : `Kirim ke ${prospects.length} prospect sekarang`}</>
+                : <><Clock size={14} weight="bold" /> {submitting ? "Menjadwalkan..." : `Jadwalkan ${prospects.length} email`}</>}
+            </PrimaryButton>
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="font-display text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
+            <UsersFour size={16} weight="bold" className="text-indigo-600" /> Recipients ({prospects.length})
+          </h3>
+          <div className="border border-slate-200 rounded-lg max-h-[480px] overflow-y-auto">
+            {prospects.map((p) => {
+              const primary = (p.emails || []).find((e) => e.is_primary) || (p.emails || [])[0];
+              return (
+                <div key={p.id} className="p-2.5 border-b border-slate-100 last:border-b-0 flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 grid place-items-center font-medium text-xs">
+                    {(p.company_name || "?").charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-slate-900 truncate">{p.company_name}</div>
+                    <div className="text-xs text-slate-500 truncate font-mono">{primary?.email || "—"}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────── TASKS LIST (Tersimpan tab) ─────────────── */
+function TasksList({ refreshKey, onPick, onRefresh }) {
+  const navigate = useNavigate();
+  const [rows, setRows] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("");
+
+  const load = async () => {
+    const params = {};
+    if (statusFilter) params.status = statusFilter;
+    try { const { data } = await api.get("/tasks", { params }); setRows(data); }
+    catch (err) { toast.error(formatApiError(err)); }
+  };
+  useEffect(() => { load(); }, [statusFilter, refreshKey]);
+
+  const remove = async (tid) => {
+    if (!window.confirm("Hapus tugas ini?")) return;
+    try { await api.delete(`/tasks/${tid}`); toast.success("Dihapus"); onRefresh?.(); }
+    catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  const STATUSES = [
+    { key: "",          label: "Semua" },
+    { key: "draft",     label: "📝 Draft" },
+    { key: "ready",     label: "🎯 Siap Kirim" },
+    { key: "sending",   label: "🚀 Sedang Kirim" },
+    { key: "scheduled", label: "⏰ Terjadwal" },
+    { key: "completed", label: "✅ Selesai" },
+  ];
+
+  const STATUS_TONES = {
+    draft: "neutral", ready: "info", sending: "warning",
+    scheduled: "purple", completed: "success",
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {STATUSES.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => setStatusFilter(s.key)}
+            data-testid={`task-filter-${s.key || "all"}`}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+              statusFilter === s.key ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState icon={CalendarCheck} title="Belum ada tugas tersimpan" description="Buat tugas baru dari tab Jadwal dengan klik tanggal di kalender." />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {rows.map((t) => {
+            const pct = t.target > 0 ? Math.min(100, Math.round((t.prospect_count / t.target) * 100)) : 0;
+            const editable = t.status === "draft" || t.status === "ready";
+            return (
+              <Card key={t.id} className="p-5 hover:border-indigo-200 transition-colors">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="min-w-0">
+                    <div className="font-display text-base font-semibold text-slate-900 truncate">{t.name}</div>
+                    <div className="text-xs text-slate-500">{t.date}</div>
+                  </div>
+                  <Badge tone={STATUS_TONES[t.status] || "neutral"}>{t.status}</Badge>
+                </div>
+                <div className="mb-2">
+                  <div className="flex justify-between items-baseline mb-1">
+                    <div className="text-sm font-medium text-slate-700">{t.prospect_count} / {t.target} prospects</div>
+                    <div className="text-xs text-slate-500">{pct}%</div>
+                  </div>
+                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+                {t.scheduled_send_at && (
+                  <div className="text-[11px] text-purple-600 mb-2"><Clock size={11} weight="bold" className="inline" /> {new Date(t.scheduled_send_at).toLocaleString("id-ID")}</div>
+                )}
+                <div className="flex items-center gap-1 mt-3">
+                  {editable && (
+                    <PrimaryButton onClick={() => onPick(t)} data-testid={`task-pick-${t.id}`}>
+                      Lanjutkan →
+                    </PrimaryButton>
+                  )}
+                  {!editable && t.send_ids?.length > 0 && (
+                    <GhostButton onClick={() => navigate("/activity")} data-testid={`task-view-${t.id}`}>
+                      Lihat aktivitas
+                    </GhostButton>
+                  )}
+                  <button onClick={() => remove(t.id)} className="ml-auto text-slate-400 hover:text-rose-600 p-1.5" data-testid={`task-del-${t.id}`}><Trash size={14} weight="bold" /></button>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }

@@ -297,6 +297,29 @@ class WorkingConfigUpdate(BaseModel):
     holidays: Optional[List[str]] = None  # ISO YYYY-MM-DD list
 
 
+# ─── Outreach Task models ───
+class OutreachTaskCreate(BaseModel):
+    date: str  # YYYY-MM-DD
+    target: int = Field(ge=1, le=200)
+    name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class OutreachTaskUpdate(BaseModel):
+    name: Optional[str] = None
+    notes: Optional[str] = None
+    target: Optional[int] = Field(default=None, ge=1, le=200)
+
+
+class OutreachTaskSubmit(BaseModel):
+    template_id: Optional[str] = None
+    subject: str
+    body_html: str
+    sub_company_id: Optional[str] = None
+    send_mode: Literal["now", "scheduled"] = "now"
+    scheduled_send_at: Optional[str] = None  # ISO datetime UTC
+
+
 # ─── Permission catalog (frontend uses these keys to filter menus) ───
 ALL_PERMISSIONS = [
     {"key": "dashboard",          "label": "View Dashboard",                    "menu": True},
@@ -469,6 +492,8 @@ async def startup():
     await db.email_sends.create_index([("tenant_id", 1), ("status", 1)])
     await db.email_sends.create_index([("tenant_id", 1), ("created_at", -1)])
     await db.email_sends.create_index("prospect_id")
+    await db.outreach_tasks.create_index([("tenant_id", 1), ("user_id", 1), ("date", -1)])
+    await db.outreach_tasks.create_index([("user_id", 1), ("status", 1)])
     logger.info("Indexes ready. DB=%s", DB_NAME)
 
 
@@ -1809,6 +1834,243 @@ async def cancel_scheduled_email(send_id: str, user: dict = Depends(get_current_
     if not res.matched_count:
         raise HTTPException(404, "Not found or already processed")
     return {"ok": True}
+
+
+# ─── Outreach Tasks (workflow) ───
+async def _task_view(t: dict) -> dict:
+    t.pop("_id", None)
+    pids = t.get("prospect_ids") or []
+    t["prospect_count"] = len(pids)
+    return t
+
+
+@api.get("/tasks")
+async def list_tasks(
+    user: dict = Depends(get_current_user),
+    status: Optional[str] = None,
+    date: Optional[str] = None,
+):
+    q = {"tenant_id": user["tenant_id"], "user_id": user["id"]}
+    if status: q["status"] = status
+    if date: q["date"] = date
+    rows = await db.outreach_tasks.find(q, {"_id": 0}).sort("date", -1).to_list(500)
+    for r in rows:
+        r["prospect_count"] = len(r.get("prospect_ids") or [])
+    return rows
+
+
+@api.post("/tasks")
+async def create_task(payload: OutreachTaskCreate, user: dict = Depends(get_current_user)):
+    try:
+        datetime.strptime(payload.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Invalid date, use YYYY-MM-DD")
+    tid = str(uuid.uuid4())
+    doc = {
+        "id": tid,
+        "tenant_id": user["tenant_id"],
+        "user_id": user["id"],
+        "date": payload.date,
+        "target": payload.target,
+        "name": payload.name or f"Outreach {payload.date}",
+        "notes": payload.notes,
+        "status": "draft",  # draft → ready → submitted_now / scheduled → completed
+        "prospect_ids": [],
+        "submit_at": None,
+        "scheduled_send_at": None,
+        "send_ids": [],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.outreach_tasks.insert_one(doc)
+    doc.pop("_id", None)
+    doc["prospect_count"] = 0
+    return doc
+
+
+@api.get("/tasks/{tid}")
+async def get_task(tid: str, user: dict = Depends(get_current_user)):
+    t = await db.outreach_tasks.find_one({"id": tid, "tenant_id": user["tenant_id"], "user_id": user["id"]}, {"_id": 0})
+    if not t:
+        raise HTTPException(404, "Task not found")
+    pids = t.get("prospect_ids") or []
+    prospects = await db.prospects.find({"id": {"$in": pids}, "tenant_id": user["tenant_id"]}, {"_id": 0}).to_list(500)
+    t["prospects"] = prospects
+    t["prospect_count"] = len(pids)
+    return t
+
+
+@api.patch("/tasks/{tid}")
+async def update_task(tid: str, payload: OutreachTaskUpdate, user: dict = Depends(get_current_user)):
+    upd = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if upd:
+        upd["updated_at"] = now_iso()
+        res = await db.outreach_tasks.update_one(
+            {"id": tid, "tenant_id": user["tenant_id"], "user_id": user["id"]},
+            {"$set": upd},
+        )
+        if not res.matched_count:
+            raise HTTPException(404, "Task not found")
+    return await db.outreach_tasks.find_one({"id": tid}, {"_id": 0})
+
+
+@api.delete("/tasks/{tid}")
+async def delete_task(tid: str, user: dict = Depends(get_current_user)):
+    res = await db.outreach_tasks.delete_one({"id": tid, "tenant_id": user["tenant_id"], "user_id": user["id"]})
+    return {"deleted": res.deleted_count}
+
+
+@api.post("/tasks/{tid}/prospects/{pid}")
+async def attach_prospect_to_task(tid: str, pid: str, user: dict = Depends(get_current_user)):
+    """Attach a prospect to a task. Auto-update status to 'ready' if target hit."""
+    t = await db.outreach_tasks.find_one({"id": tid, "tenant_id": user["tenant_id"], "user_id": user["id"]})
+    if not t:
+        raise HTTPException(404, "Task not found")
+    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1})
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    pids = t.get("prospect_ids") or []
+    if pid in pids:
+        return {"ok": True, "already": True, "count": len(pids), "target": t["target"]}
+    pids.append(pid)
+    status = t.get("status") or "draft"
+    if status == "draft" and len(pids) >= t["target"]:
+        status = "ready"
+    await db.outreach_tasks.update_one(
+        {"id": tid},
+        {"$set": {"prospect_ids": pids, "status": status, "updated_at": now_iso()}},
+    )
+    return {"ok": True, "count": len(pids), "target": t["target"], "status": status}
+
+
+@api.delete("/tasks/{tid}/prospects/{pid}")
+async def detach_prospect_from_task(tid: str, pid: str, user: dict = Depends(get_current_user)):
+    t = await db.outreach_tasks.find_one({"id": tid, "tenant_id": user["tenant_id"], "user_id": user["id"]})
+    if not t:
+        raise HTTPException(404, "Task not found")
+    pids = [x for x in (t.get("prospect_ids") or []) if x != pid]
+    status = t.get("status") or "draft"
+    if status == "ready" and len(pids) < t["target"]:
+        status = "draft"
+    await db.outreach_tasks.update_one(
+        {"id": tid},
+        {"$set": {"prospect_ids": pids, "status": status, "updated_at": now_iso()}},
+    )
+    return {"ok": True, "count": len(pids), "target": t["target"], "status": status}
+
+
+@api.post("/tasks/{tid}/submit")
+async def submit_task(tid: str, payload: OutreachTaskSubmit, background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Send or schedule the task's emails."""
+    t = await db.outreach_tasks.find_one({"id": tid, "tenant_id": user["tenant_id"], "user_id": user["id"]})
+    if not t:
+        raise HTTPException(404, "Task not found")
+    if t.get("status") not in ("draft", "ready"):
+        raise HTTPException(400, f"Task already submitted (status={t.get('status')})")
+    pids = t.get("prospect_ids") or []
+    if not pids:
+        raise HTTPException(400, "Task has no prospects yet")
+    if len(pids) < t["target"]:
+        raise HTTPException(400, f"Target not yet reached ({len(pids)}/{t['target']})")
+
+    # Quota lock check
+    state = await _quota_state(user)
+    if state["locked"] and not await _can_bypass_lock(user):
+        raise HTTPException(423, f"Daily quota not met — add {state['remaining']} more prospect(s) before sending emails.")
+
+    is_scheduled = False
+    sched_iso = None
+    if payload.send_mode == "scheduled":
+        if not payload.scheduled_send_at:
+            raise HTTPException(400, "scheduled_send_at required for scheduled mode")
+        try:
+            sched_dt = datetime.fromisoformat(payload.scheduled_send_at.replace("Z", "+00:00"))
+            if sched_dt.tzinfo is None:
+                sched_dt = sched_dt.replace(tzinfo=timezone.utc)
+            if sched_dt <= datetime.now(timezone.utc) + timedelta(minutes=1):
+                raise HTTPException(400, "Scheduled time must be in the future")
+            is_scheduled = True
+            sched_iso = sched_dt.isoformat()
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(400, "Invalid scheduled_send_at format")
+
+    smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id)
+    if not is_scheduled and not smtp_src:
+        raise HTTPException(400, "SMTP not configured.")
+
+    prospects = await db.prospects.find({"tenant_id": user["tenant_id"], "id": {"$in": pids}}, {"_id": 0}).to_list(500)
+    new_send_ids = []
+    for p in prospects:
+        primary = next((e for e in p.get("emails", []) if e.get("is_primary")), None) or (p.get("emails") or [{}])[0]
+        to_email = primary.get("email")
+        if not to_email:
+            continue
+        subject = _apply_template_vars(payload.subject, p, to_email)
+        body    = _apply_template_vars(payload.body_html, p, to_email)
+        send_id = str(uuid.uuid4())
+        await db.email_sends.insert_one({
+            "id": send_id, "tenant_id": user["tenant_id"], "prospect_id": p["id"],
+            "sender_user_id": user["id"],
+            "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
+            "template_id": payload.template_id, "to_email": to_email,
+            "subject": subject, "body_html": body,
+            "scheduled_at": sched_iso,
+            "status": "scheduled" if is_scheduled else "queued",
+            "task_id": tid,
+            "delivered": False, "opens": 0, "clicks": 0,
+            "replied": False, "bounced": False, "error": None, "sent_at": None,
+            "created_at": now_iso(),
+        })
+        new_send_ids.append(send_id)
+
+    new_status = "scheduled" if is_scheduled else "sending"
+    await db.outreach_tasks.update_one(
+        {"id": tid},
+        {"$set": {
+            "status": new_status,
+            "template_id": payload.template_id,
+            "subject": payload.subject,
+            "body_html": payload.body_html,
+            "sub_company_id": payload.sub_company_id,
+            "scheduled_send_at": sched_iso,
+            "submit_at": now_iso(),
+            "send_ids": new_send_ids,
+            "updated_at": now_iso(),
+        }},
+    )
+
+    if is_scheduled:
+        return {"task_id": tid, "queued": len(new_send_ids), "scheduled_at": sched_iso, "status": "scheduled"}
+
+    async def _runner():
+        for sid in new_send_ids:
+            s = await db.email_sends.find_one({"id": sid, "status": "queued"})
+            if not s: continue
+            from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
+            from_name  = smtp_src.get("smtp_from_name")
+            tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+            result = await asyncio.to_thread(
+                send_smtp_email,
+                smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
+                smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
+                bool(smtp_src.get("smtp_use_tls", True)),
+                from_email, from_name, s["to_email"], s["subject"], tracked,
+            )
+            if result["ok"]:
+                await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
+                if s.get("prospect_id"):
+                    await _log_activity(s["prospect_id"], user["tenant_id"], "email_sent", user["id"], {"to": s["to_email"], "send_id": s["id"], "task_id": tid})
+                    await db.prospects.update_one({"id": s["prospect_id"], "status": "New"},
+                                                   {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
+            else:
+                await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+            await asyncio.sleep(0.3)
+        await db.outreach_tasks.update_one({"id": tid}, {"$set": {"status": "completed", "updated_at": now_iso()}})
+
+    background.add_task(_runner)
+    return {"task_id": tid, "queued": len(new_send_ids), "status": "sending"}
 
 
 @api.get("/working-config")
