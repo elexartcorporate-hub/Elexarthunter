@@ -300,7 +300,7 @@ class WorkingConfigUpdate(BaseModel):
 # ─── Outreach Task models ───
 class OutreachTaskCreate(BaseModel):
     date: str  # YYYY-MM-DD
-    target: int = Field(ge=1, le=200)
+    target: Optional[int] = Field(default=None, ge=1, le=200)
     name: Optional[str] = None
     notes: Optional[str] = None
 
@@ -1865,13 +1865,20 @@ async def create_task(payload: OutreachTaskCreate, user: dict = Depends(get_curr
         datetime.strptime(payload.date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(400, "Invalid date, use YYYY-MM-DD")
+    # Resolve target from user's daily_target if not provided
+    target = payload.target
+    if not target:
+        u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1}) or {}
+        target = u.get("daily_target") or 0
+    if not target or target < 1:
+        raise HTTPException(400, "Target harian belum di-set. Atur di Settings → Target Harian dulu.")
     tid = str(uuid.uuid4())
     doc = {
         "id": tid,
         "tenant_id": user["tenant_id"],
         "user_id": user["id"],
         "date": payload.date,
-        "target": payload.target,
+        "target": target,
         "name": payload.name or f"Outreach {payload.date}",
         "notes": payload.notes,
         "status": "draft",  # draft → ready → submitted_now / scheduled → completed

@@ -345,16 +345,18 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated }
 function NewTaskModal({ date, defaultTarget, onClose, onCreated }) {
   const [form, setForm] = useState({
     name: `Outreach ${date}`,
-    target: defaultTarget || 10,
     notes: "",
   });
   const [saving, setSaving] = useState(false);
+  const targetFromSettings = defaultTarget || 0;
   const save = async () => {
-    if (!form.target || form.target < 1) return toast.error("Target minimal 1");
+    if (!targetFromSettings || targetFromSettings < 1) {
+      return toast.error("Target harian belum di-set. Atur di Settings → Target Harian dulu.");
+    }
     setSaving(true);
     try {
-      const { data } = await api.post("/tasks", { date, name: form.name, target: parseInt(form.target, 10), notes: form.notes || null });
-      toast.success(`Tugas dibuat: ${data.name}`);
+      const { data } = await api.post("/tasks", { date, name: form.name, notes: form.notes || null });
+      toast.success(`Tugas dibuat: ${data.name} (target ${data.target})`);
       onCreated(data);
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setSaving(false); }
@@ -372,15 +374,21 @@ function NewTaskModal({ date, defaultTarget, onClose, onCreated }) {
           </div>
           <div className="p-6 space-y-3">
             <TermInput label="Nama tugas" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="new-task-name" />
-            <TermInput label="Target prospect" type="number" min="1" max="200" value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} data-testid="new-task-target" />
+            <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-indigo-600 text-white grid place-items-center font-bold text-base">{targetFromSettings || "—"}</div>
+              <div className="text-xs">
+                <div className="text-slate-900 font-semibold">Target prospect: {targetFromSettings || "belum di-set"}</div>
+                <div className="text-slate-500">Diambil dari Settings → Target Harian. Untuk ubah, buka Settings.</div>
+              </div>
+            </div>
             <TermTextarea label="Catatan (opsional)" rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             <div className="text-[11px] text-slate-500">
-              💡 Setelah tugas dibuat, Anda akan otomatis diarahkan ke tab Add Prospect. Tambah {form.target} prospect untuk membuka tab Email.
+              💡 Setelah tugas dibuat, Anda akan otomatis diarahkan ke tab Add Prospect.
             </div>
           </div>
           <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 rounded-b-xl">
             <GhostButton onClick={onClose}>Cancel</GhostButton>
-            <PrimaryButton onClick={save} disabled={saving} data-testid="new-task-save">
+            <PrimaryButton onClick={save} disabled={saving || !targetFromSettings} data-testid="new-task-save">
               <Plus size={14} weight="bold" /> {saving ? "Membuat..." : "Buat Tugas"}
             </PrimaryButton>
           </div>
