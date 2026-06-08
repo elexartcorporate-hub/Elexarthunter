@@ -344,6 +344,7 @@ ALL_PERMISSIONS = [
     {"key": "prospects",          "label": "Prospects (CRM)",                   "menu": True},
     {"key": "email_activity",     "label": "Email Activity tracker",            "menu": True},
     {"key": "templates",          "label": "Email Templates",                   "menu": True},
+    {"key": "inbox",              "label": "Inbox (IMAP)",                      "menu": True},
     {"key": "settings",           "label": "Settings page access",              "menu": True},
     {"key": "manage_users",       "label": "Add / edit / delete users",         "menu": False},
     {"key": "manage_roles",       "label": "Create / edit / delete roles",      "menu": False},
@@ -366,7 +367,7 @@ DEFAULT_ROLES = [
         "name": "Admin",
         "is_system": True,
         "permissions": [
-            "dashboard", "prospects", "email_activity", "templates", "settings",
+            "dashboard", "prospects", "email_activity", "templates", "inbox", "settings",
             "manage_users", "manage_company", "manage_api_keys",
             "delete_prospects", "send_emails", "set_team_targets", "bypass_daily_lock",
         ],
@@ -375,7 +376,7 @@ DEFAULT_ROLES = [
         "name": "Staff",
         "is_system": True,
         "permissions": [
-            "dashboard", "prospects", "email_activity", "templates", "send_emails",
+            "dashboard", "prospects", "email_activity", "templates", "inbox", "send_emails",
         ],
     },
 ]
@@ -2166,6 +2167,87 @@ async def test_sub_imap(sc_id: str, user: dict = Depends(get_current_user)):
     if not result["ok"]:
         raise HTTPException(400, f"IMAP test gagal: {result['error']}")
     return {"ok": True, "message": f"IMAP login berhasil — {result.get('status', 'INBOX OK')}"}
+
+
+@api.get("/inbox/companies")
+async def inbox_companies(user: dict = Depends(get_current_user)):
+    """List sub-companies user has access to with IMAP configured."""
+    q = {"tenant_id": user["tenant_id"]}
+    if user["role"] not in ("Owner", "Admin") and user.get("sub_company_ids"):
+        q["id"] = {"$in": user["sub_company_ids"]}
+    rows = await db.sub_companies.find(q, {"_id": 0, "id": 1, "name": 1, "imap_host": 1, "imap_user": 1, "smtp_user": 1}).to_list(100)
+    out = []
+    for r in rows:
+        if r.get("imap_host"):
+            out.append({"id": r["id"], "name": r["name"], "imap_host": r["imap_host"],
+                        "email": r.get("imap_user") or r.get("smtp_user")})
+    return out
+
+
+@api.get("/inbox/{sc_id}")
+async def inbox_list(sc_id: str, limit: int = 30, unread_only: bool = False, user: dict = Depends(get_current_user)):
+    """Fetch latest emails from IMAP for a sub-company."""
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]})
+    if not sc:
+        raise HTTPException(404, "Sub-company not found")
+    # Role check: non-admin must be assigned
+    if user["role"] not in ("Owner", "Admin") and sc_id not in (user.get("sub_company_ids") or []):
+        raise HTTPException(403, "Tidak punya akses ke inbox company ini")
+    host = sc.get("imap_host")
+    login = sc.get("imap_user") or sc.get("smtp_user")
+    password = sc.get("imap_password") or sc.get("smtp_password")
+    if not host or not login or not password:
+        raise HTTPException(400, "IMAP belum di-set untuk company ini")
+
+    def _fetch():
+        import imaplib, email, socket
+        from email.header import decode_header, make_header
+        port = int(sc.get("imap_port") or 993)
+        use_ssl = bool(sc.get("imap_ssl", True))
+        try:
+            socket.setdefaulttimeout(20)
+            cls = imaplib.IMAP4_SSL if use_ssl else imaplib.IMAP4
+            with cls(host, port) as m:
+                m.login(login, password)
+                m.select("INBOX", readonly=True)
+                criteria = "(UNSEEN)" if unread_only else "ALL"
+                typ, data = m.search(None, criteria)
+                if typ != "OK" or not data or not data[0]:
+                    return []
+                ids = data[0].split()[-limit:][::-1]
+                items = []
+                for mid in ids:
+                    typ, msg_data = m.fetch(mid, "(BODY.PEEK[HEADER] FLAGS)")
+                    if typ != "OK" or not msg_data:
+                        continue
+                    raw = b""
+                    flags_str = ""
+                    for part in msg_data:
+                        if isinstance(part, tuple):
+                            raw = part[1]
+                        elif isinstance(part, bytes):
+                            flags_str = part.decode(errors="ignore")
+                    msg = email.message_from_bytes(raw)
+                    def hdr(name):
+                        v = msg.get(name, "")
+                        try: return str(make_header(decode_header(v)))
+                        except Exception: return v
+                    items.append({
+                        "uid": mid.decode(),
+                        "from": hdr("From"),
+                        "to": hdr("To"),
+                        "subject": hdr("Subject") or "(no subject)",
+                        "date": hdr("Date"),
+                        "unread": "\\Seen" not in flags_str,
+                    })
+                return items
+        except Exception as e:
+            return {"_error": str(e)}
+
+    result = await asyncio.to_thread(_fetch)
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(400, f"IMAP error: {result['_error']}")
+    return {"sub_company_id": sc_id, "sub_company_name": sc["name"], "count": len(result), "messages": result}
 
 
 @api.get("/working-config")

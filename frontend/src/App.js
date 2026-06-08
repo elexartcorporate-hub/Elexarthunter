@@ -11,6 +11,7 @@ import Prospects from "@/pages/Prospects";
 import ProspectDetail from "@/pages/ProspectDetail";
 import EmailActivity from "@/pages/EmailActivity";
 import Templates from "@/pages/Templates";
+import Inbox from "@/pages/Inbox";
 import Settings from "@/pages/Settings";
 import "@/index.css";
 
@@ -106,6 +107,7 @@ export default function App() {
             <Route path="/prospects/:id" element={<PermRoute perm="prospects"><ProspectDetail /></PermRoute>} />
             <Route path="/activity" element={<PermRoute perm="email_activity"><EmailActivity /></PermRoute>} />
             <Route path="/templates" element={<PermRoute perm="templates"><Templates /></PermRoute>} />
+            <Route path="/inbox" element={<PermRoute perm="inbox"><Inbox /></PermRoute>} />
             <Route path="/settings" element={<PermRoute perm="settings"><Settings /></PermRoute>} />
           </Route>
 
