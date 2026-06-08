@@ -104,7 +104,7 @@ export default function Hunter() {
       <PageHeader title="Hunter" subtitle="$ hunter --discover company-emails" />
 
       {/* Tabs */}
-      <div className="flex border border-zinc-800 rounded-sm overflow-hidden w-fit mb-6">
+      <div className="flex border border-zinc-200 rounded-sm overflow-hidden w-fit mb-6">
         <TabBtn active={tab === "single"} onClick={() => setTab("single")} icon={Crosshair} label="Single Search" testid="tab-single" />
         <TabBtn active={tab === "bulk"} onClick={() => setTab("bulk")} icon={Files} label="Bulk Search" testid="tab-bulk" />
         <TabBtn active={tab === "csv"} onClick={() => setTab("csv")} icon={Files} label="CSV Import" testid="tab-csv" />
@@ -131,7 +131,7 @@ export default function Hunter() {
               <ArrowsCounterClockwise size={14} weight="bold" /> Force refresh
             </GhostButton>
           </div>
-          <div className="mt-2 text-[11px] font-mono text-zinc-600">
+          <div className="mt-2 text-[11px] font-mono text-zinc-400">
             Tip: domains are auto-normalized. Cached results &lt; 30 days are reused (saves Hunter.io quota).
           </div>
         </Card>
@@ -159,15 +159,15 @@ export default function Hunter() {
 
       {tab === "csv" && (
         <Card className="p-5 mb-6">
-          <div className="font-mono text-xs uppercase tracking-widest text-zinc-400 mb-2">Upload CSV</div>
+          <div className="font-mono text-xs uppercase tracking-widest text-zinc-500 mb-2">Upload CSV</div>
           <input
             type="file"
             accept=".csv,.txt"
             onChange={onCsvUpload}
             data-testid="csv-upload-input"
-            className="block text-sm text-zinc-300 file:mr-3 file:py-2 file:px-4 file:rounded-sm file:border-0 file:text-xs file:font-mono file:uppercase file:tracking-widest file:bg-green-500 file:text-black hover:file:bg-green-400"
+            className="block text-sm text-zinc-700 file:mr-3 file:py-2 file:px-4 file:rounded-sm file:border-0 file:text-xs file:font-mono file:uppercase file:tracking-widest file:bg-green-500 file:text-black hover:file:bg-green-400"
           />
-          <div className="mt-2 text-[11px] font-mono text-zinc-600">
+          <div className="mt-2 text-[11px] font-mono text-zinc-400">
             CSV format: one domain per line, or any column containing dotted hostnames.
           </div>
         </Card>
@@ -176,15 +176,15 @@ export default function Hunter() {
       {/* Pipeline visualizer */}
       {(loading || Object.keys(stepStatus).length > 0) && (
         <Card className="p-5 mb-6">
-          <div className="font-mono text-xs uppercase tracking-widest text-zinc-400 mb-3">Pipeline</div>
+          <div className="font-mono text-xs uppercase tracking-widest text-zinc-500 mb-3">Pipeline</div>
           <div className="grid grid-cols-1 md:grid-cols-7 gap-2">
             {PIPELINE.map((s, i) => (
               <StepBox key={s} idx={i + 1} name={s} status={stepStatus[s] || (loading && i === 0 ? "running" : "pending")} />
             ))}
           </div>
           {/* Terminal log */}
-          <div className="mt-5 bg-black border border-zinc-800 rounded-sm p-3 max-h-64 overflow-y-auto font-mono text-[11px] text-green-400" data-testid="terminal-log">
-            {logs.length === 0 && <div className="text-zinc-600">Awaiting input...</div>}
+          <div className="mt-5 bg-zinc-950 border border-zinc-800 rounded-sm p-3 max-h-64 overflow-y-auto font-mono text-[11px] text-green-400" data-testid="terminal-log">
+            {logs.length === 0 && <div className="text-zinc-500">Awaiting input...</div>}
             {logs.map((l, i) => (
               <div key={i} className="whitespace-pre-wrap">{l}</div>
             ))}
@@ -199,7 +199,7 @@ export default function Hunter() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">Discovered</div>
-              <div className="font-display text-xl text-zinc-100">{result.company.company_name}</div>
+              <div className="font-display text-xl text-zinc-900">{result.company.company_name}</div>
               <div className="font-mono text-xs text-zinc-500">{result.company.domain}</div>
             </div>
             <div className="flex gap-2">
@@ -209,9 +209,9 @@ export default function Hunter() {
             </div>
           </div>
 
-          <div className="overflow-x-auto border border-zinc-800 rounded-sm">
+          <div className="overflow-x-auto border border-zinc-200 rounded-sm">
             <table className="w-full text-sm" data-testid="hunter-results-table">
-              <thead className="bg-zinc-900 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+              <thead className="bg-zinc-50 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
                 <tr>
                   <th className="text-left p-3">Email</th>
                   <th className="text-left p-3">Name</th>
@@ -222,10 +222,10 @@ export default function Hunter() {
               </thead>
               <tbody>
                 {result.contacts.map((c, i) => (
-                  <tr key={i} className="border-t border-zinc-800/60 hover:bg-zinc-900/40">
-                    <td className="p-3 font-mono text-xs text-zinc-200">{c.email}</td>
-                    <td className="p-3 text-xs text-zinc-300">{c.name || "—"}</td>
-                    <td className="p-3 text-xs text-zinc-400">{c.job_title || c.department || "—"}</td>
+                  <tr key={i} className="border-t border-zinc-200/60 hover:bg-zinc-50/40">
+                    <td className="p-3 font-mono text-xs text-zinc-900">{c.email}</td>
+                    <td className="p-3 text-xs text-zinc-700">{c.name || "—"}</td>
+                    <td className="p-3 text-xs text-zinc-500">{c.job_title || c.department || "—"}</td>
                     <td className="p-3"><Badge tone={c.source === "website" ? "success" : "info"}>{c.source}</Badge></td>
                     <td className="p-3"><ConfidenceBadge score={c.confidence_score} /></td>
                   </tr>
@@ -240,20 +240,20 @@ export default function Hunter() {
       {bulkJob && (
         <Card className="p-5">
           <div className="flex items-center justify-between mb-3">
-            <div className="font-mono text-xs uppercase tracking-widest text-zinc-400">Bulk Job</div>
+            <div className="font-mono text-xs uppercase tracking-widest text-zinc-500">Bulk Job</div>
             <Badge tone={bulkJob.status === "done" ? "success" : "warning"}>{bulkJob.status}</Badge>
           </div>
-          <div className="font-mono text-sm text-zinc-300 mb-3">
+          <div className="font-mono text-sm text-zinc-700 mb-3">
             {bulkJob.completed}/{bulkJob.total} processed
           </div>
-          <div className="w-full bg-zinc-900 rounded-sm h-2 overflow-hidden">
+          <div className="w-full bg-zinc-50 rounded-sm h-2 overflow-hidden">
             <div className="h-2 bg-green-500 transition-all" style={{ width: `${(bulkJob.completed / bulkJob.total) * 100}%` }} />
           </div>
           {bulkJob.results?.length > 0 && (
             <div className="mt-4 max-h-48 overflow-y-auto font-mono text-[11px] space-y-1">
               {bulkJob.results.map((r, i) => (
                 <div key={i} className="flex justify-between border-b border-zinc-900 pb-1">
-                  <span className="text-zinc-300">{r.domain}</span>
+                  <span className="text-zinc-700">{r.domain}</span>
                   <span className={r.ok ? "text-green-400" : "text-red-400"}>
                     {r.ok ? `${r.contacts} contacts` : `error: ${r.error?.slice(0, 30)}`}
                   </span>
@@ -272,8 +272,8 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
     <button
       onClick={onClick}
       data-testid={testid}
-      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-zinc-800 last:border-r-0 ${
-        active ? "bg-green-500/10 text-green-400" : "text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900"
+      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-zinc-200 last:border-r-0 ${
+        active ? "bg-green-500/10 text-green-400" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
       }`}
     >
       <Icon size={14} weight="bold" />
@@ -284,12 +284,12 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
 
 function StepBox({ idx, name, status }) {
   const styles = {
-    pending: "border-zinc-800 text-zinc-600 border-dashed",
+    pending: "border-zinc-200 text-zinc-400 border-dashed",
     running: "border-green-500 text-green-400 step-active",
     ok:      "border-green-500/40 bg-green-500/5 text-green-400",
     hit:     "border-cyan-500/40 bg-cyan-500/5 text-cyan-400",
     miss:    "border-yellow-500/40 bg-yellow-500/5 text-yellow-400",
-    skip:    "border-zinc-700 text-zinc-500 opacity-60",
+    skip:    "border-zinc-300 text-zinc-500 opacity-60",
     error:   "border-red-500/40 bg-red-500/5 text-red-400",
   };
   const IconMap = { ok: CheckCircle, hit: CheckCircle, miss: CheckCircle, error: XCircle, running: Spinner, pending: null, skip: null };

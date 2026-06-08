@@ -50,11 +50,11 @@ export default function Register() {
           </span>
         </div>
 
-        <div className="bg-zinc-950/80 backdrop-blur border border-zinc-800 rounded-sm p-7">
+        <div className="bg-white shadow-xl border border-zinc-200 rounded-sm p-7">
           <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500 mb-1">
             $ tenant/create
           </div>
-          <h1 className="font-display text-xl text-zinc-100 mb-6 blinking-cursor">New tenant</h1>
+          <h1 className="font-display text-xl text-zinc-900 mb-6 blinking-cursor">New tenant</h1>
 
           <form onSubmit={onSubmit} className="space-y-4">
             <TermInput label="Your Name" placeholder="Jane Doe" value={form.name} onChange={set("name")} required data-testid="register-name" />
@@ -79,7 +79,7 @@ export default function Register() {
           </div>
         </div>
 
-        <div className="text-center text-[10px] font-mono text-zinc-600 mt-4 uppercase tracking-widest">
+        <div className="text-center text-[10px] font-mono text-zinc-400 mt-4 uppercase tracking-widest">
           You become Owner. Data isolated by tenant_id.
         </div>
       </div>

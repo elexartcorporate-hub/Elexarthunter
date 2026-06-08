@@ -51,7 +51,7 @@ export default function Dashboard() {
         {KPIS.map((k) => {
           const v = data.cards[k.key];
           return (
-            <Card key={k.key} className="p-4 hover:border-zinc-700 transition-colors">
+            <Card key={k.key} className="p-4 hover:border-zinc-300 transition-colors">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">{k.label}</span>
                 <k.icon size={16} weight="bold" className={k.tone} />
@@ -68,7 +68,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-6">
         <Card className="p-4">
           <div className="flex items-center justify-between mb-3">
-            <div className="font-mono text-xs uppercase tracking-widest text-zinc-400">Leads Growth · 14d</div>
+            <div className="font-mono text-xs uppercase tracking-widest text-zinc-500">Leads Growth · 14d</div>
             <Badge tone="success">live</Badge>
           </div>
           <ResponsiveContainer width="100%" height={200}>
@@ -90,7 +90,7 @@ export default function Dashboard() {
 
         <Card className="p-4">
           <div className="flex items-center justify-between mb-3">
-            <div className="font-mono text-xs uppercase tracking-widest text-zinc-400">Emails Sent Trend · 14d</div>
+            <div className="font-mono text-xs uppercase tracking-widest text-zinc-500">Emails Sent Trend · 14d</div>
             <Badge tone="info">14d</Badge>
           </div>
           <ResponsiveContainer width="100%" height={200}>
@@ -112,7 +112,7 @@ export default function Dashboard() {
           rows={data.recent_searches}
           renderItem={(r) => (
             <div className="flex items-center justify-between" key={r.id}>
-              <span className="font-mono text-xs text-zinc-300 truncate">{r.domain}</span>
+              <span className="font-mono text-xs text-zinc-700 truncate">{r.domain}</span>
               <Badge tone={r.from_cache ? "info" : "success"}>{r.contacts_found || 0}</Badge>
             </div>
           )}
@@ -124,7 +124,7 @@ export default function Dashboard() {
           renderItem={(r) => (
             <div className="flex items-center justify-between gap-2" key={r.id}>
               <div className="min-w-0">
-                <div className="font-mono text-xs text-zinc-200 truncate">{r.email}</div>
+                <div className="font-mono text-xs text-zinc-900 truncate">{r.email}</div>
                 <div className="text-[10px] text-zinc-500 truncate">{r.name || r.job_title || "—"}</div>
               </div>
               <Badge tone={r.confidence_score >= 80 ? "success" : r.confidence_score >= 50 ? "warning" : "error"}>
@@ -139,7 +139,7 @@ export default function Dashboard() {
           rows={data.recent_campaigns}
           renderItem={(r) => (
             <div className="flex items-center justify-between gap-2" key={r.id}>
-              <span className="text-xs text-zinc-200 truncate">{r.name}</span>
+              <span className="text-xs text-zinc-900 truncate">{r.name}</span>
               <Badge tone={r.status === "sent" ? "success" : r.status === "sending" ? "warning" : "neutral"}>
                 {r.status}
               </Badge>
@@ -155,10 +155,10 @@ export default function Dashboard() {
 function RecentList({ title, rows, renderItem, empty }) {
   return (
     <Card className="p-4">
-      <div className="font-mono text-xs uppercase tracking-widest text-zinc-400 mb-3">{title}</div>
+      <div className="font-mono text-xs uppercase tracking-widest text-zinc-500 mb-3">{title}</div>
       <div className="space-y-2">
         {rows && rows.length > 0 ? rows.map(renderItem) : (
-          <div className="text-xs text-zinc-600 font-mono py-3">{empty}</div>
+          <div className="text-xs text-zinc-400 font-mono py-3">{empty}</div>
         )}
       </div>
     </Card>

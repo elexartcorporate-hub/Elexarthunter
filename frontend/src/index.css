@@ -5,31 +5,31 @@
 @import url('https://fonts.googleapis.com/css2?family=Chivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 
 :root {
-    --background: 120 50% 3%;
-    --foreground: 0 0% 95%;
-    --card: 240 4% 6%;
-    --card-foreground: 0 0% 95%;
-    --popover: 240 4% 6%;
-    --popover-foreground: 0 0% 95%;
-    --primary: 142 71% 45%;
-    --primary-foreground: 0 0% 5%;
-    --secondary: 240 4% 10%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 240 4% 12%;
-    --muted-foreground: 240 5% 65%;
+    --background: 0 0% 100%;
+    --foreground: 240 10% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 10%;
+    --primary: 142 71% 38%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 10% 15%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 5% 45%;
     --accent: 142 71% 45%;
-    --accent-foreground: 0 0% 5%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 4% 15%;
-    --input: 240 4% 12%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 90%;
+    --input: 240 6% 96%;
     --ring: 142 71% 45%;
     --chart-1: 142 71% 45%;
     --chart-2: 160 60% 45%;
     --chart-3: 192 70% 50%;
     --chart-4: 48 90% 60%;
     --chart-5: 0 72% 51%;
-    --radius: 0.25rem;
+    --radius: 0.375rem;
 }
 
 * {
@@ -57,28 +57,9 @@ h1, h2, h3, h4, h5 {
     font-family: 'Chivo', sans-serif;
 }
 
-/* Terminal scanline subtle */
-.scanlines::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: repeating-linear-gradient(
-        to bottom,
-        transparent 0,
-        transparent 2px,
-        rgba(34, 197, 94, 0.025) 3px,
-        transparent 4px
-    );
-    z-index: 1;
-}
-
 /* Glow utility */
 .glow-green {
-    box-shadow: 0 0 16px rgba(34, 197, 94, 0.35);
-}
-.text-glow-green {
-    text-shadow: 0 0 14px rgba(34, 197, 94, 0.5);
+    box-shadow: 0 0 16px rgba(34, 197, 94, 0.25);
 }
 
 /* Terminal-style blinking cursor */
@@ -95,8 +76,8 @@ h1, h2, h3, h4, h5 {
 
 /* Stepper active pulse */
 @keyframes step-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
-    50% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+    50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
 }
 .step-active {
     animation: step-pulse 1.6s ease-in-out infinite;
@@ -105,18 +86,18 @@ h1, h2, h3, h4, h5 {
 /* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: hsl(var(--background)); }
-::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: hsl(var(--primary) / 0.5); }
 
 /* Selection */
 ::selection {
-    background: hsl(var(--primary));
-    color: hsl(var(--primary-foreground));
+    background: hsl(var(--primary) / 0.25);
+    color: hsl(var(--foreground));
 }
 
 /* Form base */
 input, textarea, select {
-    background: hsl(var(--input));
+    background: hsl(var(--card));
     color: hsl(var(--foreground));
 }
 input:focus, textarea:focus, select:focus {
@@ -125,11 +106,11 @@ input:focus, textarea:focus, select:focus {
     box-shadow: 0 0 0 1px hsl(var(--primary));
 }
 
-/* Subtle grid bg for hero */
+/* Subtle grid bg for auth pages */
 .grid-bg {
     background-image:
-      linear-gradient(rgba(34, 197, 94, 0.06) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(34, 197, 94, 0.06) 1px, transparent 1px);
+      linear-gradient(rgba(22, 163, 74, 0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(22, 163, 74, 0.06) 1px, transparent 1px);
     background-size: 32px 32px;
 }
 
@@ -139,3 +120,6 @@ input:focus, textarea:focus, select:focus {
     to { opacity: 1; transform: translateY(0); }
 }
 .fade-up { animation: fadeUp 0.4s ease-out both; }
+
+/* Hide any third-party badge that may still be injected */
+#emergent-badge, [id*="emergent-badge"] { display: none !important; }

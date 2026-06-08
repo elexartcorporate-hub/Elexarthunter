@@ -83,7 +83,7 @@ export default function Settings() {
     <div className="p-6 md:p-8 fade-up">
       <PageHeader title="Settings" subtitle={`$ tenant/${tenant?.company_name?.toLowerCase().replace(/\s+/g, "-")}`} />
 
-      <div className="flex border border-zinc-800 rounded-sm overflow-hidden w-fit mb-5">
+      <div className="flex border border-zinc-200 rounded-sm overflow-hidden w-fit mb-5">
         <TabBtn active={tab === "smtp"} onClick={() => setTab("smtp")} icon={EnvelopeSimple} label="SMTP" testid="tab-smtp" />
         <TabBtn active={tab === "hunter"} onClick={() => setTab("hunter")} icon={Key} label="Hunter.io API" testid="tab-hunter-api" />
         <TabBtn active={tab === "team"} onClick={() => setTab("team")} icon={UsersThree} label={`Team (${team.length})`} testid="tab-team" />
@@ -140,9 +140,9 @@ export default function Settings() {
               <Plus size={14} weight="bold" /> Invite User
             </PrimaryButton>
           </div>
-          <div className="border border-zinc-800 rounded-sm overflow-hidden">
+          <div className="border border-zinc-200 rounded-sm overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-zinc-900 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+              <thead className="bg-zinc-50 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
                 <tr>
                   <th className="text-left p-3">Name</th>
                   <th className="text-left p-3">Email</th>
@@ -153,9 +153,9 @@ export default function Settings() {
               </thead>
               <tbody>
                 {team.map((u) => (
-                  <tr key={u.id} className="border-t border-zinc-800/60 hover:bg-zinc-900/40">
-                    <td className="p-3 text-zinc-200">{u.name}</td>
-                    <td className="p-3 font-mono text-xs text-zinc-300">{u.email}</td>
+                  <tr key={u.id} className="border-t border-zinc-200/60 hover:bg-zinc-50/40">
+                    <td className="p-3 text-zinc-900">{u.name}</td>
+                    <td className="p-3 font-mono text-xs text-zinc-700">{u.email}</td>
                     <td className="p-3"><Badge tone={u.role === "Owner" ? "success" : u.role === "Admin" ? "info" : "neutral"}>{u.role}</Badge></td>
                     <td className="p-3 font-mono text-xs text-zinc-500">{u.created_at?.slice(0, 10)}</td>
                     <td className="p-3 text-right">
@@ -174,7 +174,7 @@ export default function Settings() {
       )}
 
       {showInvite && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
           <Card className="w-full max-w-md p-6">
             <h2 className="font-display text-lg mb-4">Invite team member</h2>
             <div className="space-y-3">
@@ -202,8 +202,8 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
     <button
       onClick={onClick}
       data-testid={testid}
-      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-zinc-800 last:border-r-0 ${
-        active ? "bg-green-500/10 text-green-400" : "text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900"
+      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-zinc-200 last:border-r-0 ${
+        active ? "bg-green-500/10 text-green-400" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
       }`}
     >
       <Icon size={14} weight="bold" />

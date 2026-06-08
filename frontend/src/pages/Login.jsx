@@ -44,11 +44,11 @@ export default function Login() {
           </span>
         </div>
 
-        <div className="bg-zinc-950/80 backdrop-blur border border-zinc-800 rounded-sm p-7">
+        <div className="bg-white shadow-xl border border-zinc-200 rounded-sm p-7">
           <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500 mb-1">
             $ auth/login
           </div>
-          <h1 className="font-display text-xl text-zinc-100 mb-6 blinking-cursor">Sign in</h1>
+          <h1 className="font-display text-xl text-zinc-900 mb-6 blinking-cursor">Sign in</h1>
 
           <form onSubmit={onSubmit} className="space-y-4">
             <TermInput
@@ -92,7 +92,7 @@ export default function Login() {
           </div>
         </div>
 
-        <div className="text-center text-[10px] font-mono text-zinc-600 mt-4 uppercase tracking-widest">
+        <div className="text-center text-[10px] font-mono text-zinc-400 mt-4 uppercase tracking-widest">
           Multi-tenant SaaS · Encrypted · Privacy-first
         </div>
       </div>
