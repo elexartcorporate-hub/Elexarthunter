@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
-import { PageHeader, Card, Badge, PrimaryButton, GhostButton } from "@/components/term";
+import { PageHeader, Card, Badge, PrimaryButton } from "@/components/term";
 import {
   Target, UsersFour, PaperPlaneTilt, ChatTeardropDots, Star, Crown,
-  CheckCircle, Circle, PencilSimple, ArrowUpRight, Spinner,
+  CheckCircle, Circle, ArrowUpRight, Spinner,
 } from "@phosphor-icons/react";
 import {
   AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -25,8 +25,6 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [editingTarget, setEditingTarget] = useState(false);
-  const [targetInput, setTargetInput] = useState("0");
   const [manualDone, setManualDone] = useState(() => {
     try { return JSON.parse(localStorage.getItem("lh_manual_tasks") || "{}"); }
     catch { return {}; }
@@ -37,23 +35,11 @@ export default function Dashboard() {
     try {
       const { data } = await api.get("/dashboard/daily");
       setData(data);
-      setTargetInput(String(data.daily_target || 0));
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []);
-
-  const saveTarget = async () => {
-    const n = parseInt(targetInput, 10);
-    if (Number.isNaN(n) || n < 0) return toast.error("Enter a valid target");
-    try {
-      await api.patch("/me/target", { daily_target: n });
-      toast.success("Daily target updated");
-      setEditingTarget(false);
-      load();
-    } catch (err) { toast.error(formatApiError(err)); }
-  };
 
   const toggleManual = (key) => {
     const today = new Date().toISOString().slice(0, 10);
@@ -74,10 +60,8 @@ export default function Dashboard() {
     return <div className="p-8 text-slate-500"><Spinner size={20} weight="bold" className="animate-spin inline" /> Loading dashboard...</div>;
   }
 
-  const target = data.daily_target || 0;
   const added  = data.cards.prospects_today || 0;
   const sentToday = data.cards.emails_sent_today || 0;
-  const progress = target > 0 ? Math.min(100, Math.round((added / target) * 100)) : 0;
 
   return (
     <div className="p-6 md:p-8 fade-up max-w-[1600px] mx-auto">
@@ -88,45 +72,6 @@ export default function Dashboard() {
           <UsersFour size={14} weight="bold" /> Add Prospect
         </PrimaryButton>}
       />
-
-      {/* Daily target hero card */}
-      <Card className="p-6 mb-6 bg-gradient-to-br from-indigo-50 via-white to-purple-50 border-indigo-100">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest text-indigo-600 font-semibold">
-              <Target size={14} weight="bold" /> Daily Prospect Target
-            </div>
-            <div className="flex items-end gap-3 mt-1">
-              <div className="font-display text-4xl font-bold text-slate-900" data-testid="target-progress">{added}<span className="text-slate-400 text-2xl"> / {target || "∞"}</span></div>
-              {editingTarget ? (
-                <div className="flex items-center gap-1 ml-2">
-                  <input
-                    type="number"
-                    className="w-20 px-2 py-1 border border-indigo-300 rounded-lg text-sm"
-                    value={targetInput}
-                    onChange={(e) => setTargetInput(e.target.value)}
-                    data-testid="target-input"
-                  />
-                  <PrimaryButton onClick={saveTarget} data-testid="save-target-btn">Save</PrimaryButton>
-                  <GhostButton onClick={() => setEditingTarget(false)}>X</GhostButton>
-                </div>
-              ) : (
-                <button onClick={() => setEditingTarget(true)} className="text-xs text-indigo-600 hover:underline flex items-center gap-1 mb-1" data-testid="edit-target-btn">
-                  <PencilSimple size={12} weight="bold" /> set target
-                </button>
-              )}
-            </div>
-            {target > 0 && (
-              <div className="mt-3 w-full max-w-md">
-                <div className="h-2 bg-white rounded-full overflow-hidden border border-indigo-100">
-                  <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all" style={{ width: `${progress}%` }} />
-                </div>
-                <div className="text-[11px] text-slate-500 mt-1">{progress}% of today&apos;s target · {Math.max(0, target - added)} to go</div>
-              </div>
-            )}
-          </div>
-        </div>
-      </Card>
 
       {/* KPI grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
