@@ -2184,36 +2184,99 @@ async def inbox_companies(user: dict = Depends(get_current_user)):
     return out
 
 
-@api.get("/inbox/{sc_id}")
-async def inbox_list(sc_id: str, limit: int = 30, unread_only: bool = False, user: dict = Depends(get_current_user)):
-    """Fetch latest emails from IMAP for a sub-company."""
-    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]})
-    if not sc:
-        raise HTTPException(404, "Sub-company not found")
-    # Role check: non-admin must be assigned
-    if user["role"] not in ("Owner", "Admin") and sc_id not in (user.get("sub_company_ids") or []):
-        raise HTTPException(403, "Tidak punya akses ke inbox company ini")
+# ─── IMAP helpers ───
+FOLDER_KEYS = ("INBOX", "Sent", "Trash")
+
+
+def _resolve_folder(imap_conn, folder_key: str) -> str:
+    """Resolve a logical folder name (INBOX/Sent/Trash) to a real IMAP mailbox.
+    Uses SPECIAL-USE flags first, falls back to common names per provider.
+    """
+    if folder_key == "INBOX":
+        return "INBOX"
+    flag_map = {"Sent": "\\Sent", "Trash": "\\Trash"}
+    flag = flag_map.get(folder_key)
+    try:
+        typ, data = imap_conn.list()
+        if typ == "OK" and data:
+            for raw in data:
+                if not raw:
+                    continue
+                line = raw.decode(errors="ignore") if isinstance(raw, bytes) else str(raw)
+                if flag and flag in line:
+                    # Format: (\HasNoChildren \Sent) "/" "INBOX/Sent"
+                    parts = line.split(' "')
+                    if len(parts) >= 2:
+                        name = parts[-1].strip().strip('"')
+                        return name
+    except Exception:
+        pass
+    # Fallback common names
+    fallback = {
+        "Sent": ["Sent", "Sent Items", "[Gmail]/Sent Mail", "INBOX.Sent", "Sent Messages"],
+        "Trash": ["Trash", "Deleted Items", "[Gmail]/Trash", "INBOX.Trash", "Deleted Messages"],
+    }
+    return fallback.get(folder_key, [folder_key])[0]
+
+
+def _imap_connect(sc: dict):
+    import imaplib, socket
     host = sc.get("imap_host")
     login = sc.get("imap_user") or sc.get("smtp_user")
     password = sc.get("imap_password") or sc.get("smtp_password")
-    if not host or not login or not password:
+    port = int(sc.get("imap_port") or 993)
+    use_ssl = bool(sc.get("imap_ssl", True))
+    socket.setdefaulttimeout(25)
+    cls = imaplib.IMAP4_SSL if use_ssl else imaplib.IMAP4
+    m = cls(host, port)
+    m.login(login, password)
+    return m
+
+
+def _decode_hdr(value: str) -> str:
+    from email.header import decode_header, make_header
+    try:
+        return str(make_header(decode_header(value or "")))
+    except Exception:
+        return value or ""
+
+
+async def _check_inbox_access(sc_id: str, user: dict) -> dict:
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]})
+    if not sc:
+        raise HTTPException(404, "Sub-company not found")
+    if user["role"] not in ("Owner", "Admin") and sc_id not in (user.get("sub_company_ids") or []):
+        raise HTTPException(403, "Tidak punya akses ke inbox company ini")
+    if not sc.get("imap_host") or not (sc.get("imap_user") or sc.get("smtp_user")) or not (sc.get("imap_password") or sc.get("smtp_password")):
         raise HTTPException(400, "IMAP belum di-set untuk company ini")
+    return sc
+
+
+@api.get("/inbox/{sc_id}")
+async def inbox_list(
+    sc_id: str,
+    folder: str = "INBOX",
+    limit: int = 20,
+    unread_only: bool = False,
+    user: dict = Depends(get_current_user),
+):
+    """Fetch latest emails from IMAP for a sub-company. folder=INBOX|Sent|Trash"""
+    if folder not in FOLDER_KEYS:
+        raise HTTPException(400, "folder harus salah satu: INBOX, Sent, Trash")
+    sc = await _check_inbox_access(sc_id, user)
 
     def _fetch():
-        import imaplib, email, socket
-        from email.header import decode_header, make_header
-        port = int(sc.get("imap_port") or 993)
-        use_ssl = bool(sc.get("imap_ssl", True))
+        import email
         try:
-            socket.setdefaulttimeout(20)
-            cls = imaplib.IMAP4_SSL if use_ssl else imaplib.IMAP4
-            with cls(host, port) as m:
-                m.login(login, password)
-                m.select("INBOX", readonly=True)
+            with _imap_connect(sc) as m:
+                mailbox = _resolve_folder(m, folder)
+                typ, _ = m.select(mailbox, readonly=True)
+                if typ != "OK":
+                    return {"_error": f"Folder tidak ditemukan: {mailbox}"}
                 criteria = "(UNSEEN)" if unread_only else "ALL"
                 typ, data = m.search(None, criteria)
                 if typ != "OK" or not data or not data[0]:
-                    return []
+                    return {"mailbox": mailbox, "messages": []}
                 ids = data[0].split()[-limit:][::-1]
                 items = []
                 for mid in ids:
@@ -2228,26 +2291,241 @@ async def inbox_list(sc_id: str, limit: int = 30, unread_only: bool = False, use
                         elif isinstance(part, bytes):
                             flags_str = part.decode(errors="ignore")
                     msg = email.message_from_bytes(raw)
-                    def hdr(name):
-                        v = msg.get(name, "")
-                        try: return str(make_header(decode_header(v)))
-                        except Exception: return v
                     items.append({
                         "uid": mid.decode(),
-                        "from": hdr("From"),
-                        "to": hdr("To"),
-                        "subject": hdr("Subject") or "(no subject)",
-                        "date": hdr("Date"),
+                        "from": _decode_hdr(msg.get("From", "")),
+                        "to": _decode_hdr(msg.get("To", "")),
+                        "subject": _decode_hdr(msg.get("Subject", "")) or "(no subject)",
+                        "date": msg.get("Date", ""),
+                        "message_id": msg.get("Message-ID", ""),
                         "unread": "\\Seen" not in flags_str,
                     })
-                return items
+                return {"mailbox": mailbox, "messages": items}
         except Exception as e:
             return {"_error": str(e)}
 
     result = await asyncio.to_thread(_fetch)
     if isinstance(result, dict) and "_error" in result:
         raise HTTPException(400, f"IMAP error: {result['_error']}")
-    return {"sub_company_id": sc_id, "sub_company_name": sc["name"], "count": len(result), "messages": result}
+    return {
+        "sub_company_id": sc_id,
+        "sub_company_name": sc["name"],
+        "folder": folder,
+        "mailbox": result["mailbox"],
+        "count": len(result["messages"]),
+        "messages": result["messages"],
+    }
+
+
+def _extract_body(msg) -> dict:
+    """Return {text, html} from an email.Message."""
+    text_body = ""
+    html_body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = str(part.get("Content-Disposition") or "").lower()
+            if "attachment" in disp:
+                continue
+            try:
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    continue
+                charset = part.get_content_charset() or "utf-8"
+                decoded = payload.decode(charset, errors="replace")
+            except Exception:
+                continue
+            if ctype == "text/plain" and not text_body:
+                text_body = decoded
+            elif ctype == "text/html" and not html_body:
+                html_body = decoded
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            charset = msg.get_content_charset() or "utf-8"
+            decoded = payload.decode(charset, errors="replace") if payload else ""
+        except Exception:
+            decoded = ""
+        if msg.get_content_type() == "text/html":
+            html_body = decoded
+        else:
+            text_body = decoded
+    return {"text": text_body, "html": html_body}
+
+
+@api.get("/inbox/{sc_id}/message/{uid}")
+async def inbox_message_detail(
+    sc_id: str,
+    uid: str,
+    folder: str = "INBOX",
+    mark_seen: bool = True,
+    user: dict = Depends(get_current_user),
+):
+    """Fetch a single email's full body and mark it as read (default)."""
+    if folder not in FOLDER_KEYS:
+        raise HTTPException(400, "folder harus salah satu: INBOX, Sent, Trash")
+    sc = await _check_inbox_access(sc_id, user)
+
+    def _fetch():
+        import email
+        try:
+            with _imap_connect(sc) as m:
+                mailbox = _resolve_folder(m, folder)
+                typ, _ = m.select(mailbox, readonly=not mark_seen)
+                if typ != "OK":
+                    return {"_error": f"Folder tidak ditemukan: {mailbox}"}
+                typ, msg_data = m.fetch(uid.encode(), "(RFC822 FLAGS)")
+                if typ != "OK" or not msg_data:
+                    return {"_error": "Pesan tidak ditemukan"}
+                raw = b""
+                flags_str = ""
+                for part in msg_data:
+                    if isinstance(part, tuple):
+                        raw = part[1]
+                    elif isinstance(part, bytes):
+                        flags_str = part.decode(errors="ignore")
+                msg = email.message_from_bytes(raw)
+                body = _extract_body(msg)
+                was_unread = "\\Seen" not in flags_str
+                if mark_seen and was_unread:
+                    try:
+                        m.store(uid.encode(), "+FLAGS", "\\Seen")
+                    except Exception:
+                        pass
+                return {
+                    "uid": uid,
+                    "from": _decode_hdr(msg.get("From", "")),
+                    "to": _decode_hdr(msg.get("To", "")),
+                    "cc": _decode_hdr(msg.get("Cc", "")),
+                    "subject": _decode_hdr(msg.get("Subject", "")) or "(no subject)",
+                    "date": msg.get("Date", ""),
+                    "message_id": msg.get("Message-ID", ""),
+                    "in_reply_to": msg.get("In-Reply-To", ""),
+                    "references": msg.get("References", ""),
+                    "reply_to": _decode_hdr(msg.get("Reply-To", "")),
+                    "text": body["text"],
+                    "html": body["html"],
+                    "unread": False if mark_seen else was_unread,
+                }
+        except Exception as e:
+            return {"_error": str(e)}
+
+    result = await asyncio.to_thread(_fetch)
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(400, f"IMAP error: {result['_error']}")
+    return result
+
+
+class InboxMarkReq(BaseModel):
+    uid: str
+    folder: str = "INBOX"
+    seen: bool = True
+
+
+@api.post("/inbox/{sc_id}/mark")
+async def inbox_mark(sc_id: str, req: InboxMarkReq, user: dict = Depends(get_current_user)):
+    """Mark a message as read/unread."""
+    if req.folder not in FOLDER_KEYS:
+        raise HTTPException(400, "folder tidak valid")
+    sc = await _check_inbox_access(sc_id, user)
+
+    def _mark():
+        try:
+            with _imap_connect(sc) as m:
+                mailbox = _resolve_folder(m, req.folder)
+                typ, _ = m.select(mailbox, readonly=False)
+                if typ != "OK":
+                    return {"_error": f"Folder tidak ditemukan: {mailbox}"}
+                op = "+FLAGS" if req.seen else "-FLAGS"
+                m.store(req.uid.encode(), op, "\\Seen")
+                return {"ok": True}
+        except Exception as e:
+            return {"_error": str(e)}
+
+    result = await asyncio.to_thread(_mark)
+    if "_error" in result:
+        raise HTTPException(400, f"IMAP error: {result['_error']}")
+    return {"ok": True, "uid": req.uid, "seen": req.seen}
+
+
+class InboxReplyReq(BaseModel):
+    uid: str
+    folder: str = "INBOX"
+    to: EmailStr
+    cc: Optional[str] = None
+    subject: str
+    body_html: str
+    in_reply_to: Optional[str] = None
+    references: Optional[str] = None
+
+
+@api.post("/inbox/{sc_id}/reply")
+async def inbox_reply(sc_id: str, req: InboxReplyReq, user: dict = Depends(get_current_user)):
+    """Send a reply via SMTP using the sub-company config, with proper threading headers.
+    Also appends the sent message to the Sent folder via IMAP.
+    """
+    sc = await _check_inbox_access(sc_id, user)
+    if not sc.get("smtp_host") or not sc.get("smtp_user"):
+        raise HTTPException(400, "SMTP belum di-set untuk company ini")
+
+    from_email = sc.get("smtp_from_email") or sc.get("smtp_user")
+    from_name = sc.get("smtp_from_name") or sc.get("name")
+
+    # Build the message manually so we can attach In-Reply-To / References
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import make_msgid, formatdate
+    import re as _re
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = req.subject
+    msg["From"] = f'"{from_name}" <{from_email}>' if from_name else from_email
+    msg["To"] = req.to
+    if req.cc:
+        msg["Cc"] = req.cc
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+    if req.in_reply_to:
+        msg["In-Reply-To"] = req.in_reply_to
+        msg["References"] = (req.references + " " + req.in_reply_to).strip() if req.references else req.in_reply_to
+    plain = _re.sub(r"<[^>]+>", " ", req.body_html)
+    msg.attach(MIMEText(plain, "plain", "utf-8"))
+    msg.attach(MIMEText(req.body_html, "html", "utf-8"))
+
+    raw_msg = msg.as_string()
+
+    def _send_and_append():
+        import smtplib
+        # Send via SMTP
+        try:
+            port = int(sc.get("smtp_port") or 587)
+            use_tls = bool(sc.get("smtp_use_tls", True))
+            if use_tls and port == 465:
+                server = smtplib.SMTP_SSL(sc["smtp_host"], port, timeout=25)
+            else:
+                server = smtplib.SMTP(sc["smtp_host"], port, timeout=25)
+                if use_tls:
+                    server.ehlo(); server.starttls(); server.ehlo()
+            if sc.get("smtp_user"):
+                server.login(sc["smtp_user"], sc.get("smtp_password") or "")
+            rcpts = [req.to] + ([c.strip() for c in (req.cc or "").split(",") if c.strip()])
+            server.sendmail(from_email, rcpts, raw_msg)
+            server.quit()
+        except Exception as e:
+            return {"_error": f"SMTP gagal: {e}"}
+        # Append to Sent folder via IMAP (best-effort)
+        try:
+            with _imap_connect(sc) as m:
+                sent_box = _resolve_folder(m, "Sent")
+                m.append(sent_box, "\\Seen", None, raw_msg.encode("utf-8", errors="replace"))
+        except Exception as e:
+            return {"ok": True, "warn": f"Terkirim tapi gagal simpan ke Sent: {e}"}
+        return {"ok": True}
+
+    result = await asyncio.to_thread(_send_and_append)
+    if "_error" in result:
+        raise HTTPException(400, result["_error"])
+    return result
 
 
 @api.get("/working-config")
