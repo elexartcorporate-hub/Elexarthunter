@@ -2143,6 +2143,35 @@ async def test_sub_smtp(sc_id: str, req: SmtpTestReq, user: dict = Depends(get_c
     return {"ok": True, "message": f"Test email terkirim ke {req.to_email} via {sc['smtp_host']}"}
 
 
+def _format_imap_error(e: Exception) -> str:
+    """Decode imaplib bytes error and add helpful hints for common provider issues."""
+    msg = ""
+    try:
+        if hasattr(e, "args") and e.args:
+            arg0 = e.args[0]
+            if isinstance(arg0, (bytes, bytearray)):
+                msg = arg0.decode("utf-8", errors="replace")
+            else:
+                msg = str(arg0)
+        else:
+            msg = str(e)
+    except Exception:
+        msg = str(e)
+    # Strip imaplib's leading "[ALERT] " or trailing " (Failure)"
+    msg = msg.strip().strip("'\"").strip()
+    if msg.startswith("b'") and msg.endswith("'"):
+        msg = msg[2:-1]
+    lower = msg.lower()
+    # Helpful hints for common providers
+    if "yet to enable imap" in lower or "imap is disabled" in lower or "imap access" in lower:
+        msg += " — Buka Zoho Mail → Settings → Mail Accounts → IMAP, aktifkan 'IMAP Access' lalu coba lagi."
+    elif "authenticationfailed" in lower or "invalid credentials" in lower or "login failed" in lower or "auth failed" in lower:
+        msg += " — Periksa username/password. Untuk Gmail, gunakan App Password (bukan password akun)."
+    elif "application-specific password required" in lower:
+        msg += " — Gmail butuh App Password. Generate di myaccount.google.com → Security → 2-Step Verification → App passwords."
+    return msg
+
+
 @api.post("/sub-companies/{sc_id}/test-imap")
 async def test_sub_imap(sc_id: str, user: dict = Depends(get_current_user)):
     sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]})
@@ -2170,7 +2199,7 @@ async def test_sub_imap(sc_id: str, user: dict = Depends(get_current_user)):
                 typ, msgs = m.status("INBOX", "(MESSAGES UNSEEN)")
                 return {"ok": True, "status": (msgs[0].decode() if msgs and msgs[0] else "")}
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": _format_imap_error(e)}
 
     result = await asyncio.to_thread(_imap_check)
     if not result["ok"]:
@@ -2311,7 +2340,7 @@ async def inbox_list(
                     })
                 return {"mailbox": mailbox, "messages": items}
         except Exception as e:
-            return {"_error": str(e)}
+            return {"_error": _format_imap_error(e)}
 
     result = await asyncio.to_thread(_fetch)
     if isinstance(result, dict) and "_error" in result:
