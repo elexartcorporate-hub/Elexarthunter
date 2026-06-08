@@ -402,20 +402,17 @@ function NewTaskModal({ date, defaultTarget, onClose, onCreated }) {
 function ScheduleModal({ date, onClose, onSaved }) {
   const [templates, setTemplates] = useState([]);
   const [prospects, setProspects] = useState([]);
-  const [subCompanies, setSubCompanies] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [time, setTime] = useState("09:00");
   const [form, setForm] = useState({
     template_id: "",
     subject: "Hi {{name}}, quick question about {{company}}",
     body_html: "<p>Hi {{name}},</p>\n<p>I came across {{company}} and wanted to reach out.</p>\n<p>Best,<br/>Your Name</p>",
-    sub_company_id: "",
   });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
-    api.get("/sub-companies").then(({ data }) => setSubCompanies(data)).catch(() => {});
     api.get("/prospects").then(({ data }) => setProspects(data)).catch(() => {});
   }, []);
 
@@ -443,7 +440,6 @@ function ScheduleModal({ date, onClose, onSaved }) {
         subject: form.subject,
         body_html: form.body_html,
         template_id: form.template_id || null,
-        sub_company_id: form.sub_company_id || null,
         scheduled_at: scheduledLocal.toISOString(),
       });
       toast.success(`✓ ${data.queued} email terjadwal pada ${date} ${time}`);
@@ -465,16 +461,10 @@ function ScheduleModal({ date, onClose, onSaved }) {
           </div>
           <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)}>
-                  <option value="">— blank —</option>
-                  {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </TermSelect>
-                <TermSelect label="SMTP" value={form.sub_company_id} onChange={(e) => setForm({ ...form, sub_company_id: e.target.value })}>
-                  <option value="">Default</option>
-                  {subCompanies.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
-                </TermSelect>
-              </div>
+              <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)}>
+                <option value="">— blank —</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </TermSelect>
               <div>
                 <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-medium mb-1">Waktu kirim (HH:MM, UTC)</label>
                 <input

@@ -631,19 +631,16 @@ function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfir
 /* ─────────────── BULK OUTREACH MODAL ─────────────── */
 function OutreachModal({ todayList, onClose }) {
   const [templates, setTemplates] = useState([]);
-  const [subCompanies, setSubCompanies] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set(todayList.map((p) => p.id)));
   const [form, setForm] = useState({
     template_id: "",
     subject: "Hi {{name}}, interested in a quick chat?",
     body_html: "<p>Hi {{name}},</p>\n<p>I came across {{company}} and wanted to reach out about a quick chat.</p>\n<p>Best,<br/>Your Name</p>",
-    sub_company_id: "",
   });
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
     api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
-    api.get("/sub-companies").then(({ data }) => setSubCompanies(data)).catch(() => {});
   }, []);
 
   const pickTemplate = (tid) => {
@@ -659,6 +656,12 @@ function OutreachModal({ todayList, onClose }) {
     setSelectedIds(s);
   };
 
+  const totalEmails = useMemo(() => {
+    let total = 0;
+    todayList.forEach((p) => { if (selectedIds.has(p.id)) total += (p.emails || []).length; });
+    return total;
+  }, [todayList, selectedIds]);
+
   const send = async () => {
     if (selectedIds.size === 0) return toast.error("Pick at least one prospect");
     setSending(true);
@@ -668,7 +671,6 @@ function OutreachModal({ todayList, onClose }) {
         subject: form.subject,
         body_html: form.body_html,
         template_id: form.template_id || null,
-        sub_company_id: form.sub_company_id || null,
       });
       toast.success(`Queued ${data.queued} email(s)`);
       onClose();
@@ -683,37 +685,36 @@ function OutreachModal({ todayList, onClose }) {
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 rounded-t-xl">
             <div>
               <h2 className="font-display text-lg text-slate-900 flex items-center gap-2"><PaperPlaneTilt size={18} weight="bold" className="text-emerald-600" /> Email Outreach — Today&apos;s Batch</h2>
-              <div className="text-xs text-slate-500">Send to {selectedIds.size} of {todayList.length} prospects added today</div>
+              <div className="text-xs text-slate-500">Send to <b>{totalEmails}</b> email(s) across {selectedIds.size} of {todayList.length} companies</div>
             </div>
             <button onClick={onClose} className="text-slate-500 hover:text-red-500"><X size={20} weight="bold" /></button>
           </div>
           <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="outreach-template">
-                  <option value="">— blank —</option>
-                  {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </TermSelect>
-                <TermSelect label="Send from (SMTP)" value={form.sub_company_id} onChange={(e) => setForm({ ...form, sub_company_id: e.target.value })}>
-                  <option value="">User / Tenant default</option>
-                  {subCompanies.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}{sc.smtp_host ? "" : " (no SMTP)"}</option>)}
-                </TermSelect>
-              </div>
+              <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="outreach-template">
+                <option value="">— blank —</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </TermSelect>
               <TermInput label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} data-testid="outreach-subject" />
               <TermTextarea label="Body (HTML, supports {{name}} {{company}} variables)" rows={10} value={form.body_html} onChange={(e) => setForm({ ...form, body_html: e.target.value })} data-testid="outreach-body" />
+              <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
+                💡 SMTP otomatis pakai setting Anda (user) atau company tenant. Atur di Settings → Companies / Users.
+              </div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-slate-500 font-medium mb-2">Recipients ({selectedIds.size}/{todayList.length})</div>
-              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[420px] overflow-y-auto">
+              <div className="text-[10px] uppercase tracking-widest text-slate-500 font-medium mb-2">Companies ({selectedIds.size}/{todayList.length}) · {totalEmails} email total</div>
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[480px] overflow-y-auto">
                 {todayList.map((p) => {
                   const primary = (p.emails || []).find((e) => e.is_primary) || (p.emails || [])[0];
+                  const cnt = (p.emails || []).length;
                   return (
                     <label key={p.id} className={`flex items-center gap-2 p-2 border-b border-slate-100 last:border-b-0 cursor-pointer ${selectedIds.has(p.id) ? "bg-indigo-50/50" : "bg-white"}`}>
                       <input type="checkbox" className="accent-indigo-600" checked={selectedIds.has(p.id)} onChange={() => toggle(p.id)} data-testid={`outreach-pick-${p.id}`} />
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium text-slate-900 truncate">{p.company_name}</div>
-                        <div className="text-xs text-slate-500 truncate font-mono">{primary?.email || "no email"}</div>
+                        <div className="text-xs text-slate-500 truncate font-mono">{primary?.email || "no email"}{cnt > 1 ? ` · +${cnt - 1} more` : ""}</div>
                       </div>
+                      <Badge tone="info">{cnt}</Badge>
                     </label>
                   );
                 })}
@@ -725,7 +726,7 @@ function OutreachModal({ todayList, onClose }) {
             <div className="flex gap-2">
               <GhostButton onClick={onClose}>Cancel</GhostButton>
               <PrimaryButton onClick={send} disabled={sending || selectedIds.size === 0} data-testid="outreach-send-btn">
-                <PaperPlaneTilt size={14} weight="bold" /> {sending ? "Queuing..." : `Send to ${selectedIds.size}`}
+                <PaperPlaneTilt size={14} weight="bold" /> {sending ? "Queuing..." : `Send ${totalEmails} email`}
               </PrimaryButton>
             </div>
           </div>
@@ -872,13 +873,11 @@ function fmtDate(iso) {
 /* ─────────────── EMAIL STEP (Tab 3) ─────────────── */
 function EmailStep({ task, onSubmitted }) {
   const [templates, setTemplates] = useState([]);
-  const [subCompanies, setSubCompanies] = useState([]);
   const [prospects, setProspects] = useState([]);
   const [form, setForm] = useState({
     template_id: "",
     subject: "Hi {{name}}, quick question about {{company}}",
     body_html: "<p>Hi {{name}},</p>\n<p>I came across {{company}} and wanted to reach out.</p>\n<p>Best,<br/>Your Name</p>",
-    sub_company_id: "",
     send_mode: "now",
     scheduled_date: task?.date || new Date().toISOString().slice(0, 10),
     scheduled_time: "09:00",
@@ -887,7 +886,6 @@ function EmailStep({ task, onSubmitted }) {
 
   useEffect(() => {
     api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
-    api.get("/sub-companies").then(({ data }) => setSubCompanies(data)).catch(() => {});
     api.get(`/tasks/${task.id}`).then(({ data }) => setProspects(data.prospects || [])).catch(() => {});
   }, [task.id]);
 
@@ -898,6 +896,8 @@ function EmailStep({ task, onSubmitted }) {
     if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: t.body_html }));
   };
 
+  const totalEmails = useMemo(() => prospects.reduce((acc, p) => acc + (p.emails || []).length, 0), [prospects]);
+
   const submit = async () => {
     setSubmitting(true);
     try {
@@ -905,7 +905,6 @@ function EmailStep({ task, onSubmitted }) {
         template_id: form.template_id || null,
         subject: form.subject,
         body_html: form.body_html,
-        sub_company_id: form.sub_company_id || null,
         send_mode: form.send_mode,
       };
       if (form.send_mode === "scheduled") {
@@ -939,18 +938,15 @@ function EmailStep({ task, onSubmitted }) {
             <PaperPlaneTilt size={16} weight="bold" className="text-indigo-600" /> Konfigurasi Email
           </h3>
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="email-template">
-                <option value="">— blank —</option>
-                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </TermSelect>
-              <TermSelect label="SMTP" value={form.sub_company_id} onChange={(e) => setForm({ ...form, sub_company_id: e.target.value })}>
-                <option value="">Default</option>
-                {subCompanies.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
-              </TermSelect>
-            </div>
+            <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="email-template">
+              <option value="">— blank —</option>
+              {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </TermSelect>
             <TermInput label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} data-testid="email-subject" />
             <TermTextarea label="Body (HTML, supports {{name}} {{company}})" rows={10} value={form.body_html} onChange={(e) => setForm({ ...form, body_html: e.target.value })} data-testid="email-body" />
+            <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
+              💡 SMTP otomatis pakai setting Anda (user) atau company tenant. Atur di Settings → Companies / Users.
+            </div>
           </div>
 
           {/* Send mode */}
@@ -995,19 +991,20 @@ function EmailStep({ task, onSubmitted }) {
           <div className="mt-5 pt-4 border-t border-slate-200">
             <PrimaryButton onClick={submit} disabled={submitting} data-testid="submit-task-btn" className="w-full justify-center">
               {form.send_mode === "now"
-                ? <><PaperPlaneTilt size={14} weight="bold" /> {submitting ? "Mengirim..." : `Kirim ke ${prospects.length} prospect sekarang`}</>
-                : <><Clock size={14} weight="bold" /> {submitting ? "Menjadwalkan..." : `Jadwalkan ${prospects.length} email`}</>}
+                ? <><PaperPlaneTilt size={14} weight="bold" /> {submitting ? "Mengirim..." : `Kirim ${totalEmails} email ke ${prospects.length} company sekarang`}</>
+                : <><Clock size={14} weight="bold" /> {submitting ? "Menjadwalkan..." : `Jadwalkan ${totalEmails} email`}</>}
             </PrimaryButton>
           </div>
         </Card>
 
         <Card className="p-5">
           <h3 className="font-display text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
-            <UsersFour size={16} weight="bold" className="text-indigo-600" /> Recipients ({prospects.length})
+            <UsersFour size={16} weight="bold" className="text-indigo-600" /> Recipients ({prospects.length} company · {totalEmails} email)
           </h3>
           <div className="border border-slate-200 rounded-lg max-h-[480px] overflow-y-auto">
             {prospects.map((p) => {
               const primary = (p.emails || []).find((e) => e.is_primary) || (p.emails || [])[0];
+              const cnt = (p.emails || []).length;
               return (
                 <div key={p.id} className="p-2.5 border-b border-slate-100 last:border-b-0 flex items-center gap-2">
                   <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 grid place-items-center font-medium text-xs">
@@ -1015,8 +1012,9 @@ function EmailStep({ task, onSubmitted }) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-slate-900 truncate">{p.company_name}</div>
-                    <div className="text-xs text-slate-500 truncate font-mono">{primary?.email || "—"}</div>
+                    <div className="text-xs text-slate-500 truncate font-mono">{primary?.email || "—"}{cnt > 1 ? ` · +${cnt - 1} more` : ""}</div>
                   </div>
+                  <Badge tone="info">{cnt}</Badge>
                 </div>
               );
             })}

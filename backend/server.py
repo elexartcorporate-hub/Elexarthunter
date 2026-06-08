@@ -2024,27 +2024,28 @@ async def submit_task(tid: str, payload: OutreachTaskSubmit, background: Backgro
     prospects = await db.prospects.find({"tenant_id": user["tenant_id"], "id": {"$in": pids}}, {"_id": 0}).to_list(500)
     new_send_ids = []
     for p in prospects:
-        primary = next((e for e in p.get("emails", []) if e.get("is_primary")), None) or (p.get("emails") or [{}])[0]
-        to_email = primary.get("email")
-        if not to_email:
-            continue
-        subject = _apply_template_vars(payload.subject, p, to_email)
-        body    = _apply_template_vars(payload.body_html, p, to_email)
-        send_id = str(uuid.uuid4())
-        await db.email_sends.insert_one({
-            "id": send_id, "tenant_id": user["tenant_id"], "prospect_id": p["id"],
-            "sender_user_id": user["id"],
-            "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
-            "template_id": payload.template_id, "to_email": to_email,
-            "subject": subject, "body_html": body,
-            "scheduled_at": sched_iso,
-            "status": "scheduled" if is_scheduled else "queued",
-            "task_id": tid,
-            "delivered": False, "opens": 0, "clicks": 0,
-            "replied": False, "bounced": False, "error": None, "sent_at": None,
-            "created_at": now_iso(),
-        })
-        new_send_ids.append(send_id)
+        # Send to ALL valid emails of this prospect (not just primary)
+        for e in (p.get("emails") or []):
+            to_email = e.get("email")
+            if not to_email:
+                continue
+            subject = _apply_template_vars(payload.subject, p, to_email)
+            body    = _apply_template_vars(payload.body_html, p, to_email)
+            send_id = str(uuid.uuid4())
+            await db.email_sends.insert_one({
+                "id": send_id, "tenant_id": user["tenant_id"], "prospect_id": p["id"],
+                "sender_user_id": user["id"],
+                "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
+                "template_id": payload.template_id, "to_email": to_email,
+                "subject": subject, "body_html": body,
+                "scheduled_at": sched_iso,
+                "status": "scheduled" if is_scheduled else "queued",
+                "task_id": tid,
+                "delivered": False, "opens": 0, "clicks": 0,
+                "replied": False, "bounced": False, "error": None, "sent_at": None,
+                "created_at": now_iso(),
+            })
+            new_send_ids.append(send_id)
 
     new_status = "scheduled" if is_scheduled else "sending"
     await db.outreach_tasks.update_one(
@@ -2451,27 +2452,28 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
     queued = 0
     new_send_ids = []
     for p in prospects:
-        primary = next((e for e in p.get("emails", []) if e.get("is_primary")), None) or (p.get("emails") or [{}])[0]
-        to_email = primary.get("email")
-        if not to_email:
-            continue
-        subject = _apply_template_vars(payload.subject, p, to_email)
-        body    = _apply_template_vars(payload.body_html, p, to_email)
-        send_id = str(uuid.uuid4())
-        await db.email_sends.insert_one({
-            "id": send_id, "tenant_id": user["tenant_id"], "prospect_id": p["id"],
-            "sender_user_id": user["id"],
-            "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
-            "template_id": payload.template_id, "to_email": to_email,
-            "subject": subject, "body_html": body,
-            "scheduled_at": sched_iso,
-            "status": "scheduled" if is_scheduled else "queued",
-            "delivered": False, "opens": 0, "clicks": 0,
-            "replied": False, "bounced": False, "error": None, "sent_at": None,
-            "created_at": now_iso(),
-        })
-        queued += 1
-        new_send_ids.append(send_id)
+        # Send to ALL valid emails of this prospect (not just primary)
+        for e in (p.get("emails") or []):
+            to_email = e.get("email")
+            if not to_email:
+                continue
+            subject = _apply_template_vars(payload.subject, p, to_email)
+            body    = _apply_template_vars(payload.body_html, p, to_email)
+            send_id = str(uuid.uuid4())
+            await db.email_sends.insert_one({
+                "id": send_id, "tenant_id": user["tenant_id"], "prospect_id": p["id"],
+                "sender_user_id": user["id"],
+                "sub_company_id": payload.sub_company_id or p.get("sub_company_id"),
+                "template_id": payload.template_id, "to_email": to_email,
+                "subject": subject, "body_html": body,
+                "scheduled_at": sched_iso,
+                "status": "scheduled" if is_scheduled else "queued",
+                "delivered": False, "opens": 0, "clicks": 0,
+                "replied": False, "bounced": False, "error": None, "sent_at": None,
+                "created_at": now_iso(),
+            })
+            queued += 1
+            new_send_ids.append(send_id)
 
     # If scheduled, don't run now — scheduler worker picks it up
     if is_scheduled:
