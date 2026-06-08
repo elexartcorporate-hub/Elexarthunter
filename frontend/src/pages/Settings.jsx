@@ -297,13 +297,40 @@ function ScheduleSection() {
 function CompaniesSection() {
   const [list, setList] = useState([]);
   const [editing, setEditing] = useState(null); // null | "new" | id
-  const [form, setForm] = useState({ name: "", legal_name: "", phone: "", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true });
+  const [form, setForm] = useState({ name: "", legal_name: "", phone: "", email_provider: "other", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true, imap_host: "", imap_port: 993, imap_ssl: true, imap_user: "", imap_password: "" });
 
   const load = async () => { try { const { data } = await api.get("/sub-companies"); setList(data); } catch (e) { toast.error(formatApiError(e)); } };
   useEffect(() => { load(); }, []);
 
-  const startNew = () => { setForm({ name: "", legal_name: "", phone: "", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true }); setEditing("new"); };
-  const startEdit = (sc) => { setForm({ ...sc, smtp_password: "" }); setEditing(sc.id); };
+  const startNew = () => { setForm({ name: "", legal_name: "", phone: "", email_provider: "other", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true, imap_host: "", imap_port: 993, imap_ssl: true, imap_user: "", imap_password: "" }); setEditing("new"); };
+  const startEdit = (sc) => { setForm({ ...sc, email_provider: sc.email_provider || "other", smtp_password: "", imap_password: "" }); setEditing(sc.id); };
+
+  const applyProvider = (provider) => {
+    const presets = {
+      zoho:  { smtp_host: "smtppro.zoho.com", smtp_port: 465, smtp_use_tls: true, imap_host: "imappro.zoho.com", imap_port: 993, imap_ssl: true },
+      gmail: { smtp_host: "smtp.gmail.com",    smtp_port: 465, smtp_use_tls: true, imap_host: "imap.gmail.com",    imap_port: 993, imap_ssl: true },
+      other: {},
+    };
+    setForm((f) => ({ ...f, email_provider: provider, ...(presets[provider] || {}) }));
+  };
+
+  const testSmtp = async () => {
+    if (editing === "new") return toast.error("Save dulu sebelum test");
+    const to = window.prompt("Test SMTP — kirim test email ke alamat:", form.smtp_from_email || "");
+    if (!to) return;
+    try {
+      const { data } = await api.post(`/sub-companies/${editing}/test-smtp`, { to_email: to });
+      toast.success(`✓ ${data.message}`);
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  const testImap = async () => {
+    if (editing === "new") return toast.error("Save dulu sebelum test");
+    try {
+      const { data } = await api.post(`/sub-companies/${editing}/test-imap`);
+      toast.success(`✓ ${data.message}`);
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
 
   const save = async () => {
     if (!form.name.trim()) return toast.error("Company name required");
@@ -361,26 +388,87 @@ function CompaniesSection() {
       </div>
       {editing && (
         <ModalShell title={editing === "new" ? "New Sub-Company" : "Edit Sub-Company"} onClose={() => setEditing(null)} onSave={save} maxWidth="max-w-5xl">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-3">
-              <div className="text-sm font-semibold text-slate-700 flex items-center gap-2"><Buildings size={14} weight="bold" className="text-indigo-600" /> Company info</div>
-              <TermInput label="Company Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="sc-name" />
-              <TermInput label="Legal Name (Nama PT)" value={form.legal_name || ""} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} />
-              <TermInput label="Phone" value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-            </div>
-            <div className="space-y-3">
-              <div className="text-sm font-semibold text-slate-700 flex items-center gap-2"><EnvelopeSimple size={14} weight="bold" className="text-indigo-600" /> SMTP for this company</div>
+          <div className="space-y-5">
+            {/* Provider preset */}
+            <div>
+              <div className="text-sm font-semibold text-slate-700 mb-2">Email Provider</div>
               <div className="grid grid-cols-3 gap-2">
-                <div className="col-span-2"><TermInput label="SMTP Host" value={form.smtp_host || ""} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} /></div>
-                <TermInput label="Port" type="number" value={form.smtp_port || 587} onChange={(e) => setForm({ ...form, smtp_port: e.target.value })} />
+                {[
+                  { key: "zoho",  name: "Zoho Mail", desc: "smtppro.zoho.com" },
+                  { key: "gmail", name: "Gmail",     desc: "smtp.gmail.com (App Password)" },
+                  { key: "other", name: "Other SMTP", desc: "Manual config" },
+                ].map((p) => (
+                  <button
+                    key={p.key} type="button"
+                    onClick={() => applyProvider(p.key)}
+                    data-testid={`provider-${p.key}`}
+                    className={`text-left border rounded-xl p-3 transition-all ${form.email_provider === p.key ? "border-indigo-500 ring-2 ring-indigo-100 bg-indigo-50" : "border-slate-200 hover:border-slate-300"}`}
+                  >
+                    <div className="font-medium text-slate-900 text-sm">{p.name}</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">{p.desc}</div>
+                  </button>
+                ))}
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <TermInput label="SMTP Username" value={form.smtp_user || ""} onChange={(e) => setForm({ ...form, smtp_user: e.target.value })} />
-                <TermInput label="SMTP Password" type="password" placeholder={editing === "new" ? "" : "(leave empty)"} value={form.smtp_password || ""} onChange={(e) => setForm({ ...form, smtp_password: e.target.value })} />
+              {(form.email_provider === "gmail" || form.email_provider === "zoho") && (
+                <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-2">
+                  ⚠️ {form.email_provider === "gmail" ? "Gmail" : "Zoho"} butuh <b>App Password</b>, bukan password akun biasa. {" "}
+                  <a className="underline" target="_blank" rel="noreferrer" href={form.email_provider === "gmail" ? "https://support.google.com/accounts/answer/185833" : "https://www.zoho.com/mail/help/imap-access.html"}>Cara buat App Password →</a>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-3">
+                <div className="text-sm font-semibold text-slate-700 flex items-center gap-2"><Buildings size={14} weight="bold" className="text-indigo-600" /> Company info</div>
+                <TermInput label="Company Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="sc-name" />
+                <TermInput label="Legal Name (Nama PT)" value={form.legal_name || ""} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} />
+                <TermInput label="Phone" value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <TermInput label="From Email" value={form.smtp_from_email || ""} onChange={(e) => setForm({ ...form, smtp_from_email: e.target.value })} />
-                <TermInput label="From Name" value={form.smtp_from_name || ""} onChange={(e) => setForm({ ...form, smtp_from_name: e.target.value })} />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold text-slate-700 flex items-center gap-2"><EnvelopeSimple size={14} weight="bold" className="text-indigo-600" /> SMTP (Outgoing)</div>
+                  {editing !== "new" && (
+                    <button type="button" onClick={testSmtp} data-testid="test-smtp-btn" className="text-[11px] px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-700 hover:bg-emerald-200 font-medium">Test SMTP</button>
+                  )}
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2"><TermInput label="SMTP Host" value={form.smtp_host || ""} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} data-testid="smtp-host" /></div>
+                  <TermInput label="Port" type="number" value={form.smtp_port || 587} onChange={(e) => setForm({ ...form, smtp_port: e.target.value })} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <TermInput label="SMTP Username" value={form.smtp_user || ""} onChange={(e) => setForm({ ...form, smtp_user: e.target.value })} data-testid="smtp-user" />
+                  <TermInput label="SMTP Password" type="password" placeholder={editing === "new" ? "" : "(leave empty)"} value={form.smtp_password || ""} onChange={(e) => setForm({ ...form, smtp_password: e.target.value })} data-testid="smtp-password" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <TermInput label="From Email" value={form.smtp_from_email || ""} onChange={(e) => setForm({ ...form, smtp_from_email: e.target.value })} />
+                  <TermInput label="From Name" value={form.smtp_from_name || ""} onChange={(e) => setForm({ ...form, smtp_from_name: e.target.value })} />
+                </div>
+              </div>
+            </div>
+
+            {/* IMAP section */}
+            <div className="border-t border-slate-200 pt-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold text-slate-700 flex items-center gap-2"><EnvelopeSimple size={14} weight="bold" className="text-purple-600" /> IMAP (Incoming inbox)</div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] text-slate-600 flex items-center gap-1">
+                    <input type="checkbox" className="accent-indigo-600" checked={!form.imap_user && !form.imap_password} onChange={(e) => { if (e.target.checked) setForm({ ...form, imap_user: "", imap_password: "" }); }} />
+                    Sama dengan SMTP
+                  </label>
+                  {editing !== "new" && (
+                    <button type="button" onClick={testImap} data-testid="test-imap-btn" className="text-[11px] px-2.5 py-1 rounded-md bg-purple-100 text-purple-700 hover:bg-purple-200 font-medium">Test IMAP</button>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2"><TermInput label="IMAP Host" value={form.imap_host || ""} onChange={(e) => setForm({ ...form, imap_host: e.target.value })} data-testid="imap-host" /></div>
+                  <TermInput label="Port" type="number" value={form.imap_port || 993} onChange={(e) => setForm({ ...form, imap_port: e.target.value })} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <TermInput label="IMAP Username" placeholder="(same as SMTP)" value={form.imap_user || ""} onChange={(e) => setForm({ ...form, imap_user: e.target.value })} />
+                  <TermInput label="IMAP Password" type="password" placeholder={editing === "new" ? "(same as SMTP)" : "(leave empty)"} value={form.imap_password || ""} onChange={(e) => setForm({ ...form, imap_password: e.target.value })} />
+                </div>
               </div>
             </div>
           </div>

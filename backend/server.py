@@ -181,16 +181,22 @@ class MyLeadAdd(BaseModel):
 
 
 class SubCompanyCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    legal_name: Optional[str] = ""
-    phone: Optional[str] = ""
+    name: str
+    legal_name: Optional[str] = None
+    phone: Optional[str] = None
     smtp_host: Optional[str] = None
-    smtp_port: Optional[int] = 587
+    smtp_port: Optional[int] = None
     smtp_user: Optional[str] = None
     smtp_password: Optional[str] = None
     smtp_use_tls: Optional[bool] = True
     smtp_from_email: Optional[EmailStr] = None
     smtp_from_name: Optional[str] = None
+    email_provider: Optional[Literal["zoho", "gmail", "other"]] = None
+    imap_host: Optional[str] = None
+    imap_port: Optional[int] = None
+    imap_ssl: Optional[bool] = True
+    imap_user: Optional[str] = None
+    imap_password: Optional[str] = None
 
 
 class SubCompanyUpdate(BaseModel):
@@ -204,6 +210,16 @@ class SubCompanyUpdate(BaseModel):
     smtp_use_tls: Optional[bool] = None
     smtp_from_email: Optional[EmailStr] = None
     smtp_from_name: Optional[str] = None
+    email_provider: Optional[Literal["zoho", "gmail", "other"]] = None
+    imap_host: Optional[str] = None
+    imap_port: Optional[int] = None
+    imap_ssl: Optional[bool] = None
+    imap_user: Optional[str] = None
+    imap_password: Optional[str] = None
+
+
+class SmtpTestReq(BaseModel):
+    to_email: EmailStr
 
 
 # ─── CRM Prospect models ───
@@ -2093,6 +2109,63 @@ async def submit_task(tid: str, payload: OutreachTaskSubmit, background: Backgro
 
     background.add_task(_runner)
     return {"task_id": tid, "queued": len(new_send_ids), "status": "sending"}
+
+
+@api.post("/sub-companies/{sc_id}/test-smtp")
+async def test_sub_smtp(sc_id: str, req: SmtpTestReq, user: dict = Depends(get_current_user)):
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]})
+    if not sc:
+        raise HTTPException(404, "Sub-company not found")
+    if not sc.get("smtp_host"):
+        raise HTTPException(400, "SMTP host belum di-set")
+    from_email = sc.get("smtp_from_email") or sc.get("smtp_user") or "noreply@example.com"
+    body = f"<p>✓ SMTP test from <b>{sc['name']}</b> via {sc['smtp_host']}:{sc.get('smtp_port', 587)}</p><p>If you received this, your SMTP setting is working correctly.</p>"
+    result = await asyncio.to_thread(
+        send_smtp_email,
+        sc["smtp_host"], int(sc.get("smtp_port") or 587),
+        sc.get("smtp_user") or "", sc.get("smtp_password") or "",
+        bool(sc.get("smtp_use_tls", True)),
+        from_email, sc.get("smtp_from_name") or "Test", req.to_email,
+        f"SMTP Test from {sc['name']}", body,
+    )
+    if not result["ok"]:
+        raise HTTPException(400, f"SMTP test gagal: {result['error']}")
+    return {"ok": True, "message": f"Test email terkirim ke {req.to_email} via {sc['smtp_host']}"}
+
+
+@api.post("/sub-companies/{sc_id}/test-imap")
+async def test_sub_imap(sc_id: str, user: dict = Depends(get_current_user)):
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]})
+    if not sc:
+        raise HTTPException(404, "Sub-company not found")
+    host = sc.get("imap_host")
+    user_login = sc.get("imap_user") or sc.get("smtp_user")
+    password = sc.get("imap_password") or sc.get("smtp_password")
+    if not host or not user_login or not password:
+        raise HTTPException(400, "IMAP host/user/password belum di-set")
+
+    def _imap_check():
+        import imaplib, socket
+        port = int(sc.get("imap_port") or 993)
+        use_ssl = bool(sc.get("imap_ssl", True))
+        try:
+            socket.setdefaulttimeout(15)
+            cls = imaplib.IMAP4_SSL if use_ssl else imaplib.IMAP4
+            with cls(host, port) as m:
+                m.login(user_login, password)
+                typ, data = m.select("INBOX", readonly=True)
+                if typ != "OK":
+                    return {"ok": False, "error": "Cannot select INBOX"}
+                # Count messages
+                typ, msgs = m.status("INBOX", "(MESSAGES UNSEEN)")
+                return {"ok": True, "status": (msgs[0].decode() if msgs and msgs[0] else "")}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    result = await asyncio.to_thread(_imap_check)
+    if not result["ok"]:
+        raise HTTPException(400, f"IMAP test gagal: {result['error']}")
+    return {"ok": True, "message": f"IMAP login berhasil — {result.get('status', 'INBOX OK')}"}
 
 
 @api.get("/working-config")
