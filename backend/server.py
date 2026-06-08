@@ -314,7 +314,11 @@ class CampaignCreate(BaseModel):
     from_name: Optional[str] = None
     from_email: Optional[EmailStr] = None
     schedule_at: Optional[str] = None  # ISO date or None
-    contact_ids: List[str] = []
+    sub_company_id: Optional[str] = None      # which SMTP profile to use
+    recipient_source: Literal["my_leads", "contacts", "manual"] = "contacts"
+    contact_ids: List[str] = []               # used when source=contacts
+    my_lead_ids: List[str] = []               # used when source=my_leads
+    manual_emails: List[str] = []             # used when source=manual (raw addresses)
     filter_industry: Optional[str] = None
     filter_country: Optional[str] = None
     filter_min_score: Optional[int] = None
@@ -1248,40 +1252,76 @@ async def send_campaign(campaign_id: str, req: CampaignSendReq, background: Back
     if not camp:
         raise HTTPException(404, "Not found")
     tenant = await db.tenants.find_one({"id": user["tenant_id"]})
-    if not tenant.get("smtp_host"):
-        raise HTTPException(400, "SMTP not configured. Go to Settings.")
+
+    # Resolve SMTP source: sub_company > tenant
+    smtp_src = None
+    if camp.get("sub_company_id"):
+        sc = await db.sub_companies.find_one({"id": camp["sub_company_id"], "tenant_id": user["tenant_id"]})
+        if sc and sc.get("smtp_host"):
+            smtp_src = sc
+    if smtp_src is None:
+        if not tenant.get("smtp_host"):
+            raise HTTPException(400, "SMTP not configured. Configure SMTP for the selected sub-company or tenant.")
+        smtp_src = tenant
 
     # Resolve recipient list
-    contact_ids = camp.get("contact_ids") or []
-    if not contact_ids:
-        # use filters
-        q = {"tenant_id": user["tenant_id"], "status": {"$ne": "invalid"}}
-        if camp.get("filter_min_score"):
-            q["confidence_score"] = {"$gte": camp["filter_min_score"]}
-        if camp.get("filter_industry") or camp.get("filter_country"):
-            comp_q = {"tenant_id": user["tenant_id"]}
-            if camp.get("filter_industry"): comp_q["industry"] = camp["filter_industry"]
-            if camp.get("filter_country"): comp_q["country"] = camp["filter_country"]
-            comp_ids = [c["id"] async for c in db.companies.find(comp_q, {"id": 1, "_id": 0})]
-            q["company_id"] = {"$in": comp_ids}
-        contacts = await db.contacts.find(q, {"_id": 0}).to_list(5000)
-    else:
-        contacts = await db.contacts.find({"tenant_id": user["tenant_id"], "id": {"$in": contact_ids}}, {"_id": 0}).to_list(5000)
+    source = camp.get("recipient_source") or "contacts"
+    recipients_data: List[dict] = []
 
-    if not contacts:
+    if source == "manual":
+        emails = [e.strip() for e in (camp.get("manual_emails") or []) if e and "@" in e]
+        seen = set()
+        for em in emails:
+            key = em.lower()
+            if key in seen: continue
+            seen.add(key)
+            recipients_data.append({"id": None, "email": em, "name": None})
+
+    elif source == "my_leads":
+        lead_ids = camp.get("my_lead_ids") or []
+        if not lead_ids:
+            raise HTTPException(400, "No leads selected")
+        leads = await db.my_leads.find({"tenant_id": user["tenant_id"], "id": {"$in": lead_ids}}, {"_id": 0}).to_list(5000)
+        cids = list({ld["contact_id"] for ld in leads})
+        cts = {c["id"]: c async for c in db.contacts.find({"id": {"$in": cids}, "tenant_id": user["tenant_id"]}, {"_id": 0})}
+        for ld in leads:
+            c = cts.get(ld["contact_id"])
+            if c and c.get("email"):
+                recipients_data.append({"id": c["id"], "email": c["email"], "name": c.get("name")})
+
+    else:  # contacts (master DB)
+        contact_ids = camp.get("contact_ids") or []
+        if not contact_ids:
+            q = {"tenant_id": user["tenant_id"], "status": {"$ne": "invalid"}}
+            if camp.get("filter_min_score"):
+                q["confidence_score"] = {"$gte": camp["filter_min_score"]}
+            if camp.get("filter_industry") or camp.get("filter_country"):
+                comp_q = {"tenant_id": user["tenant_id"]}
+                if camp.get("filter_industry"): comp_q["industry"] = camp["filter_industry"]
+                if camp.get("filter_country"): comp_q["country"] = camp["filter_country"]
+                comp_ids = [c["id"] async for c in db.companies.find(comp_q, {"id": 1, "_id": 0})]
+                q["company_id"] = {"$in": comp_ids}
+            contacts = await db.contacts.find(q, {"_id": 0}).to_list(5000)
+        else:
+            contacts = await db.contacts.find({"tenant_id": user["tenant_id"], "id": {"$in": contact_ids}}, {"_id": 0}).to_list(5000)
+        for c in contacts:
+            if c.get("email"):
+                recipients_data.append({"id": c["id"], "email": c["email"], "name": c.get("name")})
+
+    if not recipients_data:
         raise HTTPException(400, "No recipients matched")
 
     # Create recipient rows
     recipient_ids = []
-    for c in contacts:
+    for rd in recipients_data:
         rid = str(uuid.uuid4())
         await db.campaign_recipients.insert_one({
             "id": rid,
             "campaign_id": campaign_id,
             "tenant_id": user["tenant_id"],
-            "contact_id": c["id"],
-            "email": c["email"],
-            "name": c.get("name"),
+            "contact_id": rd["id"],
+            "email": rd["email"],
+            "name": rd.get("name"),
             "delivered": False,
             "opens": 0,
             "clicks": 0,
@@ -1294,13 +1334,6 @@ async def send_campaign(campaign_id: str, req: CampaignSendReq, background: Back
         recipient_ids.append(rid)
 
     await db.campaigns.update_one({"id": campaign_id}, {"$set": {"status": "sending", "sent_at": now_iso()}})
-
-    # Resolve SMTP source: per-user override OR tenant default
-    sender_user = await db.users.find_one({"id": camp.get("created_by")}) if camp.get("created_by") else None
-    if sender_user and sender_user.get("smtp_use_company") is False and sender_user.get("smtp_host"):
-        smtp_src = sender_user
-    else:
-        smtp_src = tenant
 
     async def _runner():
         sent = 0

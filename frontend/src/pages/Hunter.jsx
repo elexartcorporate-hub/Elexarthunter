@@ -461,8 +461,8 @@ function AddToListModal({ company, contacts, categories, locations, onClose, onS
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 fade-up">
-      <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
+    <div className="fixed inset-0 z-50 bg-black/40 fade-up grid place-items-center p-4 overflow-y-auto">
+      <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl mx-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div>
             <div className="text-[11px] text-slate-500 font-medium uppercase tracking-wide">Add to my list</div>

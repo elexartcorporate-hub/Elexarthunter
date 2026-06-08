@@ -390,18 +390,23 @@ function ApiSection() {
 /* ──────────── Modal shell ──────────── */
 function ModalShell({ title, children, onClose, onSave, saveLabel = "Save" }) {
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 fade-up">
-      <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 sticky top-0 bg-white z-10">
-          <h2 className="font-display text-lg text-slate-900">{title}</h2>
-          <button onClick={onClose} className="text-slate-500 hover:text-red-500"><X size={20} weight="bold" /></button>
-        </div>
-        <div className="p-6">{children}</div>
-        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 sticky bottom-0 bg-white">
-          <GhostButton onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton onClick={onSave}>{saveLabel}</PrimaryButton>
-        </div>
-      </Card>
+    <div className="fixed inset-0 z-50 bg-black/40 fade-up overflow-y-auto" onClick={onClose}>
+      <div className="min-h-full flex items-start sm:items-center justify-center p-4 py-8">
+        <Card
+          className="w-full max-w-3xl shadow-2xl flex flex-col my-auto"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-white rounded-t-xl">
+            <h2 className="font-display text-lg text-slate-900">{title}</h2>
+            <button onClick={onClose} className="text-slate-500 hover:text-red-500" data-testid="modal-close-btn"><X size={20} weight="bold" /></button>
+          </div>
+          <div className="p-6">{children}</div>
+          <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 bg-white rounded-b-xl">
+            <GhostButton onClick={onClose}>Cancel</GhostButton>
+            <PrimaryButton onClick={onSave} data-testid="modal-save-btn">{saveLabel}</PrimaryButton>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }

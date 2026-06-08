@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 2 - Full backend + frontend test of new features: Sub-Companies (per-tenant SMTP profiles), My Leads, Modal overlay fix in Settings, and 3-step Email Marketing wizard with manual/my_leads/contacts sources. 15/15 new backend pytest tests passed (test_subco_campaigns.py). All 29 prior tests still pass. Frontend E2E flow at viewport 1366x768: demo@test.com login OK -> Settings -> Companies -> 'Add Company' modal opens with header (title+X) visible and Save/Cancel reachable; modal overflow scrolling confirmed (scrollHeight=720, clientHeight=497). Created sub-company 'QA Test Co' with smtp.test.com:587 -> shows 'SMTP configured' badge in list. Email Marketing -> New Campaign 3-step wizard: step1 sub-company tile + Manual source, step2 textarea with '2 valid' detection badge, step3 fields with live preview pane. Saved as draft -> appears in list with badges 'draft' + 'QA Test Co' + 'manual'. Preview modal renders Configuration (status/sub-company/source/from/recipients) + Body Preview correctly. Send Now flow exercised (sub-company SMTP resolution path verified in backend test_11).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Settings -> Add Company modal at 1366x768", "issues": ["Modal renders correctly with internal scroll. Save/Cancel and X close are all reachable. No overflow-cut-off observed - previous bug is fixed."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_subco_campaigns.py",
+    "/app/backend/tests/test_lead_hunter_backend.py",
+    "/app/test_reports/pytest/subco_results.xml"
+  ],
+  "action_items": [
+    "None - all targeted features pass. Optional: consider adding data-testid attributes to wizard step buttons (Continue/Back/Save Draft) and to sub-company tiles for more robust automation in future."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 1495 lines - past the 700 line threshold. Strongly consider splitting into routers (auth/hunter/campaigns/sub_companies/team) for maintainability.",
+    "send_campaign endpoint correctly resolves SMTP source (sub_company > tenant) and returns 400 with 'SMTP not configured' message when neither has smtp_host set - matches expected contract.",
+    "CampaignCreate model cleanly extended with sub_company_id / recipient_source / manual_emails / my_lead_ids while keeping backward-compat with legacy contact_ids (verified by test_09_create_campaign_legacy_contact_ids).",
+    "Good: SubCompanyCreate uses model_dump() and explicitly pops _id before return - no ObjectId leak.",
+    "Minor: send_campaign sets status='sending' BEFORE the background runner finishes - on FastAPI worker restart mid-send the campaign would be stuck in 'sending'. Acceptable for MVP but should be tracked.",
+    "Good: manual emails are de-duped case-insensitively and validated for '@' presence at send time.",
+    "Modal overlay fix verified: ModalShell uses 'fixed inset-0 ... overflow-y-auto' + inner 'min-h-full flex items-start sm:items-center' pattern which allows native page scroll inside the overlay - matches the agent-to-agent note."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_subco_campaigns.py (new - 15 tests)"
+  ],
+  "success_rate": {"backend": "100% (15/15 new + 29/29 prior)", "frontend": "100% (login, settings modal scroll/save, 3-step EM wizard, preview modal, badges all verified)"},
+  "test_credentials": "demo@test.com / demo1234 (Owner of tenant 'Demo Co') from /app/memory/test_credentials.md - verified working. Sub-company test tenant is auto-registered with TEST_subco_*@example.com.",
+  "seed_data_creation": "test_subco_campaigns.py creates 2 fresh tenants per run (one with QA Test Co sub-company + 3 campaigns; one without SMTP for the 400 negative test). It also leaves QA Test Co sub-company + QA Smoke draft campaign on the demo@test.com tenant from the UI flow.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test data accumulates on demo@test.com tenant (the UI test added sub-company 'QA Test Co' + draft campaign 'QA Smoke'). Backend tests (/app/backend/tests/test_subco_campaigns.py) are self-contained with TEST_ prefixed emails. Sub-companies endpoints: GET/POST/PATCH/DELETE /api/sub-companies. SMTP resolution priority: sub-company smtp_host > tenant smtp_host > 400. recipient_source can be 'manual' | 'my_leads' | 'contacts' (default). Empty my_lead_ids is allowed at create time but rejected at send time with 400 'No leads selected'. Send Now from UI also works - if tenant Demo Co has no SMTP it will toast 400 'SMTP not configured', which is expected behaviour per the agent-to-agent note.",
+  "rca of the issue": "No issues found this iteration. All new features (sub-companies, 3-step EM wizard, modal scroll fix, recipient_source switch, SMTP resolution priority, backward-compat) work as designed."
+}
