@@ -276,12 +276,14 @@ class TemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     subject: str
     body_html: str
+    body_type: Literal["html", "plain"] = "html"
 
 
 class TemplateUpdate(BaseModel):
     name: Optional[str] = None
     subject: Optional[str] = None
     body_html: Optional[str] = None
+    body_type: Optional[Literal["html", "plain"]] = None
 
 
 class SendEmailReq(BaseModel):
@@ -2084,18 +2086,25 @@ async def submit_task(tid: str, payload: OutreachTaskSubmit, background: Backgro
         return {"task_id": tid, "queued": len(new_send_ids), "scheduled_at": sched_iso, "status": "scheduled"}
 
     async def _runner():
+        body_type, atts = await _load_template_extras(user["tenant_id"], payload.template_id)
+
         for sid in new_send_ids:
             s = await db.email_sends.find_one({"id": sid, "status": "queued"})
             if not s: continue
             from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
             from_name  = smtp_src.get("smtp_from_name")
-            tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+            if body_type == "html":
+                tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+            else:
+                tracked = s["body_html"]
+            unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{s['id']}" if PUBLIC_BASE_URL else None
             result = await asyncio.to_thread(
                 send_smtp_email,
                 smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
                 smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
                 bool(smtp_src.get("smtp_use_tls", True)),
                 from_email, from_name, s["to_email"], s["subject"], tracked,
+                body_type, atts, unsubscribe_url, from_email,
             )
             if result["ok"]:
                 await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
@@ -2757,6 +2766,24 @@ async def add_prospect_note(pid: str, payload: NoteAdd, user: dict = Depends(get
 
 
 # ─── Email send (single + bulk) ───
+async def _load_template_extras(tenant_id: str, template_id: Optional[str]) -> tuple:
+    """Return (body_type, attachments_list) for a template. Defaults to ('html', [])."""
+    if not template_id:
+        return "html", []
+    tpl = await db.email_templates.find_one({"id": template_id, "tenant_id": tenant_id})
+    if not tpl:
+        return "html", []
+    body_type = tpl.get("body_type") or "html"
+    att_rows = await db.template_attachments.find(
+        {"template_id": template_id, "tenant_id": tenant_id}
+    ).to_list(50)
+    atts = [
+        {"filename": a.get("filename"), "content_type": a.get("content_type"), "data_b64": a.get("data_b64")}
+        for a in att_rows
+    ]
+    return body_type, atts
+
+
 def _apply_template_vars(text: str, prospect: dict, primary_email: str) -> str:
     """Replace {{name}}, {{company}}, {{email}}, {{industry}} variables."""
     if not text: return text
@@ -2828,15 +2855,21 @@ async def send_prospect_email(pid: str, payload: SendEmailReq, background: Backg
     await db.email_sends.insert_one(send_doc)
 
     async def _runner():
+        body_type, atts = await _load_template_extras(user["tenant_id"], payload.template_id)
         from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
         from_name  = smtp_src.get("smtp_from_name")
-        tracked = inject_tracking(body, send_id, PUBLIC_BASE_URL or "")
+        if body_type == "html":
+            tracked = inject_tracking(body, send_id, PUBLIC_BASE_URL or "")
+        else:
+            tracked = body
+        unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{send_id}" if PUBLIC_BASE_URL else None
         result = await asyncio.to_thread(
             send_smtp_email,
             smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
             smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
             bool(smtp_src.get("smtp_use_tls", True)),
             from_email, from_name, payload.to_email, subject, tracked,
+            body_type, atts, unsubscribe_url, from_email,
         )
         if result["ok"]:
             await db.email_sends.update_one({"id": send_id}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
@@ -2913,18 +2946,24 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
         return {"queued": queued, "scheduled_at": sched_iso, "scheduled": True}
 
     async def _runner_all():
+        body_type, atts = await _load_template_extras(user["tenant_id"], payload.template_id)
         for sid in new_send_ids:
             s = await db.email_sends.find_one({"id": sid, "status": "queued"})
             if not s: continue
             from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
             from_name  = smtp_src.get("smtp_from_name")
-            tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+            if body_type == "html":
+                tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+            else:
+                tracked = s["body_html"]
+            unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{s['id']}" if PUBLIC_BASE_URL else None
             result = await asyncio.to_thread(
                 send_smtp_email,
                 smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
                 smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
                 bool(smtp_src.get("smtp_use_tls", True)),
                 from_email, from_name, s["to_email"], s["subject"], tracked,
+                body_type, atts, unsubscribe_url, from_email,
             )
             if result["ok"]:
                 await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
@@ -2940,10 +2979,28 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
 
 
 # ─── Email Templates ───
+async def _attach_template_attachments(rows: List[dict]) -> List[dict]:
+    """Enrich template rows with attachment metadata (no file data)."""
+    if not rows:
+        return rows
+    ids = [r["id"] for r in rows]
+    atts = await db.template_attachments.find(
+        {"template_id": {"$in": ids}},
+        {"_id": 0, "data_b64": 0},
+    ).to_list(2000)
+    by_tpl = {}
+    for a in atts:
+        by_tpl.setdefault(a["template_id"], []).append(a)
+    for r in rows:
+        r["body_type"] = r.get("body_type") or "html"
+        r["attachments"] = by_tpl.get(r["id"], [])
+    return rows
+
+
 @api.get("/templates")
 async def list_templates(user: dict = Depends(get_current_user)):
     rows = await db.email_templates.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return rows
+    return await _attach_template_attachments(rows)
 
 
 @api.post("/templates")
@@ -2952,10 +3009,12 @@ async def create_template(payload: TemplateCreate, user: dict = Depends(get_curr
     doc = {
         "id": tid, "tenant_id": user["tenant_id"],
         "name": payload.name, "subject": payload.subject, "body_html": payload.body_html,
+        "body_type": payload.body_type,
         "created_by": user["id"], "created_at": now_iso(), "updated_at": now_iso(),
     }
     await db.email_templates.insert_one(doc)
     doc.pop("_id", None)
+    doc["attachments"] = []
     return doc
 
 
@@ -2967,12 +3026,17 @@ async def update_template(tid: str, payload: TemplateUpdate, user: dict = Depend
         res = await db.email_templates.update_one({"id": tid, "tenant_id": user["tenant_id"]}, {"$set": upd})
         if not res.matched_count:
             raise HTTPException(404, "Template not found")
-    return await db.email_templates.find_one({"id": tid}, {"_id": 0})
+    row = await db.email_templates.find_one({"id": tid}, {"_id": 0})
+    if row:
+        await _attach_template_attachments([row])
+    return row
 
 
 @api.delete("/templates/{tid}")
 async def delete_template(tid: str, user: dict = Depends(get_current_user)):
     res = await db.email_templates.delete_one({"id": tid, "tenant_id": user["tenant_id"]})
+    if res.deleted_count:
+        await db.template_attachments.delete_many({"template_id": tid, "tenant_id": user["tenant_id"]})
     return {"deleted": res.deleted_count}
 
 
@@ -2985,11 +3049,97 @@ async def duplicate_template(tid: str, user: dict = Depends(get_current_user)):
     doc = {
         "id": new_id, "tenant_id": user["tenant_id"],
         "name": f"{src['name']} (copy)", "subject": src["subject"], "body_html": src["body_html"],
+        "body_type": src.get("body_type") or "html",
         "created_by": user["id"], "created_at": now_iso(), "updated_at": now_iso(),
     }
     await db.email_templates.insert_one(doc)
+    # Duplicate attachments too
+    src_atts = await db.template_attachments.find({"template_id": tid, "tenant_id": user["tenant_id"]}).to_list(100)
+    new_atts = []
+    for a in src_atts:
+        a.pop("_id", None)
+        a["id"] = str(uuid.uuid4())
+        a["template_id"] = new_id
+        a["created_at"] = now_iso()
+        new_atts.append(a)
+    if new_atts:
+        await db.template_attachments.insert_many(new_atts)
     doc.pop("_id", None)
+    doc["attachments"] = [{k: v for k, v in a.items() if k not in ("data_b64", "_id")} for a in new_atts]
     return doc
+
+
+# ─── Template Attachments ───
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024  # 8 MB per file
+MAX_TOTAL_ATTACHMENTS_BYTES = 20 * 1024 * 1024  # 20 MB per template
+
+
+from fastapi import UploadFile, File
+import base64
+
+
+@api.post("/templates/{tid}/attachments")
+async def upload_template_attachment(
+    tid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Upload an attachment for a template. Stored as base64 in MongoDB (≤8MB per file, ≤20MB total)."""
+    tpl = await db.email_templates.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    if not tpl:
+        raise HTTPException(404, "Template not found")
+    raw = await file.read()
+    size = len(raw)
+    if size == 0:
+        raise HTTPException(400, "File kosong")
+    if size > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(400, f"File terlalu besar (max {MAX_ATTACHMENT_BYTES // (1024*1024)} MB)")
+    existing = await db.template_attachments.aggregate([
+        {"$match": {"template_id": tid, "tenant_id": user["tenant_id"]}},
+        {"$group": {"_id": None, "total": {"$sum": "$size"}}},
+    ]).to_list(1)
+    current_total = (existing[0]["total"] if existing else 0)
+    if current_total + size > MAX_TOTAL_ATTACHMENTS_BYTES:
+        raise HTTPException(400, f"Total ukuran attachment melebihi {MAX_TOTAL_ATTACHMENTS_BYTES // (1024*1024)} MB")
+    att_id = str(uuid.uuid4())
+    doc = {
+        "id": att_id,
+        "tenant_id": user["tenant_id"],
+        "template_id": tid,
+        "filename": file.filename or "attachment.bin",
+        "content_type": file.content_type or "application/octet-stream",
+        "size": size,
+        "data_b64": base64.b64encode(raw).decode("ascii"),
+        "created_at": now_iso(),
+        "created_by": user["id"],
+    }
+    await db.template_attachments.insert_one(doc)
+    meta = {k: v for k, v in doc.items() if k not in ("_id", "data_b64")}
+    return meta
+
+
+@api.delete("/templates/{tid}/attachments/{att_id}")
+async def delete_template_attachment(tid: str, att_id: str, user: dict = Depends(get_current_user)):
+    tpl = await db.email_templates.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    if not tpl:
+        raise HTTPException(404, "Template not found")
+    res = await db.template_attachments.delete_one({"id": att_id, "template_id": tid, "tenant_id": user["tenant_id"]})
+    if not res.deleted_count:
+        raise HTTPException(404, "Attachment not found")
+    return {"deleted": 1}
+
+
+@api.get("/templates/{tid}/attachments/{att_id}/download")
+async def download_template_attachment(tid: str, att_id: str, user: dict = Depends(get_current_user)):
+    att = await db.template_attachments.find_one({"id": att_id, "template_id": tid, "tenant_id": user["tenant_id"]})
+    if not att:
+        raise HTTPException(404, "Attachment not found")
+    raw = base64.b64decode(att["data_b64"])
+    return FastAPIResponse(
+        content=raw,
+        media_type=att.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{att["filename"]}"'},
+    )
 
 
 # ─── Email Activity ───
@@ -3189,13 +3339,19 @@ async def _scheduler_loop():
                     continue
                 from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
                 from_name  = smtp_src.get("smtp_from_name")
-                tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+                body_type, atts = await _load_template_extras(s["tenant_id"], s.get("template_id"))
+                if body_type == "html":
+                    tracked = inject_tracking(s["body_html"], s["id"], PUBLIC_BASE_URL or "")
+                else:
+                    tracked = s["body_html"]
+                unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{s['id']}" if PUBLIC_BASE_URL else None
                 result = await asyncio.to_thread(
                     send_smtp_email,
                     smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
                     smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
                     bool(smtp_src.get("smtp_use_tls", True)),
                     from_email, from_name, s["to_email"], s["subject"], tracked,
+                    body_type, atts, unsubscribe_url, from_email,
                 )
                 if result["ok"]:
                     await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})

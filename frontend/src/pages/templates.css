@@ -1,0 +1,23 @@
+/* Quill editor in template modal */
+.quill-wrapper .ql-toolbar.ql-snow {
+  border-top-left-radius: 0.5rem;
+  border-top-right-radius: 0.5rem;
+  border-color: rgb(226 232 240); /* slate-200 */
+  background: rgb(248 250 252); /* slate-50 */
+}
+.quill-wrapper .ql-container.ql-snow {
+  border-bottom-left-radius: 0.5rem;
+  border-bottom-right-radius: 0.5rem;
+  border-color: rgb(226 232 240);
+  font-family: inherit;
+  font-size: 0.875rem;
+}
+.quill-wrapper .ql-editor {
+  min-height: 180px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.quill-wrapper .ql-editor.ql-blank::before {
+  font-style: normal;
+  color: rgb(148 163 184); /* slate-400 */
+}

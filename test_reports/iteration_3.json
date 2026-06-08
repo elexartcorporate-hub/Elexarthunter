@@ -1,0 +1,39 @@
+{
+  "summary": "Tested Template UX overhaul end-to-end (HTML/Plain body_type, attachments, ReactQuill, modal scrolling). Backend: 11/11 template tests PASS after I fixed 1 MongoDB ObjectId bug in /api/templates/{tid}/duplicate. Inbox regression 23/24 (1 pre-existing unrelated failure). send_smtp_email signature is backward compatible (verified). Frontend: modal opens with header at top (bug fixed), HTML/Plain toggle works, ReactQuill renders, variable chips insert {{name}}, save flow works, edit loads existing content, attachment upload+delete works, plain badge shown, preview preserves newlines, navigation regression clean across all pages.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/templates/{tid}/duplicate", "issue": "Returned 500 due to MongoDB-injected '_id' ObjectId leaking into response. FIXED by excluding '_id' from attachments serializer."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_templates.py",
+    "/app/test_reports/pytest/templates_results.xml"
+  ],
+  "action_items": [
+    "Optional: consider replacing window.confirm() for attachment delete (line 243) with an in-app confirm dialog for better UX consistency.",
+    "Optional: pre-existing test_inbox.py::test_auth_me_owner_has_inbox fails because 'inbox' permission is not in Owner's permission catalog. Unrelated to Template work but worth flagging."
+  ],
+  "critical_code_review_comments": [
+    "Templates.jsx is 491 lines (within budget). Good separation. Quill insertVariable uses raw DOM mutation; acceptable but could be migrated to react-quill getEditor().insertText for cleaner integration.",
+    "send_smtp_email signature uses kwargs with defaults — backward compatible verified. Good anti-spam header set (Message-ID, Date, List-Unsubscribe, MIME-Version).",
+    "Attachment storage as base64 in MongoDB is fine for ≤8MB/file and ≤20MB/template limits. For larger files, consider moving to GridFS in future.",
+    "delete_template cleans up template_attachments. Good. Duplicate also copies attachments. Verified."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (1 line fix: duplicate_template response excludes _id)",
+    "/app/backend/tests/test_templates.py (new test file, 11 tests)"
+  ],
+  "success_rate": {"backend": "100% (11/11 template tests; 23/24 inbox regression — 1 pre-existing)", "frontend": "100% of tested flows"},
+  "test_credentials": "demo@test.com / demo1234 (Owner)",
+  "seed_data_creation": "All test templates use TEST_ prefix and are auto-cleaned by fixture teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Templates feature is stable. Backend test suite at /app/backend/tests/test_templates.py covers CRUD + attachments + duplicate + delete-cleanup + send signature compat. Run with: REACT_APP_BACKEND_URL=<url> pytest backend/tests/test_templates.py -v. Attachment delete in UI uses window.confirm; tests must register 'dialog' handler with page.on('dialog', lambda d: d.accept()). The hidden file input ([data-testid='tpl-attach-input']) is class='hidden' by design — use set_input_files which works on hidden inputs without waiting for visibility.",
+  "rca of the issue": "Bug in /api/templates/{tid}/duplicate: after `await db.template_attachments.insert_many(new_atts)`, MongoDB mutates each dict in `new_atts` adding its own ObjectId `_id`. The response serializer filtered only 'data_b64' but not '_id', causing FastAPI's jsonable_encoder to crash with `TypeError: 'ObjectId' object is not iterable`. Reproduction: upload an attachment to a template → POST /api/templates/{tid}/duplicate → 500. Fix: include '_id' in the exclusion set when building doc['attachments'] response. Reproduced and verified fix via test_duplicate_template_copies_attachments."
+}
