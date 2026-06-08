@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { PageHeader, Card, TermInput, TermSelect, PrimaryButton, GhostButton, Badge } from "@/components/term";
-import { UsersThree, Key, Plus, Trash, PencilSimple, X, Buildings, EnvelopeSimple, CaretDown, CaretUp, ShieldCheck, Lock } from "@phosphor-icons/react";
+import { UsersThree, Key, Plus, Trash, PencilSimple, X, Buildings, EnvelopeSimple, CaretDown, CaretUp, ShieldCheck, Lock, Tag, MapPin } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const EMPTY_USER_FORM = {
@@ -257,8 +257,11 @@ export default function Settings() {
 
       <div className="flex border border-slate-200 rounded-sm overflow-hidden w-fit mb-5">
         <TabBtn active={tab === "users"} onClick={() => setTab("users")} icon={UsersThree} label="User Management" testid="tab-users" />
+        <TabBtn active={tab === "hunter-settings"} onClick={() => setTab("hunter-settings")} icon={Tag} label="Hunter Settings" testid="tab-hunter-settings" />
         <TabBtn active={tab === "hunter"} onClick={() => setTab("hunter")} icon={Key} label="Hunter.io API" testid="tab-hunter-api" />
       </div>
+
+      {tab === "hunter-settings" && <HunterSettingsTab />}
 
       {tab === "users" && (
         <div className="space-y-4">
@@ -774,12 +777,112 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
     <button
       onClick={onClick}
       data-testid={testid}
-      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-slate-200 last:border-r-0 ${
+      className={`px-4 py-2 text-[12px] font-medium flex items-center gap-2 transition-colors border-r border-slate-200 last:border-r-0 ${
         active ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
       }`}
     >
       <Icon size={14} weight="bold" />
       {label}
     </button>
+  );
+}
+
+function HunterSettingsTab() {
+  const [categories, setCategories] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [newCat, setNewCat] = useState("");
+  const [newLoc, setNewLoc] = useState("");
+
+  const load = async () => {
+    try {
+      const [c, l] = await Promise.all([
+        api.get("/hunter-settings/categories"),
+        api.get("/hunter-settings/locations"),
+      ]);
+      setCategories(c.data);
+      setLocations(l.data);
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const addCat = async () => {
+    if (!newCat.trim()) return;
+    try { await api.post("/hunter-settings/categories", { name: newCat.trim() }); setNewCat(""); toast.success("Category added"); load(); }
+    catch (err) { toast.error(formatApiError(err)); }
+  };
+  const delCat = async (id) => {
+    if (!window.confirm("Delete this category?")) return;
+    try { await api.delete(`/hunter-settings/categories/${id}`); toast.success("Deleted"); load(); }
+    catch (err) { toast.error(formatApiError(err)); }
+  };
+  const addLoc = async () => {
+    if (!newLoc.trim()) return;
+    try { await api.post("/hunter-settings/locations", { name: newLoc.trim() }); setNewLoc(""); toast.success("Location added"); load(); }
+    catch (err) { toast.error(formatApiError(err)); }
+  };
+  const delLoc = async (id) => {
+    if (!window.confirm("Delete this location?")) return;
+    try { await api.delete(`/hunter-settings/locations/${id}`); toast.success("Deleted"); load(); }
+    catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <Card className="p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <Tag size={18} weight="bold" className="text-indigo-600" />
+          <h3 className="font-display text-base font-semibold text-slate-900">Categories ({categories.length})</h3>
+        </div>
+        <div className="text-xs text-slate-500 mb-3">Industry, niche or vertical — used to organize your saved leads.</div>
+        <div className="flex gap-2 mb-3">
+          <input
+            className="flex-1 bg-white border border-slate-200 text-slate-900 rounded-lg px-3 py-2 text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+            placeholder="e.g. Travel, SaaS, E-commerce"
+            value={newCat}
+            onChange={(e) => setNewCat(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addCat()}
+            data-testid="new-category-input"
+          />
+          <PrimaryButton onClick={addCat} data-testid="add-category-btn"><Plus size={14} weight="bold" /> Add</PrimaryButton>
+        </div>
+        <div className="space-y-1.5">
+          {categories.length === 0 && <div className="text-sm text-slate-400 py-3 text-center">No categories yet</div>}
+          {categories.map((c) => (
+            <div key={c.id} className="flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg hover:bg-slate-100">
+              <span className="text-sm text-slate-700">{c.name}</span>
+              <button onClick={() => delCat(c.id)} className="text-slate-400 hover:text-red-500" data-testid={`del-cat-${c.id}`}><Trash size={14} weight="bold" /></button>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <MapPin size={18} weight="bold" className="text-indigo-600" />
+          <h3 className="font-display text-base font-semibold text-slate-900">Locations ({locations.length})</h3>
+        </div>
+        <div className="text-xs text-slate-500 mb-3">City, country or region — to filter your leads geographically.</div>
+        <div className="flex gap-2 mb-3">
+          <input
+            className="flex-1 bg-white border border-slate-200 text-slate-900 rounded-lg px-3 py-2 text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+            placeholder="e.g. Jakarta, Bali, Singapore"
+            value={newLoc}
+            onChange={(e) => setNewLoc(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addLoc()}
+            data-testid="new-location-input"
+          />
+          <PrimaryButton onClick={addLoc} data-testid="add-location-btn"><Plus size={14} weight="bold" /> Add</PrimaryButton>
+        </div>
+        <div className="space-y-1.5">
+          {locations.length === 0 && <div className="text-sm text-slate-400 py-3 text-center">No locations yet</div>}
+          {locations.map((l) => (
+            <div key={l.id} className="flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg hover:bg-slate-100">
+              <span className="text-sm text-slate-700">{l.name}</span>
+              <button onClick={() => delLoc(l.id)} className="text-slate-400 hover:text-red-500" data-testid={`del-loc-${l.id}`}><Trash size={14} weight="bold" /></button>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
   );
 }

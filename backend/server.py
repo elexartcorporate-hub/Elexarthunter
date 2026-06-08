@@ -162,6 +162,22 @@ class RoleUpdate(BaseModel):
     permissions: Optional[List[str]] = None
 
 
+class CategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class LocationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class MyLeadAdd(BaseModel):
+    company_id: str
+    contact_ids: List[str] = Field(min_length=1)
+    category_id: Optional[str] = None
+    location_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
 # ─── Permission catalog (frontend uses these keys to filter menus) ───
 ALL_PERMISSIONS = [
     {"key": "dashboard",          "label": "View Dashboard",                    "menu": True},
@@ -307,8 +323,12 @@ async def startup():
     await db.contacts.create_index("company_id")
     await db.global_hunter_cache.create_index("domain", unique=True)
     await db.searches.create_index("tenant_id")
+    await db.searches.create_index("user_id")
     await db.campaigns.create_index("tenant_id")
     await db.campaign_recipients.create_index("campaign_id")
+    await db.categories.create_index([("tenant_id", 1), ("name", 1)], unique=True)
+    await db.locations.create_index([("tenant_id", 1), ("name", 1)], unique=True)
+    await db.my_leads.create_index([("tenant_id", 1), ("user_id", 1), ("contact_id", 1)], unique=True)
     logger.info("Indexes ready. DB=%s", DB_NAME)
 
 
@@ -481,6 +501,165 @@ async def delete_role(role_id: str, user: dict = Depends(require_permission("man
         raise HTTPException(400, f"Cannot delete: {in_use} user(s) still assigned to this role")
     await db.roles.delete_one({"id": role_id})
     return {"deleted": 1}
+
+
+# ────────────────────────────────────────────────────────────
+# HUNTER SETTINGS: Categories & Locations (tenant-wide)
+# ────────────────────────────────────────────────────────────
+@api.get("/hunter-settings/categories")
+async def list_categories(user: dict = Depends(get_current_user)):
+    rows = await db.categories.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("name", 1).to_list(500)
+    return rows
+
+
+@api.post("/hunter-settings/categories")
+async def create_category(payload: CategoryCreate, user: dict = Depends(get_current_user)):
+    name = payload.name.strip()
+    if await db.categories.find_one({"tenant_id": user["tenant_id"], "name": name}):
+        raise HTTPException(400, "Category already exists")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": user["tenant_id"],
+        "name": name,
+        "created_by": user["id"],
+        "created_at": now_iso(),
+    }
+    await db.categories.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/hunter-settings/categories/{cat_id}")
+async def delete_category(cat_id: str, user: dict = Depends(get_current_user)):
+    res = await db.categories.delete_one({"id": cat_id, "tenant_id": user["tenant_id"]})
+    await db.my_leads.update_many(
+        {"tenant_id": user["tenant_id"], "category_id": cat_id},
+        {"$set": {"category_id": None}},
+    )
+    return {"deleted": res.deleted_count}
+
+
+@api.get("/hunter-settings/locations")
+async def list_locations(user: dict = Depends(get_current_user)):
+    rows = await db.locations.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("name", 1).to_list(500)
+    return rows
+
+
+@api.post("/hunter-settings/locations")
+async def create_location(payload: LocationCreate, user: dict = Depends(get_current_user)):
+    name = payload.name.strip()
+    if await db.locations.find_one({"tenant_id": user["tenant_id"], "name": name}):
+        raise HTTPException(400, "Location already exists")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": user["tenant_id"],
+        "name": name,
+        "created_by": user["id"],
+        "created_at": now_iso(),
+    }
+    await db.locations.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/hunter-settings/locations/{loc_id}")
+async def delete_location(loc_id: str, user: dict = Depends(get_current_user)):
+    res = await db.locations.delete_one({"id": loc_id, "tenant_id": user["tenant_id"]})
+    await db.my_leads.update_many(
+        {"tenant_id": user["tenant_id"], "location_id": loc_id},
+        {"$set": {"location_id": None}},
+    )
+    return {"deleted": res.deleted_count}
+
+
+# ────────────────────────────────────────────────────────────
+# MY LEADS (private per-user list)
+# ────────────────────────────────────────────────────────────
+@api.get("/my-leads")
+async def list_my_leads(
+    user: dict = Depends(get_current_user),
+    category_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    q_doc: dict = {"tenant_id": user["tenant_id"], "user_id": user["id"]}
+    if category_id:
+        q_doc["category_id"] = category_id
+    if location_id:
+        q_doc["location_id"] = location_id
+    leads = await db.my_leads.find(q_doc, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    # Join with company + contact + category + location names
+    comp_ids = list({l["company_id"] for l in leads})
+    contact_ids = list({l["contact_id"] for l in leads})
+    comps = {c["id"]: c async for c in db.companies.find({"id": {"$in": comp_ids}}, {"_id": 0})}
+    cts = {c["id"]: c async for c in db.contacts.find({"id": {"$in": contact_ids}}, {"_id": 0})}
+    cats = {c["id"]: c["name"] async for c in db.categories.find({"tenant_id": user["tenant_id"]}, {"_id": 0})}
+    locs = {l["id"]: l["name"] async for l in db.locations.find({"tenant_id": user["tenant_id"]}, {"_id": 0})}
+    out = []
+    for l in leads:
+        contact = cts.get(l["contact_id"], {})
+        company = comps.get(l["company_id"], {})
+        if q:
+            blob = f"{contact.get('email','')} {contact.get('name','')} {company.get('company_name','')} {company.get('domain','')}".lower()
+            if q.lower() not in blob:
+                continue
+        out.append({
+            **l,
+            "email": contact.get("email"),
+            "contact_name": contact.get("name"),
+            "job_title": contact.get("job_title"),
+            "confidence_score": contact.get("confidence_score"),
+            "company_name": company.get("company_name"),
+            "company_domain": company.get("domain"),
+            "category_name": cats.get(l.get("category_id")),
+            "location_name": locs.get(l.get("location_id")),
+        })
+    return out
+
+
+@api.post("/my-leads")
+async def add_my_leads(payload: MyLeadAdd, user: dict = Depends(get_current_user)):
+    # Validate company belongs to tenant
+    company = await db.companies.find_one({"id": payload.company_id, "tenant_id": user["tenant_id"]})
+    if not company:
+        raise HTTPException(404, "Company not found")
+    # Validate category/location if provided
+    if payload.category_id:
+        cat = await db.categories.find_one({"id": payload.category_id, "tenant_id": user["tenant_id"]})
+        if not cat:
+            raise HTTPException(400, "Invalid category")
+    if payload.location_id:
+        loc = await db.locations.find_one({"id": payload.location_id, "tenant_id": user["tenant_id"]})
+        if not loc:
+            raise HTTPException(400, "Invalid location")
+
+    added, skipped = 0, 0
+    for cid in payload.contact_ids:
+        contact = await db.contacts.find_one({"id": cid, "tenant_id": user["tenant_id"]})
+        if not contact:
+            continue
+        try:
+            await db.my_leads.insert_one({
+                "id": str(uuid.uuid4()),
+                "tenant_id": user["tenant_id"],
+                "user_id": user["id"],
+                "company_id": payload.company_id,
+                "contact_id": cid,
+                "category_id": payload.category_id,
+                "location_id": payload.location_id,
+                "notes": payload.notes,
+                "created_at": now_iso(),
+            })
+            added += 1
+        except Exception:
+            skipped += 1  # duplicate (unique index)
+    return {"added": added, "skipped_duplicates": skipped}
+
+
+@api.delete("/my-leads/{lead_id}")
+async def delete_my_lead(lead_id: str, user: dict = Depends(get_current_user)):
+    res = await db.my_leads.delete_one({"id": lead_id, "tenant_id": user["tenant_id"], "user_id": user["id"]})
+    return {"deleted": res.deleted_count}
 
 
 # ────────────────────────────────────────────────────────────
