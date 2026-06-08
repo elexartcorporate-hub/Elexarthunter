@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
@@ -17,7 +18,7 @@ function Protected() {
   if (loading)
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="font-mono text-green-500">Loading... [|||      ]</div>
+        <div className="font-mono text-green-600">Loading... [|||      ]</div>
       </div>
     );
   if (!user) return <Navigate to="/login" replace />;
@@ -35,7 +36,55 @@ function PublicOnly({ children }) {
   return children;
 }
 
+/**
+ * Auto-detect new deploys: fetch /build-info.json every page-load + every 60s.
+ * If version differs from localStorage, clear EVERYTHING (token, cache) and
+ * hard-reload. This guarantees that every user sees the latest UI immediately
+ * after `deploy` is run on the server.
+ */
+function useVersionCheck() {
+  useEffect(() => {
+    let mounted = true;
+    const check = async () => {
+      try {
+        const r = await fetch("/build-info.json?t=" + Date.now(), { cache: "no-store" });
+        if (!r.ok) return;
+        const info = await r.json();
+        const current = info.version;
+        const stored = localStorage.getItem("lh_build_version");
+        if (!stored) {
+          localStorage.setItem("lh_build_version", current);
+          return;
+        }
+        if (stored !== current && mounted) {
+          // New deploy detected → clear everything and hard reload
+          const keys = Object.keys(localStorage);
+          keys.forEach((k) => localStorage.removeItem(k));
+          sessionStorage.clear();
+          // Clear cookies as well
+          document.cookie.split(";").forEach((c) => {
+            const eq = c.indexOf("=");
+            const name = eq > -1 ? c.substr(0, eq).trim() : c.trim();
+            document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
+          });
+          localStorage.setItem("lh_build_version", current);
+          window.location.reload(true);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    check();
+    const t = setInterval(check, 60_000); // every minute
+    return () => {
+      mounted = false;
+      clearInterval(t);
+    };
+  }, []);
+}
+
 export default function App() {
+  useVersionCheck();
   return (
     <AuthProvider>
       <BrowserRouter>
@@ -53,7 +102,7 @@ export default function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-        <Toaster theme="dark" richColors position="top-right" />
+        <Toaster theme="light" richColors position="top-right" />
       </BrowserRouter>
     </AuthProvider>
   );
