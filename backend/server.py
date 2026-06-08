@@ -137,7 +137,9 @@ class UpdateUserReq(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     password: Optional[str] = None
-    role: Optional[Literal["Owner", "Admin", "Staff"]] = None
+    role: Optional[str] = None
+    sub_company_ids: Optional[List[str]] = None
+    daily_target: Optional[int] = Field(default=None, ge=0, le=10000)
     smtp_use_company: Optional[bool] = None
     smtp_host: Optional[str] = None
     smtp_port: Optional[int] = None
@@ -947,9 +949,11 @@ async def update_user(user_id: str, payload: UpdateUserReq, user: dict = Depends
                     raise HTTPException(400, "Email already used")
                 upd["email"] = ev
         elif k == "role":
+            # Skip if role unchanged (frontend may always send it)
+            if v == target.get("role"):
+                continue
             if user["role"] != "Owner":
                 raise HTTPException(403, "Only Owner can change role")
-            # Validate role exists
             role_doc = await db.roles.find_one({"tenant_id": user["tenant_id"], "name": v})
             if not role_doc:
                 raise HTTPException(400, f"Role '{v}' does not exist")
@@ -958,6 +962,16 @@ async def update_user(user_id: str, payload: UpdateUserReq, user: dict = Depends
                 if owner_count <= 1:
                     raise HTTPException(400, "Cannot demote the last Owner")
             upd["role"] = v
+        elif k == "sub_company_ids":
+            if v is None:
+                continue
+            # Validate each sub_company belongs to this tenant
+            valid_ids = []
+            for scid in v:
+                sc = await db.sub_companies.find_one({"id": scid, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1})
+                if sc:
+                    valid_ids.append(scid)
+            upd["sub_company_ids"] = valid_ids
         else:
             upd[k] = v
 

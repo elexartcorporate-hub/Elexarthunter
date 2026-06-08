@@ -30,6 +30,13 @@ function Protected() {
   );
 }
 
+function PermRoute({ perm, children }) {
+  const { user, hasPermission } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  if (!hasPermission(perm)) return <Navigate to="/" replace />;
+  return children;
+}
+
 function PublicOnly({ children }) {
   const { user, loading } = useAuth();
   if (loading) return null;
@@ -94,12 +101,12 @@ export default function App() {
           <Route path="/register" element={<PublicOnly><Register /></PublicOnly>} />
 
           <Route element={<Protected />}>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/prospects" element={<Prospects />} />
-            <Route path="/prospects/:id" element={<ProspectDetail />} />
-            <Route path="/activity" element={<EmailActivity />} />
-            <Route path="/templates" element={<Templates />} />
-            <Route path="/settings" element={<Settings />} />
+            <Route path="/" element={<PermRoute perm="dashboard"><Dashboard /></PermRoute>} />
+            <Route path="/prospects" element={<PermRoute perm="prospects"><Prospects /></PermRoute>} />
+            <Route path="/prospects/:id" element={<PermRoute perm="prospects"><ProspectDetail /></PermRoute>} />
+            <Route path="/activity" element={<PermRoute perm="email_activity"><EmailActivity /></PermRoute>} />
+            <Route path="/templates" element={<PermRoute perm="templates"><Templates /></PermRoute>} />
+            <Route path="/settings" element={<PermRoute perm="settings"><Settings /></PermRoute>} />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />
