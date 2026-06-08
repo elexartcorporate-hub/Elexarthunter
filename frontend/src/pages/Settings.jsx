@@ -4,7 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { PageHeader, Card, TermInput, TermSelect, TermTextarea, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
 import {
   Buildings, UsersThree, ShieldCheck, Tag, MapPin, Key,
-  Plus, Trash, PencilSimple, X, Lock, EnvelopeSimple, CalendarBlank,
+  Plus, Trash, PencilSimple, X, Lock, EnvelopeSimple, CalendarBlank, Target,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -12,6 +12,7 @@ const SUB_NAV = [
   { key: "companies",  label: "Companies",    icon: Buildings,    desc: "Sub-companies under your tenant" },
   { key: "users",      label: "Users",         icon: UsersThree,   desc: "Team members & access" },
   { key: "roles",      label: "Roles",         icon: ShieldCheck,  desc: "Permissions per role" },
+  { key: "targets",    label: "Target Harian", icon: Target,       desc: "Set daily prospect target per user" },
   { key: "schedule",   label: "Working Days",  icon: CalendarBlank, desc: "Working days & holidays" },
   { key: "categories", label: "Categories",    icon: Tag,          desc: "Industry / vertical tags" },
   { key: "locations",  label: "Locations",     icon: MapPin,       desc: "Cities / regions" },
@@ -50,6 +51,7 @@ export default function Settings() {
           {section === "companies"  && <CompaniesSection />}
           {section === "users"      && <UsersSection currentUser={user} />}
           {section === "roles"      && <RolesSection currentUser={user} />}
+          {section === "targets"    && <TargetsSection currentUser={user} />}
           {section === "schedule"   && <ScheduleSection />}
           {section === "categories" && <SimpleListSection title="Categories" subtitle="Industry, niche or vertical — used to organize your saved leads." path="categories" icon={Tag} placeholder="e.g. Travel, SaaS, E-commerce" />}
           {section === "locations"  && <SimpleListSection title="Locations" subtitle="City, country or region — to filter your leads geographically." path="locations" icon={MapPin} placeholder="e.g. Jakarta, Bali, Singapore" />}
@@ -59,6 +61,133 @@ export default function Settings() {
     </div>
   );
 }
+
+/* ──────────── TARGETS (Daily Target per user) ──────────── */
+function TargetsSection({ currentUser }) {
+  const [users, setUsers] = useState([]);
+  const [myTarget, setMyTarget] = useState("");
+  const [savingMy, setSavingMy] = useState(false);
+  const [edits, setEdits] = useState({});
+
+  const canManageTeam = currentUser?.role === "Owner" ||
+    (currentUser?.permissions || []).includes("set_team_targets");
+
+  const load = async () => {
+    try {
+      const me = await api.get("/auth/me");
+      setMyTarget(String(me.data.user.daily_target ?? 0));
+      if (canManageTeam) {
+        const { data } = await api.get("/team");
+        setUsers(data);
+      }
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const saveMy = async () => {
+    const n = parseInt(myTarget, 10);
+    if (Number.isNaN(n) || n < 0) return toast.error("Target harus angka >= 0");
+    setSavingMy(true);
+    try {
+      await api.patch("/me/target", { daily_target: n });
+      toast.success(`Target Anda di-set ke ${n}`);
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setSavingMy(false); }
+  };
+
+  const saveUser = async (uid) => {
+    const v = edits[uid];
+    const n = parseInt(v, 10);
+    if (Number.isNaN(n) || n < 0) return toast.error("Target harus angka >= 0");
+    try {
+      await api.patch(`/team/${uid}/target`, { daily_target: n });
+      toast.success("Target di-update");
+      setEdits((e) => { const c = { ...e }; delete c[uid]; return c; });
+      load();
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  return (
+    <div className="space-y-5">
+      <Card className="p-6">
+        <h2 className="font-display text-xl text-slate-900">Target Harian Saya</h2>
+        <p className="text-sm text-slate-500 mb-4">Berapa prospect yang harus Anda tambahkan per hari kerja. Email outreach terkunci sampai target tercapai.</p>
+        <div className="flex items-end gap-3 max-w-md">
+          <div className="flex-1">
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-1">Daily target</label>
+            <input
+              type="number"
+              min="0"
+              max="1000"
+              value={myTarget}
+              onChange={(e) => setMyTarget(e.target.value)}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-base focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+              data-testid="my-target-input"
+            />
+          </div>
+          <PrimaryButton onClick={saveMy} disabled={savingMy} data-testid="save-my-target-btn">
+            <Target size={14} weight="bold" /> {savingMy ? "Saving..." : "Simpan"}
+          </PrimaryButton>
+        </div>
+        <div className="text-[11px] text-slate-500 mt-2">Set ke 0 untuk menonaktifkan daily-quest mode.</div>
+      </Card>
+
+      {canManageTeam && (
+        <Card className="p-6">
+          <h2 className="font-display text-xl text-slate-900">Target Tim</h2>
+          <p className="text-sm text-slate-500 mb-4">Atur target harian untuk setiap anggota tim. Hanya Owner/Admin yang bisa mengubah.</p>
+          <div className="border border-slate-200 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
+                <tr>
+                  <th className="text-left p-3">Nama</th>
+                  <th className="text-left p-3">Email</th>
+                  <th className="text-left p-3">Role</th>
+                  <th className="text-left p-3 w-32">Target Harian</th>
+                  <th className="text-right p-3 w-28"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => {
+                  const draft = edits[u.id];
+                  const cur = u.daily_target ?? 0;
+                  const isEditing = draft !== undefined;
+                  return (
+                    <tr key={u.id} className="border-t border-slate-100">
+                      <td className="p-3 font-medium text-slate-900">{u.name}</td>
+                      <td className="p-3 text-xs text-slate-500">{u.email}</td>
+                      <td className="p-3 text-xs"><Badge tone="info">{u.role}</Badge></td>
+                      <td className="p-3">
+                        <input
+                          type="number"
+                          min="0"
+                          max="1000"
+                          value={isEditing ? draft : cur}
+                          onChange={(e) => setEdits({ ...edits, [u.id]: e.target.value })}
+                          className="w-20 px-2 py-1 border border-slate-200 rounded text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20"
+                          data-testid={`target-input-${u.id}`}
+                        />
+                      </td>
+                      <td className="p-3 text-right">
+                        {isEditing && (
+                          <PrimaryButton onClick={() => saveUser(u.id)} data-testid={`save-target-${u.id}`}>
+                            Save
+                          </PrimaryButton>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+
 
 /* ──────────── SCHEDULE (Working Days & Holidays) ──────────── */
 function ScheduleSection() {

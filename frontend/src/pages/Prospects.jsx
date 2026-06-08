@@ -184,6 +184,7 @@ function AddProspect({ quota, onProspectSaved }) {
   const [todayList, setTodayList] = useState([]);
   const [justHit, setJustHit] = useState(false);
   const [showOutreach, setShowOutreach] = useState(false);
+  const [pickerMode, setPickerMode] = useState(null); // null | "save" | "save_next"
   const inputRef = useRef(null);
 
   const loadToday = async () => {
@@ -203,8 +204,16 @@ function AddProspect({ quota, onProspectSaved }) {
     finally { setLoading(false); }
   };
 
-  const saveProspect = async (next = false) => {
+  const openPicker = (next) => {
     if (!result) return;
+    if (result.emails.length === 0) return toast.error("No emails to save");
+    setPickerMode(next ? "save_next" : "save");
+  };
+
+  const confirmSave = async (selectedEmails, primaryEmail) => {
+    if (!result || selectedEmails.length === 0) return;
+    const next = pickerMode === "save_next";
+    setPickerMode(null);
     try {
       const payload = {
         company_name: result.company.company_name || result.domain,
@@ -214,16 +223,19 @@ function AddProspect({ quota, onProspectSaved }) {
         country: result.company.country,
         phone: (result.company.phones || [])[0] || null,
         linkedin: result.company.socials?.linkedin,
-        emails: result.emails.map((e, i) => ({
-          email: e.email, is_primary: i === 0, status: e.status, confidence: e.confidence, source: e.source,
+        emails: selectedEmails.map((e) => ({
+          email: e.email,
+          is_primary: e.email === primaryEmail,
+          status: e.status,
+          confidence: e.confidence,
+          source: e.source,
         })),
       };
       const { data } = await api.post("/prospects", payload);
       setSavedId(data.id);
-      toast.success(`✓ ${data.company_name} saved`);
+      toast.success(`✓ ${data.company_name} (${selectedEmails.length} email${selectedEmails.length > 1 ? "s" : ""}) saved`);
       onProspectSaved();
       await loadToday();
-      // Check if we just hit target
       const newQuota = await api.get("/prospects/quota").then((r) => r.data);
       if (quota?.locked && !newQuota.locked) {
         setJustHit(true);
@@ -231,7 +243,6 @@ function AddProspect({ quota, onProspectSaved }) {
         toast.success("🎉 Daily quota hit! Email outreach unlocked.");
       }
       if (next) {
-        // Save & Next: clear input + result and focus
         setResult(null); setSavedId(null); setDomain("");
         setTimeout(() => inputRef.current?.focus(), 100);
       }
@@ -306,10 +317,10 @@ function AddProspect({ quota, onProspectSaved }) {
                   </div>
                 </div>
                 <div className="flex gap-2 shrink-0">
-                  <GhostButton onClick={() => saveProspect(false)} disabled={savedId} data-testid="save-prospect-btn">
+                  <GhostButton onClick={() => openPicker(false)} disabled={savedId} data-testid="save-prospect-btn">
                     <FloppyDisk size={14} weight="bold" /> {savedId ? "Saved" : "Save"}
                   </GhostButton>
-                  <PrimaryButton onClick={() => saveProspect(true)} disabled={savedId} data-testid="save-next-btn">
+                  <PrimaryButton onClick={() => openPicker(true)} disabled={savedId} data-testid="save-next-btn">
                     <FloppyDisk size={14} weight="bold" /> Save &amp; Next →
                   </PrimaryButton>
                 </div>
@@ -399,6 +410,140 @@ function AddProspect({ quota, onProspectSaved }) {
       </div>
 
       {showOutreach && <OutreachModal todayList={todayList} onClose={() => setShowOutreach(false)} />}
+      {pickerMode && result && (
+        <EmailPickerModal
+          emails={result.emails}
+          company={result.company.company_name || result.domain}
+          domain={result.domain}
+          nextMode={pickerMode === "save_next"}
+          onClose={() => setPickerMode(null)}
+          onConfirm={confirmSave}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ─────────────── EMAIL PICKER MODAL ─────────────── */
+function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfirm }) {
+  const [selected, setSelected] = useState(new Set(emails.map((e) => e.email)));
+  const [primary, setPrimary] = useState(emails[0]?.email || "");
+
+  const toggle = (email) => {
+    const s = new Set(selected);
+    if (s.has(email)) {
+      s.delete(email);
+      if (primary === email) {
+        const next = [...s][0];
+        if (next) setPrimary(next);
+      }
+    } else {
+      s.add(email);
+      if (!primary) setPrimary(email);
+    }
+    setSelected(s);
+  };
+
+  const toggleAll = () => {
+    if (selected.size === emails.length) {
+      setSelected(new Set());
+      setPrimary("");
+    } else {
+      setSelected(new Set(emails.map((e) => e.email)));
+      if (!primary) setPrimary(emails[0]?.email || "");
+    }
+  };
+
+  const submit = () => {
+    if (selected.size === 0) return toast.error("Pilih minimal 1 email");
+    const picked = emails.filter((e) => selected.has(e.email));
+    onConfirm(picked, primary || picked[0].email);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 fade-up overflow-y-auto" onClick={onClose}>
+      <div className="min-h-full flex items-start sm:items-center justify-center p-4 py-8">
+        <Card className="w-full max-w-2xl shadow-2xl my-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between rounded-t-xl">
+            <div>
+              <h2 className="font-display text-lg text-slate-900">Pilih email yang akan disimpan</h2>
+              <div className="text-xs text-slate-500 mt-0.5">
+                <b className="text-slate-700">{company}</b> · {domain}
+              </div>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-red-500" data-testid="picker-close">
+              <X size={20} weight="bold" />
+            </button>
+          </div>
+
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-3">
+              <button onClick={toggleAll} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium" data-testid="picker-toggle-all">
+                {selected.size === emails.length ? "Uncheck all" : "Check all"}
+              </button>
+              <Badge tone="info">{selected.size} dari {emails.length} dipilih</Badge>
+            </div>
+
+            <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[420px] overflow-y-auto">
+              {emails.map((e) => {
+                const isChecked = selected.has(e.email);
+                const isPrimary = primary === e.email;
+                return (
+                  <div
+                    key={e.email}
+                    className={`p-3 border-b border-slate-100 last:border-b-0 flex items-start gap-3 ${isChecked ? "bg-indigo-50/40" : "bg-white"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="accent-indigo-600 mt-1"
+                      checked={isChecked}
+                      onChange={() => toggle(e.email)}
+                      data-testid={`picker-email-${e.email}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-sm text-slate-900 break-all">{e.email}</span>
+                        {isPrimary && isChecked && <Badge tone="info">primary</Badge>}
+                        <Badge tone={e.status === "verified" ? "success" : e.status === "risky" ? "warning" : "error"}>{e.status}</Badge>
+                        {e.confidence != null && (
+                          <Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>score {e.confidence}</Badge>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {e.name && <span className="text-slate-700">{e.name}</span>}
+                        {e.job_title && <span> · {e.job_title}</span>}
+                        {e.source && <span> · src: {e.source}</span>}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setPrimary(e.email); if (!isChecked) toggle(e.email); }}
+                      className={`text-[10px] px-2 py-1 rounded font-medium transition-colors shrink-0 ${
+                        isPrimary && isChecked
+                          ? "bg-indigo-600 text-white"
+                          : "bg-slate-100 text-slate-600 hover:bg-indigo-100 hover:text-indigo-700"
+                      }`}
+                      data-testid={`picker-primary-${e.email}`}
+                    >
+                      Set primary
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="text-[11px] text-slate-500 mt-3">
+              💡 Email primary akan jadi default penerima saat kirim outreach. Status &quot;risky&quot; biasanya catch-all/role-based — bisa kena bounce.
+            </div>
+          </div>
+
+          <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 rounded-b-xl">
+            <GhostButton onClick={onClose}>Cancel</GhostButton>
+            <PrimaryButton onClick={submit} disabled={selected.size === 0} data-testid="picker-confirm-btn">
+              <FloppyDisk size={14} weight="bold" /> Simpan {selected.size} email {nextMode ? "& Next →" : ""}
+            </PrimaryButton>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
