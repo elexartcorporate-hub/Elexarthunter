@@ -74,7 +74,7 @@ export default function Settings() {
     loadPermissions();
   }, [isOwnerOrAdmin]);
 
-  if (!settings) return <div className="p-10 font-mono text-green-600">Loading...</div>;
+  if (!settings) return <div className="p-10 font-mono text-indigo-600">Loading...</div>;
 
   // ─── Company settings handlers ─────────────────────────
   const updateCompany = (key, value) => setSettings({ ...settings, [key]: value });
@@ -253,9 +253,9 @@ export default function Settings() {
   // ─── Render ────────────────────────────────────────────
   return (
     <div className="p-6 md:p-8 fade-up">
-      <PageHeader title="Settings" subtitle={`$ tenant/${tenant?.company_name?.toLowerCase().replace(/\s+/g, "-")}`} />
+      <PageHeader title="Settings" subtitle="Manage your workspace, team and integrations" />
 
-      <div className="flex border border-zinc-200 rounded-sm overflow-hidden w-fit mb-5">
+      <div className="flex border border-slate-200 rounded-sm overflow-hidden w-fit mb-5">
         <TabBtn active={tab === "users"} onClick={() => setTab("users")} icon={UsersThree} label="User Management" testid="tab-users" />
         <TabBtn active={tab === "hunter"} onClick={() => setTab("hunter")} icon={Key} label="Hunter.io API" testid="tab-hunter-api" />
       </div>
@@ -266,23 +266,23 @@ export default function Settings() {
           <Card className="overflow-hidden">
             <button
               onClick={() => setShowCompany(!showCompany)}
-              className="w-full flex items-center justify-between px-5 py-3 border-b border-zinc-200 hover:bg-zinc-50 transition-colors"
+              className="w-full flex items-center justify-between px-5 py-3 border-b border-slate-200 hover:bg-slate-50 transition-colors"
               data-testid="toggle-company"
             >
               <div className="flex items-center gap-2">
-                <Buildings size={18} weight="bold" className="text-green-600" />
+                <Buildings size={18} weight="bold" className="text-indigo-600" />
                 <div className="text-left">
-                  <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ company/settings</div>
-                  <div className="font-display text-base text-zinc-900">Company Information</div>
+                  <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">Company info $ company/settings SMTP</div>
+                  <div className="font-display text-base text-slate-900">Company Information</div>
                 </div>
               </div>
-              {showCompany ? <CaretUp size={16} className="text-zinc-500" /> : <CaretDown size={16} className="text-zinc-500" />}
+              {showCompany ? <CaretUp size={16} className="text-slate-500" /> : <CaretDown size={16} className="text-slate-500" />}
             </button>
 
             {showCompany && (
               <div className="p-5">
                 {!isOwnerOrAdmin ? (
-                  <div className="text-sm text-zinc-500 font-mono">Only Owner/Admin can edit company settings.</div>
+                  <div className="text-sm text-slate-500 font-mono">Only Owner/Admin can edit company settings.</div>
                 ) : (
                   <>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
@@ -309,10 +309,10 @@ export default function Settings() {
                       />
                     </div>
 
-                    <div className="border-t border-zinc-200 pt-4">
+                    <div className="border-t border-slate-200 pt-4">
                       <div className="flex items-center gap-2 mb-3">
-                        <EnvelopeSimple size={16} weight="bold" className="text-green-600" />
-                        <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">Company Default SMTP</div>
+                        <EnvelopeSimple size={16} weight="bold" className="text-indigo-600" />
+                        <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">Company Default SMTP</div>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <TermInput label="SMTP Host" placeholder="smtp.gmail.com" value={settings.smtp_host || ""} onChange={(e) => updateCompany("smtp_host", e.target.value)} data-testid="smtp-host" />
@@ -333,7 +333,7 @@ export default function Settings() {
                         {loading ? "Saving..." : "Save Company Settings"}
                       </PrimaryButton>
                     </div>
-                    <div className="mt-3 text-[11px] font-mono text-zinc-500">
+                    <div className="mt-3 text-[11px] font-mono text-slate-500">
                       Tip: Gmail smtp.gmail.com:587 (App Password) · Outlook smtp.office365.com:587 · Mailgun smtp.mailgun.org:587
                     </div>
                   </>
@@ -346,14 +346,14 @@ export default function Settings() {
           <Card className="overflow-hidden">
             <button
               onClick={() => setShowRoles(!showRoles)}
-              className="w-full flex items-center justify-between px-5 py-3 border-b border-zinc-200 hover:bg-zinc-50 transition-colors"
+              className="w-full flex items-center justify-between px-5 py-3 border-b border-slate-200 hover:bg-slate-50 transition-colors"
               data-testid="toggle-roles"
             >
               <div className="flex items-center gap-2">
-                <ShieldCheck size={18} weight="bold" className="text-green-600" />
+                <ShieldCheck size={18} weight="bold" className="text-indigo-600" />
                 <div className="text-left">
-                  <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ roles/permissions</div>
-                  <div className="font-display text-base text-zinc-900">Roles &amp; Menu Access ({roles.length})</div>
+                  <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">Roles $ roles/permissions access control</div>
+                  <div className="font-display text-base text-slate-900">Roles &amp; Menu Access ({roles.length})</div>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -365,15 +365,15 @@ export default function Settings() {
                     <Plus size={14} weight="bold" /> Add Role
                   </PrimaryButton>
                 )}
-                {showRoles ? <CaretUp size={16} className="text-zinc-500" /> : <CaretDown size={16} className="text-zinc-500" />}
+                {showRoles ? <CaretUp size={16} className="text-slate-500" /> : <CaretDown size={16} className="text-slate-500" />}
               </div>
             </button>
 
             {showRoles && (
               <div className="p-5">
-                <div className="border border-zinc-200 rounded-sm overflow-hidden">
+                <div className="border border-slate-200 rounded-sm overflow-hidden">
                   <table className="w-full text-sm">
-                    <thead className="bg-zinc-50 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+                    <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
                       <tr>
                         <th className="text-left p-3">Role</th>
                         <th className="text-left p-3">Permissions</th>
@@ -384,8 +384,8 @@ export default function Settings() {
                     </thead>
                     <tbody>
                       {roles.map((r) => (
-                        <tr key={r.id} className="border-t border-zinc-200 hover:bg-zinc-50">
-                          <td className="p-3 font-mono text-sm text-zinc-900">{r.name}</td>
+                        <tr key={r.id} className="border-t border-slate-200 hover:bg-slate-50">
+                          <td className="p-3 font-mono text-sm text-slate-900">{r.name}</td>
                           <td className="p-3">
                             <div className="flex flex-wrap gap-1 max-w-md">
                               {(r.permissions || []).slice(0, 6).map((p) => (
@@ -407,7 +407,7 @@ export default function Settings() {
                               <>
                                 <button
                                   onClick={() => startEditRole(r)}
-                                  className="text-zinc-500 hover:text-green-600 inline-flex items-center"
+                                  className="text-slate-500 hover:text-indigo-600 inline-flex items-center"
                                   title="Edit"
                                   data-testid={`edit-role-${r.id}`}
                                 >
@@ -416,7 +416,7 @@ export default function Settings() {
                                 {!r.is_system && r.user_count === 0 && (
                                   <button
                                     onClick={() => deleteRole(r.id)}
-                                    className="text-zinc-500 hover:text-red-500 inline-flex items-center ml-2"
+                                    className="text-slate-500 hover:text-red-500 inline-flex items-center ml-2"
                                     title="Delete"
                                     data-testid={`del-role-${r.id}`}
                                   >
@@ -424,7 +424,7 @@ export default function Settings() {
                                   </button>
                                 )}
                                 {r.is_system && (
-                                  <span className="text-zinc-300 ml-2 inline-flex items-center" title="System role — cannot delete">
+                                  <span className="text-slate-300 ml-2 inline-flex items-center" title="System role — cannot delete">
                                     <Lock size={14} weight="bold" />
                                   </span>
                                 )}
@@ -436,7 +436,7 @@ export default function Settings() {
                     </tbody>
                   </table>
                 </div>
-                <div className="mt-3 text-[11px] font-mono text-zinc-500">
+                <div className="mt-3 text-[11px] font-mono text-slate-500">
                   System roles (Owner / Admin / Staff) tidak bisa dihapus tapi permissions bisa diatur ulang. Custom roles bisa dibuat bebas.
                 </div>
               </div>
@@ -447,10 +447,10 @@ export default function Settings() {
           <Card className="p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <UsersThree size={18} weight="bold" className="text-green-600" />
+                <UsersThree size={18} weight="bold" className="text-indigo-600" />
                 <div>
-                  <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ users/list</div>
-                  <div className="font-display text-base text-zinc-900">Users ({team.length})</div>
+                  <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">Team members</div>
+                  <div className="font-display text-base text-slate-900">Users ({team.length})</div>
                 </div>
               </div>
               {isOwnerOrAdmin && (
@@ -460,9 +460,9 @@ export default function Settings() {
               )}
             </div>
 
-            <div className="border border-zinc-200 rounded-sm overflow-hidden">
+            <div className="border border-slate-200 rounded-sm overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-zinc-50 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+                <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
                   <tr>
                     <th className="text-left p-3">Name</th>
                     <th className="text-left p-3">Email (Login)</th>
@@ -480,9 +480,9 @@ export default function Settings() {
                       (user.role === "Admin" && u.role === "Staff");
                     const canDeleteThis = user.role === "Owner" && u.id !== user.id;
                     return (
-                      <tr key={u.id} className="border-t border-zinc-200 hover:bg-zinc-50">
-                        <td className="p-3 text-zinc-900">{u.name}</td>
-                        <td className="p-3 font-mono text-xs text-zinc-700">{u.email}</td>
+                      <tr key={u.id} className="border-t border-slate-200 hover:bg-slate-50">
+                        <td className="p-3 text-slate-900">{u.name}</td>
+                        <td className="p-3 font-mono text-xs text-slate-700">{u.email}</td>
                         <td className="p-3">
                           <Badge tone={u.role === "Owner" ? "success" : u.role === "Admin" ? "info" : "neutral"}>{u.role}</Badge>
                         </td>
@@ -491,15 +491,15 @@ export default function Settings() {
                             {u.smtp_use_company === false ? "Custom" : "Company default"}
                           </Badge>
                         </td>
-                        <td className="p-3 font-mono text-xs text-zinc-500">{u.created_at?.slice(0, 10)}</td>
+                        <td className="p-3 font-mono text-xs text-slate-500">{u.created_at?.slice(0, 10)}</td>
                         <td className="p-3 text-right space-x-1">
                           {canEditThis && (
-                            <button onClick={() => startEdit(u)} className="text-zinc-500 hover:text-green-600 inline-flex items-center" data-testid={`edit-${u.id}`} title="Edit">
+                            <button onClick={() => startEdit(u)} className="text-slate-500 hover:text-indigo-600 inline-flex items-center" data-testid={`edit-${u.id}`} title="Edit">
                               <PencilSimple size={16} weight="bold" />
                             </button>
                           )}
                           {canDeleteThis && (
-                            <button onClick={() => deleteUser(u.id)} className="text-zinc-500 hover:text-red-500 inline-flex items-center ml-2" data-testid={`del-user-${u.id}`} title="Delete">
+                            <button onClick={() => deleteUser(u.id)} className="text-slate-500 hover:text-red-500 inline-flex items-center ml-2" data-testid={`del-user-${u.id}`} title="Delete">
                               <Trash size={16} weight="bold" />
                             </button>
                           )}
@@ -516,11 +516,11 @@ export default function Settings() {
 
       {tab === "hunter" && (
         <Card className="p-6 max-w-2xl">
-          <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500 mb-1">$ hunter/api-key</div>
+          <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500 mb-1">Hunter.io integration</div>
           <h2 className="font-display text-lg mb-1">Hunter.io API Key</h2>
-          <div className="text-xs text-zinc-500 mb-4">
+          <div className="text-xs text-slate-500 mb-4">
             Currently using <Badge tone="warning">MOCK</Badge>. Get key at{" "}
-            <a className="text-green-600 underline" href="https://hunter.io/api-keys" target="_blank" rel="noreferrer">hunter.io/api-keys</a>.
+            <a className="text-indigo-600 underline" href="https://hunter.io/api-keys" target="_blank" rel="noreferrer">hunter.io/api-keys</a>.
           </div>
           <TermInput
             label="API Key"
@@ -576,12 +576,12 @@ function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole, ava
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 fade-up">
       <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div>
-            <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ user/{isNew ? "new" : "edit"}</div>
-            <h2 className="font-display text-lg text-zinc-900">{isNew ? "Add User" : "Edit User"}</h2>
+            <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">$ user/{isNew ? "new" : "edit"}</div>
+            <h2 className="font-display text-lg text-slate-900">{isNew ? "Add User" : "Edit User"}</h2>
           </div>
-          <button onClick={onClose} className="text-zinc-500 hover:text-red-500" data-testid="close-user-modal">
+          <button onClick={onClose} className="text-slate-500 hover:text-red-500" data-testid="close-user-modal">
             <X size={20} weight="bold" />
           </button>
         </div>
@@ -589,7 +589,7 @@ function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole, ava
         <div className="p-6 space-y-5">
           {/* Identity */}
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Identity</div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-slate-500 mb-2">Identity</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <TermInput label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="user-form-name" />
               <TermInput label="Email (Login Username)" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="user-form-email" />
@@ -617,7 +617,7 @@ function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole, ava
 
           {/* SMTP method */}
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Email SMTP Method</div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-slate-500 mb-2">Email SMTP Method</div>
             <div className="grid grid-cols-2 gap-2 mb-3">
               <SmtpMethodCard
                 active={form.smtp_use_company}
@@ -636,7 +636,7 @@ function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole, ava
             </div>
 
             {!form.smtp_use_company && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 p-4 bg-zinc-50 border border-zinc-200 rounded-sm">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 p-4 bg-slate-50 border border-slate-200 rounded-sm">
                 <TermInput label="SMTP Host" placeholder="smtp.gmail.com" value={form.smtp_host} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} />
                 <TermInput label="SMTP Port" type="number" value={form.smtp_port} onChange={(e) => setForm({ ...form, smtp_port: e.target.value })} />
                 <TermInput label="SMTP Username" value={form.smtp_user} onChange={(e) => setForm({ ...form, smtp_user: e.target.value })} />
@@ -652,7 +652,7 @@ function UserModal({ isNew, form, setForm, onSave, onClose, currentUserRole, ava
           </div>
         </div>
 
-        <div className="px-6 py-4 border-t border-zinc-200 flex justify-end gap-2">
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <GhostButton onClick={onClose} data-testid="cancel-user-modal">Cancel</GhostButton>
           <PrimaryButton onClick={onSave} data-testid="save-user-modal">{isNew ? "Create User" : "Save Changes"}</PrimaryButton>
         </div>
@@ -668,11 +668,11 @@ function SmtpMethodCard({ active, onClick, title, description, testid }) {
       onClick={onClick}
       data-testid={testid}
       className={`text-left p-3 border rounded-sm transition-all ${
-        active ? "border-green-600 bg-green-50 ring-1 ring-green-600" : "border-zinc-200 hover:border-zinc-300 bg-white"
+        active ? "border-indigo-600 bg-indigo-50 ring-1 ring-indigo-600" : "border-slate-200 hover:border-slate-300 bg-white"
       }`}
     >
-      <div className="font-mono text-xs text-zinc-900 font-bold mb-0.5">{title}</div>
-      <div className="text-[11px] text-zinc-500">{description}</div>
+      <div className="font-mono text-xs text-slate-900 font-bold mb-0.5">{title}</div>
+      <div className="text-[11px] text-slate-500">{description}</div>
     </button>
   );
 }
@@ -683,15 +683,15 @@ function RoleModal({ isNew, form, setForm, togglePermission, permissionCatalog, 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 fade-up">
       <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div>
-            <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ role/{isNew ? "new" : "edit"}</div>
-            <h2 className="font-display text-lg text-zinc-900 flex items-center gap-2">
+            <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">$ role/{isNew ? "new" : "edit"}</div>
+            <h2 className="font-display text-lg text-slate-900 flex items-center gap-2">
               {isNew ? "New Role" : "Edit Role"}
               {isSystem && <Badge tone="neutral">system role</Badge>}
             </h2>
           </div>
-          <button onClick={onClose} className="text-zinc-500 hover:text-red-500" data-testid="close-role-modal">
+          <button onClick={onClose} className="text-slate-500 hover:text-red-500" data-testid="close-role-modal">
             <X size={20} weight="bold" />
           </button>
         </div>
@@ -708,7 +708,7 @@ function RoleModal({ isNew, form, setForm, togglePermission, permissionCatalog, 
           />
 
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Menu Access</div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-slate-500 mb-2">Menu Access</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {menuPerms.map((p) => (
                 <PermCheckbox
@@ -722,7 +722,7 @@ function RoleModal({ isNew, form, setForm, togglePermission, permissionCatalog, 
           </div>
 
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Action Permissions</div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-slate-500 mb-2">Action Permissions</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {actionPerms.map((p) => (
                 <PermCheckbox
@@ -735,12 +735,12 @@ function RoleModal({ isNew, form, setForm, togglePermission, permissionCatalog, 
             </div>
           </div>
 
-          <div className="text-[11px] font-mono text-zinc-500">
+          <div className="text-[11px] font-mono text-slate-500">
             Tip: User dengan role ini cuma akan melihat menu yang dicentang di sidebar. Permission action mengontrol API endpoint yang boleh diakses.
           </div>
         </div>
 
-        <div className="px-6 py-4 border-t border-zinc-200 flex justify-end gap-2">
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <GhostButton onClick={onClose} data-testid="cancel-role-modal">Cancel</GhostButton>
           <PrimaryButton onClick={onSave} data-testid="save-role-modal">{isNew ? "Create Role" : "Save Changes"}</PrimaryButton>
         </div>
@@ -752,18 +752,18 @@ function RoleModal({ isNew, form, setForm, togglePermission, permissionCatalog, 
 function PermCheckbox({ perm, checked, onChange }) {
   return (
     <label className={`flex items-start gap-2 p-2.5 border rounded-sm cursor-pointer transition-all ${
-      checked ? "border-green-600 bg-green-50" : "border-zinc-200 hover:border-zinc-300 bg-white"
+      checked ? "border-indigo-600 bg-indigo-50" : "border-slate-200 hover:border-slate-300 bg-white"
     }`}>
       <input
         type="checkbox"
         checked={checked}
         onChange={onChange}
-        className="mt-0.5 accent-green-600"
+        className="mt-0.5 accent-indigo-600"
         data-testid={`perm-${perm.key}`}
       />
       <div className="min-w-0">
-        <div className="font-mono text-xs text-zinc-900">{perm.label}</div>
-        <div className="text-[10px] text-zinc-500 font-mono">{perm.key}</div>
+        <div className="font-mono text-xs text-slate-900">{perm.label}</div>
+        <div className="text-[10px] text-slate-500 font-mono">{perm.key}</div>
       </div>
     </label>
   );
@@ -774,8 +774,8 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
     <button
       onClick={onClick}
       data-testid={testid}
-      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-zinc-200 last:border-r-0 ${
-        active ? "bg-green-50 text-green-700" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
+      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-slate-200 last:border-r-0 ${
+        active ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
       }`}
     >
       <Icon size={14} weight="bold" />

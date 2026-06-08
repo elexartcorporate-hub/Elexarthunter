@@ -97,7 +97,7 @@ export default function EmailMarketing() {
     <div className="p-6 md:p-8 fade-up">
       <PageHeader
         title="Email Marketing"
-        subtitle="$ email --campaign --send"
+        subtitle="Create email campaigns and track delivery, opens, clicks and replies"
         action={
           <PrimaryButton onClick={() => { setShowBuilder(true); setActiveCampaign(null); }} data-testid="new-campaign-btn">
             <Plus size={14} weight="bold" /> New Campaign
@@ -105,7 +105,7 @@ export default function EmailMarketing() {
         }
       />
 
-      <div className="flex border border-zinc-200 rounded-sm overflow-hidden w-fit mb-5">
+      <div className="flex border border-slate-200 rounded-sm overflow-hidden w-fit mb-5">
         <TabBtn active={tab === "campaigns"} onClick={() => setTab("campaigns")} icon={EnvelopeSimple} label={`Campaigns (${campaigns.length})`} testid="tab-campaigns" />
         <TabBtn active={tab === "contacts"} onClick={() => setTab("contacts")} icon={ChartBar} label="Contact List" testid="tab-contacts" />
       </div>
@@ -124,10 +124,10 @@ export default function EmailMarketing() {
                 <div className="flex items-start justify-between mb-3 gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-display text-lg text-zinc-900 truncate">{c.name}</span>
+                      <span className="font-display text-lg text-slate-900 truncate">{c.name}</span>
                       <StatusBadge status={c.status} />
                     </div>
-                    <div className="font-mono text-xs text-zinc-500 truncate">subject: {c.subject}</div>
+                    <div className="font-mono text-xs text-slate-500 truncate">subject: {c.subject}</div>
                   </div>
                   <div className="flex gap-2">
                     {c.status === "draft" && (
@@ -141,8 +141,8 @@ export default function EmailMarketing() {
                   </div>
                 </div>
                 <div className="grid grid-cols-5 gap-2 text-center">
-                  <Metric label="Recipients" value={c.metrics?.total || 0} tone="text-zinc-900" />
-                  <Metric label="Delivered" value={c.metrics?.delivered || 0} tone="text-green-400" />
+                  <Metric label="Recipients" value={c.metrics?.total || 0} tone="text-slate-900" />
+                  <Metric label="Delivered" value={c.metrics?.delivered || 0} tone="text-emerald-500" />
                   <Metric label="Opened" value={c.metrics?.opened || 0} tone="text-cyan-400" />
                   <Metric label="Clicked" value={c.metrics?.clicked || 0} tone="text-green-300" />
                   <Metric label="Bounced" value={c.metrics?.bounced || 0} tone="text-red-400" />
@@ -169,11 +169,11 @@ export default function EmailMarketing() {
               <PrimaryButton onClick={loadContacts} className="w-full" data-testid="filter-apply">Apply</PrimaryButton>
             </div>
           </div>
-          <div className="text-xs text-zinc-500 font-mono mb-2">{contacts.length} contacts · {selectedContacts.size} selected</div>
-          <div className="border border-zinc-200 rounded-sm overflow-hidden max-h-[60vh] overflow-y-auto">
+          <div className="text-xs text-slate-500 font-mono mb-2">{contacts.length} contacts · {selectedContacts.size} selected</div>
+          <div className="border border-slate-200 rounded-sm overflow-hidden max-h-[60vh] overflow-y-auto">
             <table className="w-full text-sm">
-              <thead className="bg-zinc-50 sticky top-0 z-10">
-                <tr className="text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+              <thead className="bg-slate-50 sticky top-0 z-10">
+                <tr className="text-slate-500 text-[11px] font-medium">
                   <th className="p-2"><input type="checkbox" checked={selectedContacts.size === contacts.length && contacts.length > 0} onChange={selectAll} /></th>
                   <th className="text-left p-2">Email</th>
                   <th className="text-left p-2">Name</th>
@@ -183,13 +183,13 @@ export default function EmailMarketing() {
               </thead>
               <tbody>
                 {contacts.map((c) => (
-                  <tr key={c.id} className="border-t border-zinc-200/60 hover:bg-zinc-50/40">
+                  <tr key={c.id} className="border-t border-slate-200/60 hover:bg-slate-50/40">
                     <td className="p-2 text-center">
                       <input type="checkbox" checked={selectedContacts.has(c.id)} onChange={() => toggleSelect(c.id)} data-testid={`select-${c.id}`} />
                     </td>
-                    <td className="p-2 font-mono text-xs text-zinc-900">{c.email}</td>
-                    <td className="p-2 text-xs text-zinc-700">{c.name || "—"}</td>
-                    <td className="p-2 text-xs text-zinc-500">{c.company_name || c.company_domain || "—"}</td>
+                    <td className="p-2 font-mono text-xs text-slate-900">{c.email}</td>
+                    <td className="p-2 text-xs text-slate-700">{c.name || "—"}</td>
+                    <td className="p-2 text-xs text-slate-500">{c.company_name || c.company_domain || "—"}</td>
                     <td className="p-2"><Badge tone={c.confidence_score >= 80 ? "success" : c.confidence_score >= 50 ? "warning" : "error"}>{c.confidence_score}</Badge></td>
                   </tr>
                 ))}
@@ -210,12 +210,12 @@ export default function EmailMarketing() {
       {showBuilder && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
           <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6">
-            <div className="flex items-center justify-between mb-5 pb-3 border-b border-zinc-200">
+            <div className="flex items-center justify-between mb-5 pb-3 border-b border-slate-200">
               <div>
-                <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">$ campaign/new</div>
+                <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">New campaign</div>
                 <h2 className="font-display text-xl">Campaign Builder</h2>
               </div>
-              <button onClick={() => setShowBuilder(false)} className="text-zinc-500 hover:text-red-400" data-testid="close-builder">
+              <button onClick={() => setShowBuilder(false)} className="text-slate-500 hover:text-red-400" data-testid="close-builder">
                 <X size={20} weight="bold" />
               </button>
             </div>
@@ -230,20 +230,20 @@ export default function EmailMarketing() {
                   <TermInput label="From Email" placeholder="(optional, uses SMTP default)" value={form.from_email} onChange={(e) => setForm({ ...form, from_email: e.target.value })} />
                 </div>
                 <TermTextarea label="Body HTML" rows={10} value={form.body_html} onChange={(e) => setForm({ ...form, body_html: e.target.value })} data-testid="builder-body" />
-                <div className="text-[11px] font-mono text-zinc-500">
-                  Tracking pixel + click-redirect auto-injected. Recipients: <span className="text-green-400">{selectedContacts.size}</span>
+                <div className="text-[11px] font-mono text-slate-500">
+                  Tracking pixel + click-redirect auto-injected. Recipients: <span className="text-emerald-500">{selectedContacts.size}</span>
                   {selectedContacts.size === 0 && <span className="text-yellow-400"> (filtered list will be used at send time)</span>}
                 </div>
               </div>
               {/* Right: live preview */}
               <div>
-                <div className="font-mono text-[11px] uppercase tracking-widest text-zinc-500 mb-1.5">Preview</div>
-                <div className="bg-zinc-50 border border-zinc-200 rounded-sm">
-                  <div className="border-b border-zinc-200 px-4 py-2 text-xs">
-                    <div className="text-zinc-500 font-mono">From: <span className="text-zinc-700">{form.from_name || "(SMTP default)"}</span></div>
-                    <div className="text-zinc-500 font-mono">Subject: <span className="text-zinc-900">{form.subject || "(no subject)"}</span></div>
+                <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500 mb-1.5">Preview</div>
+                <div className="bg-slate-50 border border-slate-200 rounded-sm">
+                  <div className="border-b border-slate-200 px-4 py-2 text-xs">
+                    <div className="text-slate-500 font-mono">From: <span className="text-slate-700">{form.from_name || "(SMTP default)"}</span></div>
+                    <div className="text-slate-500 font-mono">Subject: <span className="text-slate-900">{form.subject || "(no subject)"}</span></div>
                   </div>
-                  <div className="p-4 prose prose-invert max-w-none text-sm text-zinc-900" dangerouslySetInnerHTML={{ __html: form.body_html }} />
+                  <div className="p-4 prose prose-invert max-w-none text-sm text-slate-900" dangerouslySetInnerHTML={{ __html: form.body_html }} />
                 </div>
               </div>
             </div>
@@ -264,8 +264,8 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
     <button
       onClick={onClick}
       data-testid={testid}
-      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-zinc-200 last:border-r-0 ${
-        active ? "bg-green-500/10 text-green-400" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
+      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-slate-200 last:border-r-0 ${
+        active ? "bg-indigo-500/10 text-emerald-500" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
       }`}
     >
       <Icon size={14} weight="bold" />
@@ -276,8 +276,8 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
 
 function Metric({ label, value, tone }) {
   return (
-    <div className="bg-zinc-50/60 rounded-sm p-2">
-      <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">{label}</div>
+    <div className="bg-slate-50/60 rounded-sm p-2">
+      <div className="text-[10px] font-mono uppercase tracking-widest text-slate-500">{label}</div>
       <div className={`font-mono text-xl font-bold ${tone}`}>{value}</div>
     </div>
   );

@@ -6,8 +6,8 @@ import {
   EnvelopeSimple,
   Gear,
   SignOut,
-  Terminal,
   Buildings,
+  Lightning,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -29,68 +29,84 @@ export default function AppShell({ children }) {
   };
 
   const visibleNav = NAV.filter((n) => hasPermission(n.perm));
+  const initials = (user?.name || "U").split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
 
   return (
-    <div className="min-h-screen flex bg-background text-foreground">
+    <div className="min-h-screen flex bg-slate-50/60 text-slate-900">
       {/* Sidebar */}
-      <aside className="w-60 shrink-0 border-r border-zinc-200 bg-white flex flex-col">
-        <div className="px-5 py-5 border-b border-zinc-200 flex items-center gap-2">
-          <Terminal size={22} weight="bold" className="text-green-500" />
+      <aside className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col">
+        {/* Brand */}
+        <div className="px-5 py-5 border-b border-slate-100 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center shadow-sm">
+            <Lightning size={18} weight="fill" className="text-white" />
+          </div>
           <div>
-            <div className="font-display font-bold text-base tracking-tight">
-              LEAD<span className="text-green-500">HUNTER</span>
+            <div className="font-display font-bold text-base text-slate-900 leading-tight">LeadHunter</div>
+            <div className="text-[11px] text-slate-500 leading-tight">Email discovery suite</div>
+          </div>
+        </div>
+
+        {/* Tenant pill */}
+        <div className="px-3 pt-4 pb-2">
+          <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg bg-slate-50 border border-slate-100">
+            <div className="w-7 h-7 rounded-md bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-semibold">
+              <Buildings size={14} weight="bold" />
             </div>
-            <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">
-              v1.0 · terminal mode
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Workspace</div>
+              <div className="text-sm font-medium text-slate-900 truncate" data-testid="tenant-name">
+                {tenant?.company_name || "—"}
+              </div>
             </div>
           </div>
         </div>
 
-        <nav className="flex-1 py-4 space-y-1 px-2">
-          {NAV.map((item) => (
+        {/* Nav */}
+        <nav className="flex-1 px-3 py-3 space-y-0.5">
+          {visibleNav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === "/"}
               data-testid={item.testid}
               className={({ isActive }) =>
-                `group flex items-center gap-3 px-3 py-2 text-sm font-medium transition-all border-l-2 ${
+                `group flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-all ${
                   isActive
-                    ? "border-green-500 bg-green-500/10 text-green-400"
-                    : "border-transparent text-zinc-500 hover:text-green-400 hover:bg-zinc-50"
+                    ? "bg-indigo-50 text-indigo-700"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
                 }`
               }
             >
-              <item.icon size={18} weight="bold" />
-              <span>{item.label}</span>
+              {({ isActive }) => (
+                <>
+                  <item.icon size={18} weight={isActive ? "fill" : "regular"} />
+                  <span>{item.label}</span>
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
 
-        <div className="px-3 py-3 border-t border-zinc-200 space-y-2">
-          <div className="px-2">
-            <div className="flex items-center gap-2 text-xs text-zinc-500 font-mono uppercase tracking-widest mb-1">
-              <Buildings size={12} weight="bold" />
-              Tenant
+        {/* User footer */}
+        <div className="border-t border-slate-100 p-3">
+          <div className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-slate-50 transition-colors mb-1">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 text-white flex items-center justify-center text-xs font-semibold shadow-sm">
+              {initials}
             </div>
-            <div className="text-sm text-zinc-900 truncate" data-testid="tenant-name">
-              {tenant?.company_name || "—"}
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-slate-900 truncate" data-testid="user-name">{user?.name}</div>
+              <div className="text-[11px] text-slate-500 truncate">{user?.email}</div>
             </div>
-          </div>
-          <div className="px-2">
-            <div className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">User</div>
-            <div className="text-sm text-zinc-900 truncate" data-testid="user-name">{user?.name}</div>
-            <div className="text-xs text-zinc-500 truncate">{user?.email}</div>
-            <div className="mt-1 inline-block text-[10px] font-mono uppercase border border-green-500/30 bg-green-500/10 text-green-400 px-1.5 py-0.5">
+            <span className="text-[10px] uppercase tracking-wider font-bold bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded">
               {user?.role}
-            </div>
+            </span>
           </div>
           <button
             onClick={handleLogout}
             data-testid="logout-btn"
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors border border-zinc-200 hover:border-red-500/30"
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
           >
-            <SignOut size={16} weight="bold" /> Logout
+            <SignOut size={16} weight="regular" /> Sign out
           </button>
         </div>
       </aside>

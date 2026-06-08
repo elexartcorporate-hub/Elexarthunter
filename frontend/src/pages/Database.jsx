@@ -91,7 +91,7 @@ export default function Database() {
     <div className="p-6 md:p-8 fade-up">
       <PageHeader
         title="Database"
-        subtitle="$ db --master-leads"
+        subtitle="Master database of companies and contacts discovered by Hunter"
         action={
           <div className="flex gap-2">
             <GhostButton onClick={exportCsv} data-testid="export-csv-btn"><DownloadSimple size={14} weight="bold" /> Export CSV</GhostButton>
@@ -100,7 +100,7 @@ export default function Database() {
         }
       />
 
-      <div className="flex border border-zinc-200 rounded-sm overflow-hidden w-fit mb-5">
+      <div className="flex border border-slate-200 rounded-sm overflow-hidden w-fit mb-5">
         <TabBtn active={tab === "companies"} onClick={() => setTab("companies")} icon={Buildings} label={`Companies (${companies.length})`} testid="tab-companies" />
         <TabBtn active={tab === "contacts"} onClick={() => setTab("contacts")} icon={UsersThree} label={`Contacts (${contacts.length})`} testid="tab-contacts" />
       </div>
@@ -142,7 +142,7 @@ export default function Database() {
           <Card className="overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm" data-testid="companies-table">
-                <thead className="bg-zinc-50 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+                <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
                   <tr>
                     <th className="text-left p-3">Company</th>
                     <th className="text-left p-3">Domain</th>
@@ -155,15 +155,15 @@ export default function Database() {
                 </thead>
                 <tbody>
                   {companies.map((c) => (
-                    <tr key={c.id} className="border-t border-zinc-200/60 hover:bg-zinc-50/40">
-                      <td className="p-3 text-zinc-900">{c.company_name || "—"}</td>
-                      <td className="p-3 font-mono text-xs text-green-400">{c.domain}</td>
-                      <td className="p-3 text-zinc-500">{c.industry || "—"}</td>
-                      <td className="p-3 text-zinc-500">{c.country || "—"}</td>
-                      <td className="p-3 font-mono text-xs text-zinc-500">{c.phone || "—"}</td>
+                    <tr key={c.id} className="border-t border-slate-200/60 hover:bg-slate-50/40">
+                      <td className="p-3 text-slate-900">{c.company_name || "—"}</td>
+                      <td className="p-3 font-mono text-xs text-emerald-500">{c.domain}</td>
+                      <td className="p-3 text-slate-500">{c.industry || "—"}</td>
+                      <td className="p-3 text-slate-500">{c.country || "—"}</td>
+                      <td className="p-3 font-mono text-xs text-slate-500">{c.phone || "—"}</td>
                       <td className="p-3 text-right"><Badge tone="success">{c.contacts_count}</Badge></td>
                       <td className="p-3 text-right">
-                        <button onClick={() => delCompany(c.id)} className="text-zinc-500 hover:text-red-400" data-testid={`del-company-${c.id}`}>
+                        <button onClick={() => delCompany(c.id)} className="text-slate-500 hover:text-red-400" data-testid={`del-company-${c.id}`}>
                           <Trash size={14} weight="bold" />
                         </button>
                       </td>
@@ -180,7 +180,7 @@ export default function Database() {
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm" data-testid="contacts-table">
-              <thead className="bg-zinc-50 text-zinc-500 text-[10px] uppercase tracking-widest font-mono">
+              <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
                 <tr>
                   <th className="text-left p-3">Email</th>
                   <th className="text-left p-3">Name</th>
@@ -194,16 +194,16 @@ export default function Database() {
               </thead>
               <tbody>
                 {contacts.map((c) => (
-                  <tr key={c.id} className="border-t border-zinc-200/60 hover:bg-zinc-50/40">
-                    <td className="p-3 font-mono text-xs text-zinc-900">{c.email}</td>
-                    <td className="p-3 text-zinc-700">{c.name || "—"}</td>
-                    <td className="p-3 text-zinc-500">{c.job_title || "—"}</td>
-                    <td className="p-3 text-zinc-500">{c.company_name || c.company_domain || "—"}</td>
+                  <tr key={c.id} className="border-t border-slate-200/60 hover:bg-slate-50/40">
+                    <td className="p-3 font-mono text-xs text-slate-900">{c.email}</td>
+                    <td className="p-3 text-slate-700">{c.name || "—"}</td>
+                    <td className="p-3 text-slate-500">{c.job_title || "—"}</td>
+                    <td className="p-3 text-slate-500">{c.company_name || c.company_domain || "—"}</td>
                     <td className="p-3"><Badge tone={c.source === "website" ? "success" : c.source === "hunter" ? "info" : "neutral"}>{c.source}</Badge></td>
                     <td className="p-3"><ConfidenceBadge score={c.confidence_score} /></td>
                     <td className="p-3"><StatusBadge status={c.status} /></td>
                     <td className="p-3 text-right">
-                      <button onClick={() => delContact(c.id)} className="text-zinc-500 hover:text-red-400" data-testid={`del-contact-${c.id}`}>
+                      <button onClick={() => delContact(c.id)} className="text-slate-500 hover:text-red-400" data-testid={`del-contact-${c.id}`}>
                         <Trash size={14} weight="bold" />
                       </button>
                     </td>
@@ -223,8 +223,8 @@ function TabBtn({ active, onClick, icon: Icon, label, testid }) {
     <button
       onClick={onClick}
       data-testid={testid}
-      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-zinc-200 last:border-r-0 ${
-        active ? "bg-green-500/10 text-green-400" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
+      className={`px-4 py-2 text-xs font-mono uppercase tracking-widest flex items-center gap-2 transition-colors border-r border-slate-200 last:border-r-0 ${
+        active ? "bg-indigo-500/10 text-emerald-500" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
       }`}
     >
       <Icon size={14} weight="bold" />
