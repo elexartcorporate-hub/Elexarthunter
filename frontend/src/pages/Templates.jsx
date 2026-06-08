@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactQuill from "react-quill-new";
 import "react-quill-new/dist/quill.snow.css";
 import { api, formatApiError } from "@/lib/api";
 import { PageHeader, Card, TermInput, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
 import {
   Plus, Trash, PencilSimple, Copy, X, ListChecks, Eye, Paperclip,
-  TextT, FileArrowUp, DownloadSimple, Code,
+  TextT, FileArrowUp, DownloadSimple, Code, ArrowRight,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import "./templates.css";
@@ -40,7 +41,7 @@ const VARIABLES = ["name", "company", "email", "industry", "website", "city", "c
 
 export default function Templates() {
   const [rows, setRows] = useState([]);
-  const [editing, setEditing] = useState(null); // null | "new" | id
+  const [editing, setEditing] = useState(null); // null | "pick" | "new" | id
   const [form, setForm] = useState({ name: "", subject: "", body_html: SAMPLE_HTML, body_type: "html" });
   const [preview, setPreview] = useState(null);
 
@@ -51,9 +52,19 @@ export default function Templates() {
   useEffect(() => { load(); }, []);
 
   const startNew = () => {
-    setForm({ name: "", subject: "", body_html: SAMPLE_HTML, body_type: "html" });
+    setEditing("pick");
+  };
+
+  const pickType = (type) => {
+    setForm({
+      name: "",
+      subject: "",
+      body_html: type === "html" ? SAMPLE_HTML : SAMPLE_PLAIN,
+      body_type: type,
+    });
     setEditing("new");
   };
+
   const startEdit = (t) => {
     setForm({
       name: t.name,
@@ -158,7 +169,10 @@ export default function Templates() {
         </div>
       )}
 
-      {editing && (
+      {editing === "pick" && (
+        <TypePickerModal onClose={() => setEditing(null)} onPick={pickType} />
+      )}
+      {(editing === "new" || (editing && editing !== "pick")) && (
         <TemplateModal
           form={form}
           setForm={setForm}
@@ -171,6 +185,47 @@ export default function Templates() {
       )}
       {preview && <PreviewModal template={preview} onClose={() => setPreview(null)} />}
     </div>
+  );
+}
+
+function TypePickerModal({ onClose, onPick }) {
+  return (
+    <ModalShell onClose={onClose} title="Pilih tipe template" maxWidth="max-w-xl">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <button
+          type="button"
+          onClick={() => onPick("html")}
+          className="group p-5 border border-slate-200 rounded-xl text-left hover:border-indigo-400 hover:bg-indigo-50/50 transition-all"
+          data-testid="pick-html-btn"
+        >
+          <div className="w-10 h-10 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center mb-3">
+            <Code size={20} weight="bold" />
+          </div>
+          <div className="font-display font-semibold text-slate-900 mb-1 flex items-center gap-1">
+            HTML Template <ArrowRight size={14} weight="bold" className="opacity-0 group-hover:opacity-100 transition-opacity" />
+          </div>
+          <div className="text-xs text-slate-500 leading-snug">
+            Rich text editor dengan Bold, Italic, List, Link, Color. Tampilan menarik, cocok untuk newsletter & outreach formal.
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={() => onPick("plain")}
+          className="group p-5 border border-slate-200 rounded-xl text-left hover:border-indigo-400 hover:bg-indigo-50/50 transition-all"
+          data-testid="pick-plain-btn"
+        >
+          <div className="w-10 h-10 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center mb-3">
+            <TextT size={20} weight="bold" />
+          </div>
+          <div className="font-display font-semibold text-slate-900 mb-1 flex items-center gap-1">
+            Plain Text <ArrowRight size={14} weight="bold" className="opacity-0 group-hover:opacity-100 transition-opacity" />
+          </div>
+          <div className="text-xs text-slate-500 leading-snug">
+            Teks polos tanpa formatting. Lebih personal, terlihat manual, biasanya delivery rate-nya lebih tinggi (tidak masuk spam).
+          </div>
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -282,32 +337,13 @@ function TemplateModal({ form, setForm, onClose, onSave, isNew, templateId, onUp
           placeholder="Quick question about {{company}}"
         />
 
-        {/* Body type toggle */}
+        {/* Body section */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs font-medium text-slate-700">Body</label>
-            <div className="flex bg-slate-100 rounded-lg p-0.5" data-testid="tpl-body-type-toggle">
-              <button
-                type="button"
-                onClick={() => updateField({ body_type: "html", body_html: form.body_html || SAMPLE_HTML })}
-                className={`px-3 py-1 text-xs font-medium rounded-md flex items-center gap-1 transition-colors ${
-                  form.body_type === "html" ? "bg-white shadow-sm text-indigo-700" : "text-slate-500 hover:text-slate-800"
-                }`}
-                data-testid="tpl-body-type-html"
-              >
-                <Code size={12} weight="bold" /> HTML
-              </button>
-              <button
-                type="button"
-                onClick={() => updateField({ body_type: "plain", body_html: form.body_html || SAMPLE_PLAIN })}
-                className={`px-3 py-1 text-xs font-medium rounded-md flex items-center gap-1 transition-colors ${
-                  form.body_type === "plain" ? "bg-white shadow-sm text-indigo-700" : "text-slate-500 hover:text-slate-800"
-                }`}
-                data-testid="tpl-body-type-plain"
-              >
-                <TextT size={12} weight="bold" /> Plain text
-              </button>
-            </div>
+            <Badge tone={form.body_type === "plain" ? "neutral" : "info"}>
+              {form.body_type === "plain" ? <><TextT size={10} weight="bold" /> plain text</> : <><Code size={10} weight="bold" /> html</>}
+            </Badge>
           </div>
 
           {form.body_type === "html" ? (
@@ -452,31 +488,48 @@ function PreviewModal({ template, onClose }) {
 }
 
 function ModalShell({ title, children, onClose, maxWidth = "max-w-3xl", footer }) {
-  return (
-    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm fade-up overflow-y-auto" onClick={onClose}>
-      <div className="min-h-full flex items-start justify-center p-4 py-8">
+  const bodyRef = useRef(null);
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const reset = () => { if (bodyRef.current) bodyRef.current.scrollTop = 0; };
+    reset();
+    const t1 = setTimeout(reset, 50);
+    const t2 = setTimeout(reset, 200);
+    return () => {
+      document.body.style.overflow = prev;
+      clearTimeout(t1); clearTimeout(t2);
+    };
+  }, []);
+  // Render outside the page tree via portal so `position: fixed` is relative to viewport,
+  // not to any ancestor with `transform` (e.g. our page's fade-up animation).
+  return createPortal(
+    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm fade-in" onClick={onClose}>
+      <div className="absolute inset-0 flex items-center justify-center p-4 pointer-events-none">
         <div
-          className={`w-full ${maxWidth} bg-white rounded-xl shadow-2xl flex flex-col my-auto`}
+          className={`pointer-events-auto w-full ${maxWidth} bg-white rounded-xl shadow-2xl flex flex-col`}
+          style={{ maxHeight: "calc(100vh - 2rem)" }}
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 rounded-t-xl">
-            <h2 className="font-display text-lg text-slate-900">{title}</h2>
+          {/* Sticky header */}
+          <div className="flex items-center justify-between px-6 py-3 border-b border-slate-200 rounded-t-xl shrink-0">
+            <h2 className="font-display text-base font-semibold text-slate-900">{title}</h2>
             <button onClick={onClose} className="text-slate-400 hover:text-rose-500 p-1 rounded hover:bg-slate-100" data-testid="modal-close-btn">
               <X size={18} weight="bold" />
             </button>
           </div>
-          {/* Body */}
-          <div className="px-6 py-5">{children}</div>
-          {/* Footer */}
+          {/* Scrollable body (only scrolls internally when needed) */}
+          <div ref={bodyRef} className="flex-1 overflow-y-auto px-6 py-4 min-h-0 modal-body-scroll">{children}</div>
+          {/* Sticky footer */}
           {footer && (
-            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t border-slate-200 bg-slate-50/50 rounded-b-xl">
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t border-slate-200 bg-slate-50/50 rounded-b-xl shrink-0">
               {footer}
             </div>
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
