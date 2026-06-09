@@ -5,10 +5,12 @@ import { PageHeader, Card, TermInput, TermSelect, TermTextarea, PrimaryButton, G
 import {
   Plus, MagnifyingGlass, Crosshair, ListBullets, UsersFour, Globe, Buildings,
   CaretRight, Spinner, PaperPlaneTilt, FloppyDisk, CheckCircle, Lock, LockOpen,
-  Target, ArrowRight, X, CalendarCheck, Clock, Trash,
+  Target, ArrowRight, X, CalendarCheck, Clock, Trash, ChartLine,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import Calendar from "./ProspectsCalendar";
+import EmailActivity from "./EmailActivity";
+import { useAuth } from "@/contexts/AuthContext";
 
 const STATUSES = ["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"];
 const STATUS_TONE = {
@@ -62,6 +64,7 @@ export default function Prospects() {
           testid="tab-email"
           disabled={!emailTabUnlocked}
         />
+        <TabBtn active={tab === "analitik"} onClick={() => setTab("analitik")} icon={ChartLine}      label="4 · Analitik"     testid="tab-analitik" />
         <TabBtn active={tab === "tersimpan"} onClick={() => setTab("tersimpan")} icon={ListBullets}   label="Tersimpan"        testid="tab-tersimpan" />
         <TabBtn active={tab === "list"}      onClick={() => setTab("list")}      icon={UsersFour}     label="Prospect List"    testid="tab-list" />
       </div>
@@ -69,6 +72,7 @@ export default function Prospects() {
       {tab === "jadwal"    && <Calendar quota={quota} onChanged={() => { setRefreshKey((k) => k + 1); setTasksRefresh((k) => k + 1); }} onTaskCreated={(t) => { setActiveTask(t); setTab("add"); setTasksRefresh((k) => k + 1); }} onTaskContinue={(t) => { setActiveTask(t); setTab(t.prospect_count >= t.target ? "email" : "add"); setTasksRefresh((k) => k + 1); }} />}
       {tab === "add"       && <AddProspect quota={quota} activeTask={activeTask} refreshTask={refreshTask} onProspectSaved={() => setRefreshKey((k) => k + 1)} onGoEmail={() => setTab("email")} />}
       {tab === "email"     && emailTabUnlocked && <EmailStep task={activeTask} onSubmitted={() => { setTab("tersimpan"); setActiveTask(null); setTasksRefresh((k) => k + 1); }} />}
+      {tab === "analitik"  && <EmailActivity />}
       {tab === "tersimpan" && <TasksList refreshKey={tasksRefresh} onPick={(t) => { setActiveTask(t); setTab("add"); }} onRefresh={() => setTasksRefresh((k) => k + 1)} />}
       {tab === "list"      && <ProspectList quota={quota} />}
     </div>
@@ -762,6 +766,7 @@ function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfir
 
 /* ─────────────── BULK OUTREACH MODAL ─────────────── */
 function OutreachModal({ todayList, onClose }) {
+  const { user } = useAuth();
   const [templates, setTemplates] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set(todayList.map((p) => p.id)));
   const [form, setForm] = useState({
@@ -770,6 +775,9 @@ function OutreachModal({ todayList, onClose }) {
     body_html: "<p>Hi {{name}},</p>\n<p>I came across {{company}} and wanted to reach out about a quick chat.</p>\n<p>Best,<br/>Your Name</p>",
   });
   const [sending, setSending] = useState(false);
+  const [testEmail, setTestEmail] = useState(user?.email || "");
+  const [testing, setTesting] = useState(false);
+  const [tested, setTested] = useState(false);
 
   useEffect(() => {
     api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
@@ -796,6 +804,10 @@ function OutreachModal({ todayList, onClose }) {
 
   const send = async () => {
     if (selectedIds.size === 0) return toast.error("Pick at least one prospect");
+    if (!tested) {
+      const proceed = window.confirm("Anda belum kirim test email. Yakin ingin lanjut kirim ke semua prospect?\n\nKlik OK untuk tetap kirim, atau Cancel untuk kirim test dulu.");
+      if (!proceed) return;
+    }
     setSending(true);
     try {
       const { data } = await api.post("/prospects/bulk-send-email", {
@@ -804,10 +816,29 @@ function OutreachModal({ todayList, onClose }) {
         body_html: form.body_html,
         template_id: form.template_id || null,
       });
-      toast.success(`Queued ${data.queued} email(s)`);
+      toast.success(`Queued ${data.queued} email — jeda 3 menit per pengiriman`);
       onClose();
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setSending(false); }
+  };
+
+  const sendTest = async () => {
+    if (!testEmail || !testEmail.includes("@")) {
+      toast.error("Masukkan email tujuan test yang valid");
+      return;
+    }
+    setTesting(true);
+    try {
+      const { data } = await api.post("/email/send-test", {
+        to_email: testEmail,
+        subject: form.subject,
+        body_html: form.body_html,
+        template_id: form.template_id || null,
+      });
+      toast.success(`Test email terkirim ke ${data.to}. Cek inbox sebelum kirim ke prospect.`);
+      setTested(true);
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setTesting(false); }
   };
 
   return (
@@ -853,13 +884,47 @@ function OutreachModal({ todayList, onClose }) {
               </div>
             </div>
           </div>
-          <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between rounded-b-xl">
-            <div className="text-xs text-slate-500">Tracking pixel + click-redirect auto-injected. {`{{name}}`}, {`{{company}}`} etc replaced per prospect.</div>
-            <div className="flex gap-2">
-              <GhostButton onClick={onClose}>Cancel</GhostButton>
-              <PrimaryButton onClick={send} disabled={sending || selectedIds.size === 0} data-testid="outreach-send-btn">
-                <PaperPlaneTilt size={14} weight="bold" /> {sending ? "Queuing..." : `Send ${totalEmails} email`}
-              </PrimaryButton>
+          <div className="px-6 py-4 border-t border-slate-200 rounded-b-xl space-y-3">
+            {/* Test Email row */}
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <PaperPlaneTilt size={14} weight="bold" className="text-amber-600" />
+                <span className="text-xs font-semibold text-amber-900">Kirim Test Email dulu</span>
+                {tested && <Badge tone="success">✓ Test terkirim</Badge>}
+              </div>
+              <div className="flex gap-2 items-stretch">
+                <input
+                  type="email"
+                  value={testEmail}
+                  onChange={(e) => { setTestEmail(e.target.value); setTested(false); }}
+                  placeholder="email-anda@domain.com"
+                  className="flex-1 px-3 py-1.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                  data-testid="test-email-input"
+                />
+                <button
+                  onClick={sendTest}
+                  disabled={testing}
+                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium flex items-center gap-1 disabled:opacity-50 shrink-0"
+                  data-testid="send-test-btn"
+                >
+                  <PaperPlaneTilt size={12} weight="bold" /> {testing ? "Mengirim test..." : "Kirim Test"}
+                </button>
+              </div>
+              <div className="text-[10px] text-amber-700 mt-1.5">
+                Test akan kirim 1 email dengan prefix [TEST] + variable {`{{name}}/{{company}}`} terisi contoh, ke email Anda. Tidak masuk hitungan quota / activity log.
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                Tracking pixel + click-redirect auto-injected. <b>Jeda 3 menit antar email</b> (anti-spam).
+              </div>
+              <div className="flex gap-2">
+                <GhostButton onClick={onClose}>Cancel</GhostButton>
+                <PrimaryButton onClick={send} disabled={sending || selectedIds.size === 0} data-testid="outreach-send-btn">
+                  <PaperPlaneTilt size={14} weight="bold" /> {sending ? "Queuing..." : `Send ${totalEmails} email`}
+                </PrimaryButton>
+              </div>
             </div>
           </div>
         </Card>

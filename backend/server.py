@@ -1542,7 +1542,7 @@ async def send_campaign(campaign_id: str, req: CampaignSendReq, background: Back
                 await db.campaign_recipients.update_one(
                     {"id": rid}, {"$set": {"bounced": True, "error": result["error"]}}
                 )
-            await asyncio.sleep(0.3)  # gentle throttle
+            await asyncio.sleep(180)  # 3-minute throttle to avoid spam filters / rate limits
         await db.campaigns.update_one(
             {"id": campaign_id},
             {"$set": {"status": "sent", "delivered_count": sent, "failed_count": failed, "completed_at": now_iso()}},
@@ -2118,7 +2118,7 @@ async def submit_task(tid: str, payload: OutreachTaskSubmit, background: Backgro
                                                    {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
             else:
                 await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(180)  # 3-minute throttle between sends
         await db.outreach_tasks.update_one({"id": tid}, {"$set": {"status": "completed", "updated_at": now_iso()}})
 
     background.add_task(_runner)
@@ -3007,10 +3007,54 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
                                               {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
             else:
                 await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(180)  # 3-minute throttle between sends
 
     background.add_task(_runner_all)
     return {"queued": queued}
+
+
+# ─── Email Test Send (before real outreach) ───
+class TestSendReq(BaseModel):
+    to_email: EmailStr
+    subject: str
+    body_html: str
+    template_id: Optional[str] = None
+    sub_company_id: Optional[str] = None
+
+
+@api.post("/email/send-test")
+async def send_test_email(payload: TestSendReq, user: dict = Depends(get_current_user)):
+    """Send a one-off test email to the user's address (or any chosen address) to verify
+    SMTP setting, template look, attachment, and anti-spam headers BEFORE doing real outreach.
+    Does NOT count toward email_sends / quota / activity log."""
+    smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id)
+    if not smtp_src:
+        raise HTTPException(400, "SMTP belum di-set. Atur dulu di Settings → Companies / Users.")
+
+    body_type, atts = await _load_template_extras(user["tenant_id"], payload.template_id)
+    # Inject a small "[TEST]" prefix to subject so user knows
+    subject = payload.subject if payload.subject.upper().startswith("[TEST]") else f"[TEST] {payload.subject}"
+    # Replace template variables with sample values for the test preview
+    sample = {"name": user.get("name", "Test User"), "company": "Sample Co.", "email": user["email"], "industry": "SaaS", "website": "example.com", "city": "Jakarta", "country": "ID"}
+    body = payload.body_html
+    for k, v in sample.items():
+        body = body.replace("{{" + k + "}}", str(v))
+        subject = subject.replace("{{" + k + "}}", str(v))
+
+    from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
+    from_name = smtp_src.get("smtp_from_name")
+
+    result = await asyncio.to_thread(
+        send_smtp_email,
+        smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
+        smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
+        bool(smtp_src.get("smtp_use_tls", True)),
+        from_email, from_name, payload.to_email, subject, body,
+        body_type, atts, None, from_email,
+    )
+    if not result["ok"]:
+        raise HTTPException(400, f"Test send gagal: {result['error']}")
+    return {"ok": True, "to": payload.to_email, "subject": subject}
 
 
 # ─── Email Templates ───
