@@ -248,6 +248,8 @@ class ProspectCreate(BaseModel):
     notes: Optional[str] = None
     sub_company_id: Optional[str] = None
     assigned_user_id: Optional[str] = None
+    category_id: Optional[str] = None
+    location_id: Optional[str] = None
     status: Literal["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"] = "New"
 
 
@@ -263,6 +265,8 @@ class ProspectUpdate(BaseModel):
     notes: Optional[str] = None
     sub_company_id: Optional[str] = None
     assigned_user_id: Optional[str] = None
+    category_id: Optional[str] = None
+    location_id: Optional[str] = None
     status: Optional[Literal["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"]] = None
 
 
@@ -2700,6 +2704,8 @@ async def create_prospect(payload: ProspectCreate, user: dict = Depends(get_curr
         "notes": payload.notes,
         "sub_company_id": payload.sub_company_id,
         "assigned_user_id": payload.assigned_user_id or user["id"],
+        "category_id": payload.category_id,
+        "location_id": payload.location_id,
         "status": payload.status,
         "created_by": user["id"],
         "created_at": now_iso(),

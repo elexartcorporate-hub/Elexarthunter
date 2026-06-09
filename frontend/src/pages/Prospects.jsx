@@ -243,7 +243,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
     setPickerMode(next ? "save_next" : "save");
   };
 
-  const confirmSave = async (selectedEmails, primaryEmail) => {
+  const confirmSave = async (selectedEmails, primaryEmail, categoryId, locationId) => {
     if (!result || selectedEmails.length === 0) return;
     const next = pickerMode === "save_next";
     setPickerMode(null);
@@ -256,6 +256,8 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
         country: result.company.country,
         phone: (result.company.phones || [])[0] || null,
         linkedin: result.company.socials?.linkedin,
+        category_id: categoryId || null,
+        location_id: locationId || null,
         emails: selectedEmails.map((e) => ({
           email: e.email,
           is_primary: e.email === primaryEmail,
@@ -509,6 +511,53 @@ function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfir
   const [selected, setSelected] = useState(new Set(emails.map((e) => e.email)));
   const [primary, setPrimary] = useState(emails[0]?.email || "");
 
+  // Category & Location for the prospect being saved
+  const [categories, setCategories] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [categoryId, setCategoryId] = useState("");
+  const [locationId, setLocationId] = useState("");
+  const [newCatName, setNewCatName] = useState("");
+  const [newLocName, setNewLocName] = useState("");
+  const [showNewCat, setShowNewCat] = useState(false);
+  const [showNewLoc, setShowNewLoc] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [c, l] = await Promise.all([
+          api.get("/hunter-settings/categories"),
+          api.get("/hunter-settings/locations"),
+        ]);
+        setCategories(c.data || []);
+        setLocations(l.data || []);
+      } catch { /* settings not seeded yet — empty dropdowns are fine */ }
+    })();
+  }, []);
+
+  const addNewCategory = async () => {
+    const name = newCatName.trim();
+    if (!name) return;
+    try {
+      const { data } = await api.post("/hunter-settings/categories", { name });
+      setCategories((prev) => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
+      setCategoryId(data.id);
+      setNewCatName(""); setShowNewCat(false);
+      toast.success(`Kategori "${name}" ditambahkan`);
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  const addNewLocation = async () => {
+    const name = newLocName.trim();
+    if (!name) return;
+    try {
+      const { data } = await api.post("/hunter-settings/locations", { name });
+      setLocations((prev) => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
+      setLocationId(data.id);
+      setNewLocName(""); setShowNewLoc(false);
+      toast.success(`Lokasi "${name}" ditambahkan`);
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
   const toggle = (email) => {
     const s = new Set(selected);
     if (s.has(email)) {
@@ -537,7 +586,7 @@ function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfir
   const submit = () => {
     if (selected.size === 0) return toast.error("Pilih minimal 1 email");
     const picked = emails.filter((e) => selected.has(e.email));
-    onConfirm(picked, primary || picked[0].email);
+    onConfirm(picked, primary || picked[0].email, categoryId || null, locationId || null);
   };
 
   return (
@@ -557,6 +606,89 @@ function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfir
           </div>
 
           <div className="p-6">
+            {/* Category & Location selector */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="text-xs font-medium text-slate-700 flex items-center justify-between">
+                  Category
+                  <button
+                    type="button"
+                    onClick={() => { setShowNewCat((v) => !v); setShowNewLoc(false); }}
+                    className="text-[11px] text-indigo-600 hover:text-indigo-700 font-medium"
+                    data-testid="add-cat-toggle"
+                  >+ tambah baru</button>
+                </label>
+                {showNewCat ? (
+                  <div className="mt-1 flex gap-1">
+                    <input
+                      type="text"
+                      value={newCatName}
+                      onChange={(e) => setNewCatName(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addNewCategory()}
+                      placeholder="Nama kategori..."
+                      className="flex-1 px-2.5 py-1.5 border border-indigo-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      data-testid="new-cat-input"
+                      autoFocus
+                    />
+                    <button type="button" onClick={addNewCategory} className="px-2 py-1.5 text-xs bg-indigo-600 text-white rounded-lg font-medium" data-testid="new-cat-save">Save</button>
+                    <button type="button" onClick={() => { setShowNewCat(false); setNewCatName(""); }} className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700">×</button>
+                  </div>
+                ) : (
+                  <select
+                    value={categoryId}
+                    onChange={(e) => setCategoryId(e.target.value)}
+                    className="w-full mt-1 px-2.5 py-1.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    data-testid="picker-category"
+                  >
+                    <option value="">— Pilih kategori (opsional) —</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-700 flex items-center justify-between">
+                  Location
+                  <button
+                    type="button"
+                    onClick={() => { setShowNewLoc((v) => !v); setShowNewCat(false); }}
+                    className="text-[11px] text-indigo-600 hover:text-indigo-700 font-medium"
+                    data-testid="add-loc-toggle"
+                  >+ tambah baru</button>
+                </label>
+                {showNewLoc ? (
+                  <div className="mt-1 flex gap-1">
+                    <input
+                      type="text"
+                      value={newLocName}
+                      onChange={(e) => setNewLocName(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addNewLocation()}
+                      placeholder="Nama lokasi..."
+                      className="flex-1 px-2.5 py-1.5 border border-indigo-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      data-testid="new-loc-input"
+                      autoFocus
+                    />
+                    <button type="button" onClick={addNewLocation} className="px-2 py-1.5 text-xs bg-indigo-600 text-white rounded-lg font-medium" data-testid="new-loc-save">Save</button>
+                    <button type="button" onClick={() => { setShowNewLoc(false); setNewLocName(""); }} className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700">×</button>
+                  </div>
+                ) : (
+                  <select
+                    value={locationId}
+                    onChange={(e) => setLocationId(e.target.value)}
+                    className="w-full mt-1 px-2.5 py-1.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    data-testid="picker-location"
+                  >
+                    <option value="">— Pilih lokasi (opsional) —</option>
+                    {locations.map((l) => (
+                      <option key={l.id} value={l.id}>{l.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+
             <div className="flex items-center justify-between mb-3">
               <button onClick={toggleAll} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium" data-testid="picker-toggle-all">
                 {selected.size === emails.length ? "Uncheck all" : "Check all"}
