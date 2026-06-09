@@ -8,9 +8,29 @@ import {
   Target, ArrowRight, X, CalendarCheck, Clock, Trash, ChartLine,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import ReactQuill from "react-quill-new";
+import "react-quill-new/dist/quill.snow.css";
+import "../pages/templates.css";
 import Calendar from "./ProspectsCalendar";
 import EmailActivity from "./EmailActivity";
 import { useAuth } from "@/contexts/AuthContext";
+
+const QUILL_SIMPLE_MODULES = {
+  toolbar: [
+    [{ header: [1, 2, 3, false] }],
+    ["bold", "italic", "underline"],
+    [{ list: "ordered" }, { list: "bullet" }],
+    [{ align: ["", "center", "right", "justify"] }],
+    ["link", "clean"],
+  ],
+};
+
+// Wrap legacy plain-text bodies in <p>/<br> so Quill renders them with paragraphs preserved.
+const ensureHtml = (body) => {
+  if (!body) return "";
+  if (/<\w+[^>]*>/.test(body)) return body;
+  return body.split(/\n{2,}/).map((p) => `<p>${p.replace(/\n/g, "<br/>")}</p>`).join("");
+};
 
 const STATUSES = ["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"];
 const STATUS_TONE = {
@@ -787,7 +807,7 @@ function OutreachModal({ todayList, onClose }) {
     setForm((f) => ({ ...f, template_id: tid }));
     if (!tid) return;
     const t = templates.find((x) => x.id === tid);
-    if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: t.body_html }));
+    if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: ensureHtml(t.body_html) }));
   };
 
   const toggle = (id) => {
@@ -859,7 +879,18 @@ function OutreachModal({ todayList, onClose }) {
                 {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
               </TermSelect>
               <TermInput label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} data-testid="outreach-subject" />
-              <TermTextarea label="Body (HTML, supports {{name}} {{company}} variables)" rows={10} value={form.body_html} onChange={(e) => setForm({ ...form, body_html: e.target.value })} data-testid="outreach-body" />
+              <div>
+                <label className="text-xs font-medium text-slate-700 block mb-1.5">Body (supports {`{{name}}`} {`{{company}}`} variables)</label>
+                <div className="quill-wrapper" data-testid="outreach-body">
+                  <ReactQuill
+                    theme="snow"
+                    value={form.body_html}
+                    onChange={(v) => setForm({ ...form, body_html: v })}
+                    modules={QUILL_SIMPLE_MODULES}
+                    placeholder="Tulis email Anda di sini..."
+                  />
+                </div>
+              </div>
               <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
                 💡 SMTP otomatis pakai setting Anda (user) atau company tenant. Atur di Settings → Companies / Users.
               </div>
@@ -1094,7 +1125,7 @@ function EmailStep({ task, onSubmitted }) {
     setForm((f) => ({ ...f, template_id: tid }));
     if (!tid) return;
     const t = templates.find((x) => x.id === tid);
-    if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: t.body_html }));
+    if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: ensureHtml(t.body_html) }));
   };
 
   const sendTest = async () => {
@@ -1167,7 +1198,18 @@ function EmailStep({ task, onSubmitted }) {
               {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
             </TermSelect>
             <TermInput label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} data-testid="email-subject" />
-            <TermTextarea label="Body (HTML, supports {{name}} {{company}})" rows={10} value={form.body_html} onChange={(e) => setForm({ ...form, body_html: e.target.value })} data-testid="email-body" />
+            <div>
+              <label className="text-xs font-medium text-slate-700 block mb-1.5">Body (supports {`{{name}}`} {`{{company}}`})</label>
+              <div className="quill-wrapper" data-testid="email-body">
+                <ReactQuill
+                  theme="snow"
+                  value={form.body_html}
+                  onChange={(v) => setForm({ ...form, body_html: v })}
+                  modules={QUILL_SIMPLE_MODULES}
+                  placeholder="Tulis email Anda di sini..."
+                />
+              </div>
+            </div>
             <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
               💡 SMTP otomatis pakai setting Anda (user) atau company tenant. Atur di Settings → Companies / Users.
             </div>

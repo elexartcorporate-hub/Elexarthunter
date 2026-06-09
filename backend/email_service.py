@@ -87,9 +87,13 @@ def send_smtp_email(
         # Top-level multipart/mixed when attachments present, else multipart/alternative.
         has_attachments = bool(attachments)
         alt = MIMEMultipart("alternative")
-        if body_type == "plain":
-            plain = html_body
-            alt.attach(MIMEText(plain, "plain", "utf-8"))
+
+        # Auto-detect: if the "plain" body actually contains HTML tags (e.g. from a rich
+        # editor that outputs HTML), upgrade to HTML so the recipient doesn't see raw `<p>` tags.
+        looks_like_html = body_type == "html" or bool(re.search(r"<\w+[^>]*>", html_body or ""))
+
+        if not looks_like_html:
+            alt.attach(MIMEText(html_body, "plain", "utf-8"))
         else:
             plain = _html_to_text(html_body)
             wrapped = _wrap_html(html_body, plain)
