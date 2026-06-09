@@ -13,6 +13,37 @@ const FOLDERS = [
   { key: "Trash", label: "Trash" },
 ];
 
+// ─── Module-level cache (survives component remounts when navigating menus) ───
+const listCache    = new Map();   // key: `${scId}::${folder}::${unreadOnly?1:0}` -> { data, fetchedAt }
+const detailCache  = new Map();   // key: `${scId}::${folder}::${uid}` -> detail
+const lastSelected = new Map();   // key: `${scId}::${folder}` -> selected msg header (to restore selection on remount)
+
+// Persist the set of UIDs we've marked as read locally — even when IMAP forgets after a refresh.
+const READ_LS_KEY = "lh_inbox_read_uids_v1";
+function loadLocalRead() {
+  try { return new Set(JSON.parse(localStorage.getItem(READ_LS_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+function saveLocalRead(set) {
+  try { localStorage.setItem(READ_LS_KEY, JSON.stringify([...set].slice(-2000))); }
+  catch { /* quota – ignore */ }
+}
+function markLocalRead(scId, folder, uid) {
+  const s = loadLocalRead();
+  s.add(`${scId}::${folder}::${uid}`);
+  saveLocalRead(s);
+}
+function applyLocalRead(scId, folder, messages) {
+  const s = loadLocalRead();
+  return messages.map((m) =>
+    s.has(`${scId}::${folder}::${m.uid}`) && m.unread ? { ...m, unread: false } : m
+  );
+}
+
+const cacheKey   = (scId, folder, unreadOnly) => `${scId}::${folder}::${unreadOnly ? 1 : 0}`;
+const detailKey  = (scId, folder, uid)       => `${scId}::${folder}::${uid}`;
+const selectKey  = (scId, folder)            => `${scId}::${folder}`;
+
 export default function Inbox() {
   const [companies, setCompanies] = useState([]);
   const [activeId, setActiveId] = useState("");
@@ -21,6 +52,7 @@ export default function Inbox() {
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [lastFetchedAt, setLastFetchedAt] = useState(null);
 
   // Detail view state
   const [selected, setSelected] = useState(null); // message header
@@ -44,38 +76,92 @@ export default function Inbox() {
   };
   useEffect(() => { loadCompanies(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
-  const loadInbox = async () => {
+  // Fetch inbox: by default uses cache if available. Force=true bypasses cache (Refresh button).
+  const loadInbox = async (force = false) => {
     if (!activeId) return;
-    setLoading(true); setError(null); setSelected(null); setDetail(null);
+    const key = cacheKey(activeId, folder, unreadOnly);
+    // Try to restore selection that belongs to the (company, folder) we're switching to.
+    const restoreSelection = () => {
+      const sel = lastSelected.get(selectKey(activeId, folder));
+      const cachedDetail = sel ? detailCache.get(detailKey(activeId, folder, sel.uid)) : null;
+      if (sel && cachedDetail) {
+        setSelected(sel);
+        setDetail(cachedDetail);
+        setDetailLoading(false);
+        setDetailError(null);
+      } else {
+        setSelected(null);
+        setDetail(null);
+        setDetailLoading(false);
+        setDetailError(null);
+      }
+    };
+    if (!force) {
+      const cached = listCache.get(key);
+      if (cached) {
+        setData(cached.data);
+        setError(null);
+        setLoading(false);
+        setLastFetchedAt(cached.fetchedAt);
+        restoreSelection();
+        return;
+      }
+    }
+    setLoading(true); setError(null);
+    if (force) {
+      setSelected(null); setDetail(null);
+    } else {
+      restoreSelection();
+    }
     try {
       const { data } = await api.get(`/inbox/${activeId}`, {
         params: { folder, limit: 20, unread_only: unreadOnly },
       });
-      setData(data);
+      // Merge in any UIDs we already opened locally — protects against IMAP servers
+      // that don't persist \Seen reliably and prevents the "comes back as unread" issue.
+      const merged = { ...data, messages: applyLocalRead(activeId, folder, data.messages) };
+      setData(merged);
+      const fetchedAt = Date.now();
+      listCache.set(key, { data: merged, fetchedAt });
+      setLastFetchedAt(fetchedAt);
     } catch (err) {
       setError(formatApiError(err));
       setData(null);
     } finally { setLoading(false); }
   };
   useEffect(() => {
-    if (activeId) loadInbox();
+    if (activeId) loadInbox(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, folder, unreadOnly]);
 
   const openMessage = async (msg) => {
     setSelected(msg);
-    setDetail(null); setDetailError(null); setDetailLoading(true);
+    lastSelected.set(selectKey(activeId, folder), msg);
+    setDetailError(null);
+    // Show cached detail instantly if we have it
+    const dKey = detailKey(activeId, folder, msg.uid);
+    const cachedDetail = detailCache.get(dKey);
+    if (cachedDetail) {
+      setDetail(cachedDetail);
+      setDetailLoading(false);
+      // Still apply unread→read optimistic update once
+      if (msg.unread) {
+        markLocalRead(activeId, folder, msg.uid);
+        markCachedRead(activeId, folder, msg.uid, unreadOnly, setData);
+      }
+      return;
+    }
+    setDetail(null); setDetailLoading(true);
     try {
       const { data } = await api.get(`/inbox/${activeId}/message/${msg.uid}`, {
         params: { folder, mark_seen: true },
       });
       setDetail(data);
-      // optimistic: mark unread=false in list
+      detailCache.set(dKey, data);
+      // Persist read status in both list state + cache + localStorage
       if (msg.unread) {
-        setData((d) => d ? {
-          ...d,
-          messages: d.messages.map((x) => x.uid === msg.uid ? { ...x, unread: false } : x),
-        } : d);
+        markLocalRead(activeId, folder, msg.uid);
+        markCachedRead(activeId, folder, msg.uid, unreadOnly, setData);
       }
     } catch (err) {
       setDetailError(formatApiError(err));
@@ -120,6 +206,11 @@ export default function Inbox() {
         references: detail.references || "",
       });
       toast.success(res.warn ? `Terkirim (${res.warn})` : "Balasan terkirim");
+      // Invalidate Sent + current folder caches so refresh/visit shows latest
+      [0, 1].forEach((u) => {
+        listCache.delete(`${activeId}::Sent::${u}`);
+        listCache.delete(`${activeId}::${folder}::${u}`);
+      });
       cancelReply();
     } catch (err) {
       toast.error(formatApiError(err));
@@ -132,9 +223,16 @@ export default function Inbox() {
         title="Inbox"
         subtitle="Baca & balas email langsung dari CRM — pakai IMAP/SMTP yang sudah di-set per company"
         action={
-          <PrimaryButton onClick={loadInbox} disabled={loading || !activeId} data-testid="refresh-inbox">
-            <ArrowsClockwise size={14} weight="bold" className={loading ? "animate-spin" : ""} /> Refresh
-          </PrimaryButton>
+          <div className="flex items-center gap-2">
+            {lastFetchedAt && !loading && (
+              <span className="text-[11px] text-slate-500 hidden sm:inline" data-testid="last-fetched">
+                Updated {fmtRelative(lastFetchedAt)}
+              </span>
+            )}
+            <PrimaryButton onClick={() => loadInbox(true)} disabled={loading || !activeId} data-testid="refresh-inbox">
+              <ArrowsClockwise size={14} weight="bold" className={loading ? "animate-spin" : ""} /> Refresh
+            </PrimaryButton>
+          </div>
         }
       />
 
@@ -372,6 +470,37 @@ export default function Inbox() {
       )}
     </div>
   );
+}
+
+// Mark a cached message as read across both the React state and the module-level list cache.
+function markCachedRead(scId, folder, uid, unreadOnly, setData) {
+  const updateMsgs = (msgs) => msgs.map((x) => x.uid === uid ? { ...x, unread: false } : x);
+  // Update both cache keys (unread-only filter on/off)
+  [0, 1].forEach((u) => {
+    const k = `${scId}::${folder}::${u}`;
+    const c = listCache.get(k);
+    if (!c) return;
+    let nextMsgs = updateMsgs(c.data.messages);
+    // If we're on the unread-only view, remove the now-read item from THAT cached view
+    if (u === 1) nextMsgs = nextMsgs.filter((x) => x.uid !== uid);
+    listCache.set(k, { ...c, data: { ...c.data, messages: nextMsgs } });
+  });
+  // Update the live UI
+  setData((d) => {
+    if (!d) return d;
+    let next = updateMsgs(d.messages);
+    if (unreadOnly) next = next.filter((x) => x.uid !== uid);
+    return { ...d, messages: next };
+  });
+}
+
+function fmtRelative(ts) {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 5) return "just now";
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return new Date(ts).toLocaleString();
 }
 
 function fmtDate(s) {
