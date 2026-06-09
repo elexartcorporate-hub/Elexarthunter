@@ -1131,12 +1131,13 @@ async def hunter_search(payload: HunterSearchReq, user: dict = Depends(get_curre
     if use_cache:
         # rebuild result shape from cache
         result = {
-            "logs": logs + ["> Using cached result. Saving to tenant DB..."],
+            "logs": logs + ["> Using cached result. Saving to your prospect list..."],
             "steps": steps + [
                 {"name": "Playwright Deep Crawl", "status": "skip"},
-                {"name": "Hunter.io Domain Search [MOCK]", "status": "skip"},
+                {"name": "Hunter.io Domain Search", "status": "skip"},
                 {"name": "Data Merge", "status": "skip"},
                 {"name": "Confidence Scoring", "status": "skip"},
+                {"name": "Email Verifier", "status": "skip"},
             ],
             "company": cached["company"],
             "contacts": cached["contacts"],

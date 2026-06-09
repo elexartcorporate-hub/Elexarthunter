@@ -1,6 +1,7 @@
 """
-Hunter service: deep crawl (Playwright) + Hunter.io (mock) + merge + scoring.
+Hunter service: deep crawl (Playwright) + Hunter.io REAL API + verifier + merge + scoring.
 """
+import os
 import re
 import asyncio
 import logging
@@ -11,6 +12,9 @@ import httpx
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+HUNTER_API_KEY = os.environ.get("HUNTER_API_KEY", "")
+HUNTER_BASE = "https://api.hunter.io/v2"
 
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 PHONE_RE = re.compile(r"(?:\+?\d{1,3}[\s\-]?)?(?:\(?\d{2,4}\)?[\s\-]?)?\d{3,4}[\s\-]?\d{3,4}")
@@ -161,53 +165,105 @@ async def playwright_deep_crawl(domain: str, logs: list) -> Dict:
 
 
 # ────────────────────────────────────────────────────────────
-#  Hunter.io MOCK
-#  Swap this with real API call when you have a key.
+#  Hunter.io REAL API
 # ────────────────────────────────────────────────────────────
-def hunter_io_mock(domain: str, logs: list) -> Dict:
-    """Realistic mock of Hunter.io /v2/domain-search response."""
-    domain = _normalize_domain(domain)
-    org = domain.split(".")[0]
-    seed_names = [
-        ("John", "Smith", "CEO", "executive"),
-        ("Sarah", "Johnson", "Head of Marketing", "marketing"),
-        ("Michael", "Chen", "VP Engineering", "it"),
-        ("Emma", "Williams", "Sales Director", "sales"),
-        ("David", "Brown", "HR Manager", "hr"),
-        ("Lisa", "Garcia", "Customer Success", "support"),
-    ]
-    confidences = [95, 88, 82, 76, 71, 65]
+async def hunter_io_search(domain: str, logs: list) -> Dict:
+    """Real Hunter.io domain-search call. Falls back to empty result if API key missing or call fails."""
+    if not HUNTER_API_KEY:
+        logs.append("  > Hunter.io API key missing in env, skipping")
+        return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(
+                f"{HUNTER_BASE}/domain-search",
+                params={"domain": domain, "api_key": HUNTER_API_KEY, "limit": 25},
+            )
+            if r.status_code == 429:
+                logs.append("  > Hunter.io rate-limited (429) — proceeding without Hunter data")
+                return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
+            r.raise_for_status()
+            payload = r.json().get("data", {}) or {}
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code if e.response else "?"
+        body = (e.response.text if e.response is not None else "")[:200]
+        logs.append(f"  > Hunter.io HTTP {code}: {body}")
+        return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
+    except Exception as e:
+        logs.append(f"  > Hunter.io error: {e} — proceeding without Hunter data")
+        return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
+
+    raw_emails = payload.get("emails") or []
     emails = []
-    for (fn, ln, pos, dept), conf in zip(seed_names, confidences):
+    for em in raw_emails:
         emails.append({
-            "value": f"{fn.lower()}.{ln.lower()}@{domain}",
-            "first_name": fn,
-            "last_name": ln,
-            "position": pos,
-            "department": dept,
-            "confidence": conf,
-            "type": "personal",
-            "sources": [
-                {"uri": f"https://{domain}/team", "domain": domain, "extracted_on": "2024-11-12"}
-            ],
+            "value": (em.get("value") or "").lower(),
+            "first_name": em.get("first_name"),
+            "last_name": em.get("last_name"),
+            "position": em.get("position"),
+            "department": em.get("department"),
+            "confidence": em.get("confidence"),
+            "type": em.get("type"),
+            "sources": em.get("sources") or [],
+            "linkedin": em.get("linkedin"),
+            "phone_number": em.get("phone_number"),
         })
-    # generic department emails
-    for prefix, conf in [("info", 92), ("contact", 90), ("sales", 85)]:
-        emails.append({
-            "value": f"{prefix}@{domain}",
-            "first_name": None, "last_name": None,
-            "position": None, "department": prefix,
-            "confidence": conf, "type": "generic",
-            "sources": [{"uri": f"https://{domain}/contact", "domain": domain, "extracted_on": "2024-11-12"}],
-        })
-    logs.append(f"  > Hunter.io [MOCK] returned {len(emails)} emails")
+    logs.append(f"  > Hunter.io returned {len(emails)} emails (organization='{payload.get('organization')}')")
     return {
         "domain": domain,
-        "organization": org.capitalize(),
-        "country": "US",
-        "industry": "Technology",
+        "organization": payload.get("organization"),
+        "country": payload.get("country"),
+        "industry": payload.get("industry"),
         "emails": emails,
     }
+
+
+async def hunter_io_verify(email: str) -> Dict:
+    """Hunter.io email-verifier — best-effort, returns empty dict on fail."""
+    if not HUNTER_API_KEY or not email:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{HUNTER_BASE}/email-verifier",
+                params={"email": email, "api_key": HUNTER_API_KEY},
+            )
+            if r.status_code != 200:
+                return {}
+            data = (r.json().get("data") or {})
+        return {
+            "status": data.get("status"),
+            "result": data.get("result"),
+            "score": data.get("score"),
+            "disposable": data.get("disposable"),
+            "webmail": data.get("webmail"),
+            "smtp_check": data.get("smtp_check"),
+            "accept_all": data.get("accept_all"),
+            "block": data.get("block"),
+        }
+    except Exception as e:
+        logger.debug(f"verifier failed for {email}: {e}")
+        return {}
+
+
+async def verify_emails_bulk(emails: List[str], logs: list, max_concurrency: int = 5) -> Dict[str, Dict]:
+    if not emails or not HUNTER_API_KEY:
+        return {}
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _one(e):
+        async with sem:
+            return e, await hunter_io_verify(e)
+
+    out = {}
+    results = await asyncio.gather(*[_one(e) for e in emails], return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        e, v = r
+        if v:
+            out[e] = v
+    logs.append(f"  > Verifier ran on {len(emails)}, got results for {len(out)}")
+    return out
 
 
 def _confidence_score(source: str, hunter_confidence: Optional[int] = None) -> int:
@@ -309,16 +365,39 @@ async def run_hunter_workflow(domain: str) -> Dict:
         crawl_result = {"company_name": None, "emails": [], "phones": [], "whatsapps": [], "socials": {}, "pages_scanned": 0}
         steps.append({"name": "Playwright Deep Crawl", "status": "error"})
 
-    # Step 3: Hunter.io
-    logs.append(f"> [STEP 3] Hunter.io domain search (MOCK)")
-    hunter_result = hunter_io_mock(domain, logs)
-    steps.append({"name": "Hunter.io Domain Search [MOCK]", "status": "ok"})
+    # Step 3: Hunter.io (REAL)
+    logs.append(f"> [STEP 3] Hunter.io domain search (REAL API)")
+    hunter_result = await hunter_io_search(domain, logs)
+    steps.append({"name": "Hunter.io Domain Search", "status": "ok" if HUNTER_API_KEY else "skip"})
 
-    # Step 4 + 5: Merge + scoring
+    # Step 4: Merge & dedupe
     logs.append(f"> [STEP 4] Merging & deduplicating results")
     merged = merge_and_score(crawl_result, hunter_result, logs)
     steps.append({"name": "Data Merge", "status": "ok"})
     steps.append({"name": "Confidence Scoring", "status": "ok"})
+
+    # Step 5: Email verifier on all merged emails (REAL Hunter verifier)
+    logs.append(f"> [STEP 5] Verifying {len(merged['contacts'])} email(s) via Hunter.io verifier")
+    all_emails = [c["email"] for c in merged["contacts"] if c.get("email")]
+    verify_map = await verify_emails_bulk(all_emails, logs)
+    # Apply verifier results — promote/demote status + score
+    for c in merged["contacts"]:
+        v = verify_map.get(c["email"])
+        if not v:
+            continue
+        result = (v.get("result") or "").lower()
+        if result == "deliverable":
+            c["status"] = "verified"
+        elif result == "undeliverable":
+            c["status"] = "invalid"
+        elif result == "risky":
+            c["status"] = "risky"
+        # Boost score if verifier confirms deliverable
+        score = v.get("score")
+        if isinstance(score, (int, float)) and score:
+            c["confidence_score"] = max(c.get("confidence_score") or 0, int(score))
+        c["verifier"] = v
+    steps.append({"name": "Email Verifier", "status": "ok" if HUNTER_API_KEY else "skip"})
 
     logs.append(f"> [DONE] {len(merged['contacts'])} contacts ready to save")
     return {
