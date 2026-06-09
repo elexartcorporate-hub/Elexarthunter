@@ -16,14 +16,7 @@ const SAMPLE_HTML = `<p>Hi {{name}},</p>
 <p>Would you be open to a quick chat next week?</p>
 <p>Best,<br/>Your Name</p>`;
 
-const SAMPLE_PLAIN = `Hi {{name}},
-
-I noticed {{company}} works in {{industry}} — we help similar teams streamline their outreach.
-
-Would you be open to a quick chat next week?
-
-Best,
-Your Name`;
+const SAMPLE_PLAIN = `<p>Hi {{name}},</p><p>I noticed {{company}} works in {{industry}} — we help similar teams streamline their outreach.</p><p>Would you be open to a quick chat next week?</p><p>Best,<br/>Your Name</p>`;
 
 const QUILL_MODULES = {
   toolbar: [
@@ -33,6 +26,17 @@ const QUILL_MODULES = {
     [{ list: "ordered" }, { list: "bullet" }],
     [{ align: [] }],
     ["link", "blockquote"],
+    ["clean"],
+  ],
+};
+
+// Simple toolbar for the "Plain text" mode — standard formatting only
+const QUILL_SIMPLE_MODULES = {
+  toolbar: [
+    [{ header: [1, 2, 3, false] }],
+    ["bold", "italic", "underline"],
+    [{ list: "ordered" }, { list: "bullet" }],
+    [{ align: ["", "center", "right", "justify"] }],
     ["clean"],
   ],
 };
@@ -69,7 +73,7 @@ export default function Templates() {
     setForm({
       name: t.name,
       subject: t.subject,
-      body_html: t.body_html,
+      body_html: ensureHtml(t.body_html),
       body_type: t.body_type || "html",
       id: t.id,
       attachments: t.attachments || [],
@@ -147,11 +151,8 @@ export default function Templates() {
                   {t.body_type === "plain" ? <><TextT size={10} weight="bold" /> plain</> : <><Code size={10} weight="bold" /> html</>}
                 </Badge>
               </div>
-              {t.body_type === "plain" ? (
-                <pre className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3 mb-3 line-clamp-3 font-sans whitespace-pre-wrap">{t.body_html}</pre>
-              ) : (
-                <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3 mb-3 line-clamp-3 prose prose-xs max-w-none" dangerouslySetInnerHTML={{ __html: t.body_html }} />
-              )}
+              {/* Plain templates also produce HTML now via the simple toolbar, so render as HTML */}
+              <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3 mb-3 line-clamp-3 prose prose-xs max-w-none" dangerouslySetInnerHTML={{ __html: ensureHtml(t.body_html) }} />
               {(t.attachments || []).length > 0 && (
                 <div className="flex items-center gap-1 text-[11px] text-slate-500 mb-2">
                   <Paperclip size={11} weight="bold" />
@@ -357,14 +358,15 @@ function TemplateModal({ form, setForm, onClose, onSave, isNew, templateId, onUp
               />
             </div>
           ) : (
-            <textarea
-              value={form.body_html}
-              onChange={(e) => updateField({ body_html: e.target.value })}
-              rows={12}
-              data-testid="tpl-body-plain"
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Tulis email plain-text..."
-            />
+            <div className="quill-wrapper" data-testid="tpl-body-plain">
+              <ReactQuill
+                theme="snow"
+                value={form.body_html}
+                onChange={(v) => updateField({ body_html: v })}
+                modules={QUILL_SIMPLE_MODULES}
+                placeholder="Tulis email plain-text..."
+              />
+            </div>
           )}
         </div>
 
@@ -462,11 +464,7 @@ function PreviewModal({ template, onClose }) {
           <div className="text-slate-500">Subject: <span className="text-slate-900 font-medium">{template.subject}</span></div>
           <div className="text-slate-500">Type: <Badge tone={template.body_type === "plain" ? "neutral" : "info"}>{template.body_type || "html"}</Badge></div>
         </div>
-        {template.body_type === "plain" ? (
-          <pre className="p-4 text-sm text-slate-900 whitespace-pre-wrap font-sans">{template.body_html}</pre>
-        ) : (
-          <div className="p-4 text-sm text-slate-900 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: template.body_html }} />
-        )}
+        <div className="p-4 text-sm text-slate-900 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: ensureHtml(template.body_html) }} />
         {(template.attachments || []).length > 0 && (
           <div className="border-t border-slate-200 px-4 py-3 bg-white">
             <div className="text-[11px] text-slate-500 mb-1.5 flex items-center gap-1">
@@ -540,4 +538,16 @@ function fmtSize(bytes) {
   let n = bytes;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
+}
+
+/* Convert legacy plain-text bodies (raw text with \n) to simple HTML so Quill
+ * can render them with paragraphs preserved. Idempotent: leaves real HTML untouched. */
+function ensureHtml(body) {
+  if (!body) return "";
+  const hasTag = /<\w+[^>]*>/.test(body);
+  if (hasTag) return body;
+  return body
+    .split(/\n{2,}/)
+    .map((p) => `<p>${p.replace(/\n/g, "<br/>")}</p>`)
+    .join("");
 }
