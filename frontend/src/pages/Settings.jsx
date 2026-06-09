@@ -484,7 +484,12 @@ function UsersSection({ currentUser }) {
   const [roles, setRoles] = useState([]);
   const [subCompanies, setSubCompanies] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: "", email: "", password: "", role: "Staff", sub_company_ids: [] });
+  const [form, setForm] = useState({
+    name: "", email: "", password: "", role: "Staff", sub_company_ids: [],
+    smtp_use_company: true,
+    smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "",
+    smtp_use_tls: true, smtp_from_email: "", smtp_from_name: "",
+  });
 
   const loadAll = async () => {
     try {
@@ -494,8 +499,16 @@ function UsersSection({ currentUser }) {
   };
   useEffect(() => { loadAll(); }, []);
 
-  const startNew = () => { setForm({ name: "", email: "", password: "", role: "Staff", sub_company_ids: [] }); setEditing("new"); };
-  const startEdit = (u) => { setForm({ name: u.name, email: u.email, password: "", role: u.role, sub_company_ids: u.sub_company_ids || [] }); setEditing(u.id); };
+  const startNew = () => { setForm({ name: "", email: "", password: "", role: "Staff", sub_company_ids: [], smtp_use_company: true, smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_use_tls: true, smtp_from_email: "", smtp_from_name: "" }); setEditing("new"); };
+  const startEdit = (u) => { setForm({
+    name: u.name, email: u.email, password: "", role: u.role,
+    sub_company_ids: u.sub_company_ids || [],
+    smtp_use_company: u.smtp_use_company !== false,
+    smtp_host: u.smtp_host || "", smtp_port: u.smtp_port || 587,
+    smtp_user: u.smtp_user || "", smtp_password: "",
+    smtp_use_tls: u.smtp_use_tls !== false,
+    smtp_from_email: u.smtp_from_email || "", smtp_from_name: u.smtp_from_name || "",
+  }); setEditing(u.id); };
   const toggleSc = (id) => {
     const s = new Set(form.sub_company_ids);
     s.has(id) ? s.delete(id) : s.add(id);
@@ -504,14 +517,24 @@ function UsersSection({ currentUser }) {
 
   const save = async () => {
     if (!form.name || !form.email) return toast.error("Name & email required");
+    const smtpFields = {
+      smtp_use_company: form.smtp_use_company,
+      smtp_host: form.smtp_host || null,
+      smtp_port: Number(form.smtp_port) || 587,
+      smtp_user: form.smtp_user || null,
+      smtp_use_tls: form.smtp_use_tls,
+      smtp_from_email: form.smtp_from_email || null,
+      smtp_from_name: form.smtp_from_name || null,
+    };
+    if (form.smtp_password) smtpFields.smtp_password = form.smtp_password;
     try {
       if (editing === "new") {
         if (!form.password || form.password.length < 6) return toast.error("Password min 6 chars");
         const { data } = await api.post("/team", { name: form.name, email: form.email, password: form.password, role: form.role });
-        if (form.sub_company_ids.length > 0) await api.patch(`/team/${data.id}`, { sub_company_ids: form.sub_company_ids });
+        await api.patch(`/team/${data.id}`, { sub_company_ids: form.sub_company_ids, ...smtpFields });
         toast.success("User added");
       } else {
-        const payload = { name: form.name, email: form.email, role: form.role, sub_company_ids: form.sub_company_ids };
+        const payload = { name: form.name, email: form.email, role: form.role, sub_company_ids: form.sub_company_ids, ...smtpFields };
         if (form.password) payload.password = form.password;
         await api.patch(`/team/${editing}`, payload);
         toast.success("User updated");
@@ -581,6 +604,60 @@ function UsersSection({ currentUser }) {
                       <span className="text-sm text-slate-900">{sc.name}</span>
                     </label>
                   ))}
+                </div>
+              )}
+            </div>
+
+            {/* SMTP per-user — overrides sub-company SMTP when set */}
+            <div className="border-t border-slate-200 pt-4">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">SMTP User (Optional)</div>
+                  <div className="text-[11px] text-slate-500">
+                    Kalau di-set, user ini akan kirim email dari SMTP miliknya sendiri. Kalau tidak, ikut SMTP company yang di-assign.
+                  </div>
+                </div>
+                <label className="text-xs flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={form.smtp_use_company}
+                    onChange={(e) => setForm({ ...form, smtp_use_company: e.target.checked })}
+                    className="accent-indigo-600"
+                    data-testid="u-smtp-use-company"
+                  />
+                  <span>Pakai SMTP company</span>
+                </label>
+              </div>
+
+              {!form.smtp_use_company && (
+                <div className="space-y-3 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <TermInput label="SMTP host" placeholder="smtp.gmail.com / smtp.zoho.com" value={form.smtp_host} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} data-testid="u-smtp-host" />
+                    <TermInput label="SMTP port" type="number" value={form.smtp_port} onChange={(e) => setForm({ ...form, smtp_port: e.target.value })} data-testid="u-smtp-port" />
+                    <TermInput label="SMTP user" placeholder="yourname@domain.com" value={form.smtp_user} onChange={(e) => setForm({ ...form, smtp_user: e.target.value })} data-testid="u-smtp-user" />
+                    <TermInput
+                      label={editing === "new" || !form.smtp_user ? "SMTP password" : "New SMTP password (leave empty to keep)"}
+                      type="password"
+                      value={form.smtp_password}
+                      onChange={(e) => setForm({ ...form, smtp_password: e.target.value })}
+                      data-testid="u-smtp-password"
+                    />
+                    <TermInput label="From email (optional)" placeholder="defaults to SMTP user" value={form.smtp_from_email} onChange={(e) => setForm({ ...form, smtp_from_email: e.target.value })} data-testid="u-smtp-from-email" />
+                    <TermInput label="From name (optional)" placeholder={form.name || "Your name"} value={form.smtp_from_name} onChange={(e) => setForm({ ...form, smtp_from_name: e.target.value })} data-testid="u-smtp-from-name" />
+                  </div>
+                  <label className="text-xs flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.smtp_use_tls}
+                      onChange={(e) => setForm({ ...form, smtp_use_tls: e.target.checked })}
+                      className="accent-indigo-600"
+                      data-testid="u-smtp-tls"
+                    />
+                    <span>Pakai TLS/SSL (port 465 = SSL otomatis, port 587 = TLS)</span>
+                  </label>
+                  <div className="text-[10px] text-slate-500">
+                    💡 Gmail: pakai App Password (myaccount.google.com → Security → 2-Step Verification → App passwords). Zoho: aktifkan IMAP & SMTP di mail settings.
+                  </div>
                 </div>
               )}
             </div>

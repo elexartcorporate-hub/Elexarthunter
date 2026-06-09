@@ -2867,16 +2867,36 @@ def _apply_template_vars(text: str, prospect: dict, primary_email: str) -> str:
 
 
 async def _resolve_smtp(tenant_id: str, user_doc: dict, sub_company_id: Optional[str]) -> dict:
-    """SMTP priority: sub-company > user's own (if smtp_use_company=False) > tenant default."""
+    """SMTP priority (highest → lowest):
+      1. The user's OWN SMTP (if they set smtp_host) — overrides everything because each user
+         sends with their own identity unless they explicitly opt in to use company SMTP.
+      2. The explicit sub-company SMTP passed in (campaign target / prospect's company).
+      3. Any sub-company assigned to the user that has SMTP configured.
+      4. Tenant default SMTP.
+    Setting user.smtp_use_company = True forces fallback to sub-company/tenant.
+    """
+    user_has_own = bool(user_doc.get("smtp_host"))
+    use_company = bool(user_doc.get("smtp_use_company"))
+    # 1. Prefer user's own SMTP unless they opted into company SMTP
+    if user_has_own and not use_company:
+        return user_doc
+    # 2. Explicit sub-company SMTP (passed in)
     if sub_company_id:
         sc = await db.sub_companies.find_one({"id": sub_company_id, "tenant_id": tenant_id})
         if sc and sc.get("smtp_host"):
             return sc
-    if user_doc.get("smtp_use_company") is False and user_doc.get("smtp_host"):
-        return user_doc
+    # 3. Any assigned sub-company with SMTP
+    for sc_id in (user_doc.get("sub_company_ids") or []):
+        sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": tenant_id})
+        if sc and sc.get("smtp_host"):
+            return sc
+    # 4. Tenant fallback
     tenant = await db.tenants.find_one({"id": tenant_id})
     if tenant and tenant.get("smtp_host"):
         return tenant
+    # 5. Last-resort: user's own SMTP even if smtp_use_company is True
+    if user_has_own:
+        return user_doc
     return None
 
 
