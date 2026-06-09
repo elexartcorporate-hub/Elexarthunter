@@ -66,7 +66,7 @@ export default function Prospects() {
         <TabBtn active={tab === "list"}      onClick={() => setTab("list")}      icon={UsersFour}     label="Prospect List"    testid="tab-list" />
       </div>
 
-      {tab === "jadwal"    && <Calendar quota={quota} onChanged={() => { setRefreshKey((k) => k + 1); setTasksRefresh((k) => k + 1); }} onTaskCreated={(t) => { setActiveTask(t); setTab("add"); setTasksRefresh((k) => k + 1); }} />}
+      {tab === "jadwal"    && <Calendar quota={quota} onChanged={() => { setRefreshKey((k) => k + 1); setTasksRefresh((k) => k + 1); }} onTaskCreated={(t) => { setActiveTask(t); setTab("add"); setTasksRefresh((k) => k + 1); }} onTaskContinue={(t) => { setActiveTask(t); setTab(t.prospect_count >= t.target ? "email" : "add"); setTasksRefresh((k) => k + 1); }} />}
       {tab === "add"       && <AddProspect quota={quota} activeTask={activeTask} refreshTask={refreshTask} onProspectSaved={() => setRefreshKey((k) => k + 1)} onGoEmail={() => setTab("email")} />}
       {tab === "email"     && emailTabUnlocked && <EmailStep task={activeTask} onSubmitted={() => { setTab("tersimpan"); setActiveTask(null); setTasksRefresh((k) => k + 1); }} />}
       {tab === "tersimpan" && <TasksList refreshKey={tasksRefresh} onPick={(t) => { setActiveTask(t); setTab("add"); }} onRefresh={() => setTasksRefresh((k) => k + 1)} />}

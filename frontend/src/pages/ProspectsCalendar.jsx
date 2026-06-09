@@ -3,7 +3,7 @@ import { api, formatApiError } from "@/lib/api";
 import { Card, TermInput, TermSelect, TermTextarea, PrimaryButton, GhostButton, Badge } from "@/components/term";
 import {
   CaretLeft, CaretRight, CalendarCheck, Plus, X, PaperPlaneTilt,
-  Clock, CheckCircle, XCircle, Lock, ArrowsClockwise, Trash,
+  Clock, CheckCircle, XCircle, Lock, ArrowsClockwise, Trash, PencilSimple, ArrowRight,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -19,7 +19,7 @@ const STATUS_CONFIG = {
   off:     { bg: "bg-slate-50 border-slate-100",                                   text: "text-slate-400",   label: "Libur" },
 };
 
-export default function Calendar({ quota, onChanged, onTaskCreated }) {
+export default function Calendar({ quota, onChanged, onTaskCreated, onTaskContinue }) {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -149,6 +149,8 @@ export default function Calendar({ quota, onChanged, onTaskCreated }) {
           onClose={() => setSelectedDate(null)}
           onScheduled={() => { load(); onChanged?.(); }}
           onTaskCreated={(t) => { setSelectedDate(null); onTaskCreated?.(t); load(); }}
+          onTaskContinue={(t) => { setSelectedDate(null); (onTaskContinue || onTaskCreated)?.(t); load(); }}
+          onTaskChanged={() => { load(); onChanged?.(); }}
         />
       )}
     </div>
@@ -160,7 +162,7 @@ function LegendDot({ color, label }) {
 }
 
 /* ─────────────── Day Drawer ─────────────── */
-function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated }) {
+function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, onTaskContinue, onTaskChanged }) {
   const [detail, setDetail] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -230,17 +232,71 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated }
                 <CalendarCheck size={12} weight="bold" /> Tugas tanggal ini ({tasks.length})
               </h3>
               <div className="space-y-1.5">
-                {tasks.map((t) => (
-                  <div key={t.id} className="border border-indigo-200 bg-indigo-50/50 rounded-lg p-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium text-slate-900 truncate">{t.name}</div>
-                        <div className="text-[11px] text-slate-600">{t.prospect_count} / {t.target} prospect · {t.status}</div>
+                {tasks.map((t) => {
+                  const isCompleted = t.status === "completed";
+                  const handleContinue = (e) => {
+                    e?.stopPropagation();
+                    if (isCompleted) {
+                      toast.info("Tugas sudah selesai");
+                      return;
+                    }
+                    if (onTaskContinue) onTaskContinue(t);
+                    else if (onTaskCreated) onTaskCreated(t); // fallback
+                  };
+                  const handleDelete = async (e) => {
+                    e?.stopPropagation();
+                    if (!window.confirm(`Hapus tugas "${t.name}"?\nProspect yang sudah ditambahkan ke tugas ini akan tetap tersimpan, tapi tidak terhubung lagi ke tugas.`)) return;
+                    try {
+                      await api.delete(`/tasks/${t.id}`);
+                      toast.success("Tugas dihapus");
+                      if (onTaskChanged) onTaskChanged();
+                      await load();
+                    } catch (err) { toast.error(formatApiError(err)); }
+                  };
+                  return (
+                    <div
+                      key={t.id}
+                      className="border border-indigo-200 bg-indigo-50/50 rounded-lg p-2.5 group hover:border-indigo-300 transition-colors"
+                      data-testid={`task-card-${t.id}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-slate-900 truncate">{t.name}</div>
+                          <div className="text-[11px] text-slate-600">{t.prospect_count} / {t.target} prospect · {t.status}</div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Badge tone={isCompleted ? "success" : t.status === "scheduled" ? "purple" : t.status === "draft" ? "neutral" : "info"}>{t.status}</Badge>
+                          <button
+                            onClick={handleContinue}
+                            disabled={isCompleted}
+                            title={isCompleted ? "Tugas selesai" : "Lanjut kerja tugas ini"}
+                            className="p-1.5 rounded-md text-indigo-600 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                            data-testid={`task-edit-${t.id}`}
+                          >
+                            <PencilSimple size={14} weight="bold" />
+                          </button>
+                          <button
+                            onClick={handleDelete}
+                            title="Hapus tugas"
+                            className="p-1.5 rounded-md text-rose-500 hover:bg-rose-50 transition-colors"
+                            data-testid={`task-delete-${t.id}`}
+                          >
+                            <Trash size={14} weight="bold" />
+                          </button>
+                        </div>
                       </div>
-                      <Badge tone={t.status === "completed" ? "success" : t.status === "scheduled" ? "purple" : t.status === "draft" ? "neutral" : "info"}>{t.status}</Badge>
+                      {!isCompleted && (
+                        <button
+                          onClick={handleContinue}
+                          className="mt-2 w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-medium transition-colors"
+                          data-testid={`task-continue-${t.id}`}
+                        >
+                          {t.prospect_count >= t.target ? "Lanjut ke Email" : "Lanjut tambah prospect"} <ArrowRight size={12} weight="bold" />
+                        </button>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
