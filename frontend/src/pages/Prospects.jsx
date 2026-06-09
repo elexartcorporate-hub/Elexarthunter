@@ -1069,6 +1069,7 @@ function fmtDate(iso) {
 
 /* ─────────────── EMAIL STEP (Tab 3) ─────────────── */
 function EmailStep({ task, onSubmitted }) {
+  const { user } = useAuth();
   const [templates, setTemplates] = useState([]);
   const [prospects, setProspects] = useState([]);
   const [form, setForm] = useState({
@@ -1080,6 +1081,9 @@ function EmailStep({ task, onSubmitted }) {
     scheduled_time: "09:00",
   });
   const [submitting, setSubmitting] = useState(false);
+  const [testEmail, setTestEmail] = useState(user?.email || "");
+  const [testing, setTesting] = useState(false);
+  const [tested, setTested] = useState(false);
 
   useEffect(() => {
     api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
@@ -1093,9 +1097,32 @@ function EmailStep({ task, onSubmitted }) {
     if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: t.body_html }));
   };
 
+  const sendTest = async () => {
+    if (!testEmail || !testEmail.includes("@")) {
+      toast.error("Masukkan email tujuan test yang valid");
+      return;
+    }
+    setTesting(true);
+    try {
+      const { data } = await api.post("/email/send-test", {
+        to_email: testEmail,
+        subject: form.subject,
+        body_html: form.body_html,
+        template_id: form.template_id || null,
+      });
+      toast.success(`Test email terkirim ke ${data.to}. Cek inbox sebelum kirim ke prospect.`);
+      setTested(true);
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setTesting(false); }
+  };
+
   const totalEmails = useMemo(() => prospects.reduce((acc, p) => acc + (p.emails || []).length, 0), [prospects]);
 
   const submit = async () => {
+    if (!tested) {
+      const proceed = window.confirm("Anda belum kirim test email. Yakin ingin lanjut kirim ke semua prospect?\n\nKlik OK untuk tetap kirim, atau Cancel untuk kirim test dulu.");
+      if (!proceed) return;
+    }
     setSubmitting(true);
     try {
       const payload = {
@@ -1111,7 +1138,7 @@ function EmailStep({ task, onSubmitted }) {
       const { data } = await api.post(`/tasks/${task.id}/submit`, payload);
       toast.success(form.send_mode === "scheduled"
         ? `✓ ${data.queued} email terjadwal pada ${form.scheduled_date} ${form.scheduled_time}`
-        : `✓ ${data.queued} email dikirim`);
+        : `✓ ${data.queued} email dikirim — jeda 3 menit per email`);
       onSubmitted();
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setSubmitting(false); }
@@ -1143,6 +1170,38 @@ function EmailStep({ task, onSubmitted }) {
             <TermTextarea label="Body (HTML, supports {{name}} {{company}})" rows={10} value={form.body_html} onChange={(e) => setForm({ ...form, body_html: e.target.value })} data-testid="email-body" />
             <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
               💡 SMTP otomatis pakai setting Anda (user) atau company tenant. Atur di Settings → Companies / Users.
+            </div>
+          </div>
+
+          {/* Test Email — kirim 1 email contoh ke diri sendiri dulu */}
+          <div className="mt-4 border-t border-slate-200 pt-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <PaperPlaneTilt size={14} weight="bold" className="text-amber-600" />
+                <span className="text-sm font-semibold text-amber-900">Kirim Test Email dulu</span>
+                {tested && <Badge tone="success">✓ Test terkirim</Badge>}
+              </div>
+              <div className="flex gap-2 items-stretch">
+                <input
+                  type="email"
+                  value={testEmail}
+                  onChange={(e) => { setTestEmail(e.target.value); setTested(false); }}
+                  placeholder="email-anda@domain.com"
+                  className="flex-1 px-3 py-1.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                  data-testid="emailstep-test-email-input"
+                />
+                <button
+                  onClick={sendTest}
+                  disabled={testing}
+                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium flex items-center gap-1 disabled:opacity-50 shrink-0"
+                  data-testid="emailstep-send-test-btn"
+                >
+                  <PaperPlaneTilt size={12} weight="bold" /> {testing ? "Mengirim..." : "Kirim Test"}
+                </button>
+              </div>
+              <div className="text-[10px] text-amber-700 mt-1.5">
+                Kirim 1 email dengan prefix [TEST] + variable {`{{name}}/{{company}}`} terisi contoh. Tidak masuk hitungan quota / activity log.
+              </div>
             </div>
           </div>
 
