@@ -1230,7 +1230,10 @@ async def hunter_bulk_status(job_id: str, user: dict = Depends(get_current_user)
 
 @api.get("/hunter/searches")
 async def list_searches(user: dict = Depends(get_current_user), limit: int = 20):
-    rows = await db.searches.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    q = {"tenant_id": user["tenant_id"]}
+    if not _is_super_admin(user):
+        q["user_id"] = user["id"]
+    rows = await db.searches.find(q, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return rows
 
 
@@ -1723,6 +1726,26 @@ async def _can_bypass_lock(user: dict) -> bool:
         return True
     perms = await get_user_permissions(user)
     return "bypass_daily_lock" in perms
+
+
+def _is_super_admin(user: dict) -> bool:
+    """Owner & Admin see all prospects in the tenant; staff see only theirs."""
+    return user.get("role") in ("Owner", "Admin")
+
+
+def _prospect_scope(user: dict, base: Optional[dict] = None) -> dict:
+    """Return a MongoDB filter that enforces per-user prospect isolation.
+    Owner/Admin: tenant-wide (see everything).
+    Other roles: only prospects they created or are assigned to.
+    """
+    q: dict = dict(base or {})
+    q["tenant_id"] = user["tenant_id"]
+    if not _is_super_admin(user):
+        q["$or"] = [
+            {"created_by": user["id"]},
+            {"assigned_user_id": user["id"]},
+        ]
+    return q
 
 
 @api.get("/prospects/quota")
@@ -2655,11 +2678,15 @@ async def list_prospects(
     assigned_user_id: Optional[str] = None,
     q: Optional[str] = None,
     sub_company_id: Optional[str] = None,
+    category_id: Optional[str] = None,
+    location_id: Optional[str] = None,
 ):
-    qdoc: dict = {"tenant_id": user["tenant_id"]}
+    qdoc = _prospect_scope(user)
     if status: qdoc["status"] = status
     if assigned_user_id: qdoc["assigned_user_id"] = assigned_user_id
     if sub_company_id: qdoc["sub_company_id"] = sub_company_id
+    if category_id: qdoc["category_id"] = category_id
+    if location_id: qdoc["location_id"] = location_id
     rows = await db.prospects.find(qdoc, {"_id": 0}).sort("created_at", -1).to_list(2000)
     if q:
         ql = q.lower()
@@ -2720,7 +2747,7 @@ async def create_prospect(payload: ProspectCreate, user: dict = Depends(get_curr
 
 @api.get("/prospects/{pid}")
 async def get_prospect(pid: str, user: dict = Depends(get_current_user)):
-    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    p = await db.prospects.find_one(_prospect_scope(user, {"id": pid}), {"_id": 0})
     if not p:
         raise HTTPException(404, "Prospect not found")
     activity = await db.prospect_activity.find({"prospect_id": pid}, {"_id": 0}).sort("created_at", -1).to_list(200)
@@ -2735,7 +2762,7 @@ async def get_prospect(pid: str, user: dict = Depends(get_current_user)):
 
 @api.patch("/prospects/{pid}")
 async def update_prospect(pid: str, payload: ProspectUpdate, user: dict = Depends(get_current_user)):
-    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    p = await db.prospects.find_one(_prospect_scope(user, {"id": pid}))
     if not p:
         raise HTTPException(404, "Prospect not found")
     upd = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
@@ -2755,7 +2782,7 @@ async def delete_prospect(pid: str, user: dict = Depends(get_current_user)):
     perms = await get_user_permissions(user)
     if user["role"] != "Owner" and "delete_prospects" not in perms:
         raise HTTPException(403, "Missing permission: delete_prospects")
-    res = await db.prospects.delete_one({"id": pid, "tenant_id": user["tenant_id"]})
+    res = await db.prospects.delete_one(_prospect_scope(user, {"id": pid}))
     if res.deleted_count:
         await db.prospect_activity.delete_many({"prospect_id": pid})
         await db.email_sends.delete_many({"prospect_id": pid})
@@ -2764,7 +2791,7 @@ async def delete_prospect(pid: str, user: dict = Depends(get_current_user)):
 
 @api.post("/prospects/{pid}/emails")
 async def add_prospect_email(pid: str, payload: ProspectEmailAdd, user: dict = Depends(get_current_user)):
-    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    p = await db.prospects.find_one(_prospect_scope(user, {"id": pid}))
     if not p:
         raise HTTPException(404, "Prospect not found")
     new_email = {"id": str(uuid.uuid4()), "email": payload.email, "is_primary": payload.is_primary,
@@ -2782,7 +2809,7 @@ async def add_prospect_email(pid: str, payload: ProspectEmailAdd, user: dict = D
 
 @api.delete("/prospects/{pid}/emails/{email_id}")
 async def remove_prospect_email(pid: str, email_id: str, user: dict = Depends(get_current_user)):
-    p = await db.prospects.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    p = await db.prospects.find_one(_prospect_scope(user, {"id": pid}))
     if not p:
         raise HTTPException(404, "Prospect not found")
     emails = [e for e in p.get("emails", []) if e.get("id") != email_id]
