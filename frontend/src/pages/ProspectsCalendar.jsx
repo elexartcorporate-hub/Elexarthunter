@@ -209,21 +209,21 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
         </div>
 
         <div className="p-5 space-y-5">
-          {/* New Task action — for today & future */}
-          {!isPast && (
-            <Card className="p-4 bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200">
-              <div className="flex items-start gap-3">
-                <CalendarCheck size={24} weight="duotone" className="text-indigo-600 shrink-0" />
-                <div className="flex-1">
-                  <div className="font-semibold text-slate-900 text-sm">Tambah Tugas Baru</div>
-                  <div className="text-xs text-slate-600 mt-0.5 mb-3">Buat tugas outreach untuk tanggal ini dengan target prospect.</div>
-                  <PrimaryButton onClick={() => setShowNewTask(true)} data-testid="new-task-btn">
-                    <Plus size={14} weight="bold" /> Tugas Baru
-                  </PrimaryButton>
+          {/* New Task action — available for any date (incl. backdating for past) */}
+          <Card className="p-4 bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200">
+            <div className="flex items-start gap-3">
+              <CalendarCheck size={24} weight="duotone" className="text-indigo-600 shrink-0" />
+              <div className="flex-1">
+                <div className="font-semibold text-slate-900 text-sm">Tambah Tugas Baru</div>
+                <div className="text-xs text-slate-600 mt-0.5 mb-3">
+                  {isPast ? "Catat tugas outreach untuk tanggal ini (backdate)." : "Buat tugas outreach untuk tanggal ini dengan target prospect."}
                 </div>
+                <PrimaryButton onClick={() => setShowNewTask(true)} data-testid="new-task-btn">
+                  <Plus size={14} weight="bold" /> Tugas Baru
+                </PrimaryButton>
               </div>
-            </Card>
-          )}
+            </div>
+          </Card>
 
           {/* Existing tasks for this date */}
           {tasks.length > 0 && (
