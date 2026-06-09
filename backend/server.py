@@ -1112,6 +1112,46 @@ async def check_global_db(domain: str, user: dict = Depends(get_current_user)):
     return {"found": False, "domain": domain}
 
 
+@api.post("/hunter/cache/reset")
+async def reset_hunter_cache(
+    user: dict = Depends(get_current_user),
+    clear_global: bool = True,        # cross-tenant cache (admin power — affects everyone)
+    clear_companies: bool = True,     # tenant companies auto-saved
+    clear_contacts: bool = True,      # tenant contacts auto-saved
+    clear_history: bool = True,       # tenant search history
+    clear_prospects: bool = False,    # user-saved prospects (default off — kept by default)
+    clear_bulk_jobs: bool = True,
+):
+    """Owner-only: wipe Hunter cache + auto-saved company/contact data.
+    Useful when switching from mock to real Hunter API, or to force fresh re-crawl on every domain.
+    `clear_prospects` is OFF by default — those are intentional user saves."""
+    if user["role"] != "Owner":
+        raise HTTPException(403, "Owner only")
+    tid = user["tenant_id"]
+    results = {}
+    if clear_global:
+        r = await db.global_hunter_cache.delete_many({})
+        results["global_hunter_cache"] = r.deleted_count
+    if clear_companies:
+        r = await db.companies.delete_many({"tenant_id": tid})
+        results["companies"] = r.deleted_count
+    if clear_contacts:
+        r = await db.contacts.delete_many({"tenant_id": tid})
+        results["contacts"] = r.deleted_count
+    if clear_history:
+        r = await db.searches.delete_many({"tenant_id": tid})
+        results["searches"] = r.deleted_count
+    if clear_bulk_jobs:
+        r = await db.bulk_jobs.delete_many({"tenant_id": tid})
+        results["bulk_jobs"] = r.deleted_count
+    if clear_prospects:
+        r = await db.prospects.delete_many({"tenant_id": tid})
+        results["prospects"] = r.deleted_count
+        await db.prospect_activity.delete_many({"tenant_id": tid})
+        await db.email_sends.delete_many({"tenant_id": tid})
+    return {"ok": True, "cleared": results}
+
+
 @api.post("/hunter/search")
 async def hunter_search(payload: HunterSearchReq, user: dict = Depends(get_current_user)):
     domain = _normalize_domain(payload.domain)
