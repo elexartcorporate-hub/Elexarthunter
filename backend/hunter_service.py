@@ -11,6 +11,8 @@ from typing import List, Dict, Optional
 import httpx
 from bs4 import BeautifulSoup
 
+from alias_verifier import verify_emails_bulk as alias_verify_bulk
+
 logger = logging.getLogger(__name__)
 
 HUNTER_API_KEY = os.environ.get("HUNTER_API_KEY", "")
@@ -413,12 +415,25 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
     steps.append({"name": "Data Merge", "status": "ok"})
     steps.append({"name": "Confidence Scoring", "status": "ok"})
 
-    # Step 5: Email verifier — ONLY for contacts NOT cross-validated by both Playwright+Hunter.
-    # Cross-validated contacts (in both sources) are already trusted → skip to save Hunter quota.
-    to_verify = [c["email"] for c in merged["contacts"] if len(c.get("_sources") or set()) <= 1]
-    skipped = len(merged["contacts"]) - len(to_verify)
-    logs.append(f"> [STEP 5] Verifier on {len(to_verify)} email(s) ({skipped} skipped — cross-validated)")
-    verify_map = await verify_emails_bulk(to_verify, logs)
+    # Step 5: Alias-Based Email Verifier — own engine (no Hunter.io for this step).
+    # Pipeline per email: syntax → DNS → MX → SMTP HELO/MAIL/RCPT → catch-all probe.
+    # Score: +50 website, +30 SMTP-250, +10 alias-match, +10 MX, -20 catch-all (0..100).
+    # Cross-validated contacts already trusted → skip to save SMTP round-trips.
+    to_verify_items = []
+    for c in merged["contacts"]:
+        sources = c.get("_sources") or set()
+        if len(sources) > 1:
+            continue  # cross-validated, no need
+        meta = {
+            "public_on_website": c.get("source") == "website",
+            "alias_match": c.get("source") == "alias",
+        }
+        to_verify_items.append((c["email"], meta))
+
+    skipped = len(merged["contacts"]) - len(to_verify_items)
+    logs.append(f"> [STEP 5] Alias Verifier on {len(to_verify_items)} email(s) ({skipped} skipped — cross-validated)")
+    verify_map = await alias_verify_bulk(to_verify_items, max_concurrency=5)
+
     for c in merged["contacts"]:
         sources = c.get("_sources") or set()
         # Cross-validated (website + hunter) → highest trust
@@ -430,32 +445,37 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
 
         v = verify_map.get(c["email"])
         if v:
-            result = (v.get("result") or "").lower()
-            score = v.get("score") or 0
-            # Verifier wins for deliverability classification, EXCEPT:
-            # - Website source stays "verified" even if Hunter says risky/unknown (trust the site).
-            if result == "deliverable":
-                c["status"] = "verified"
-            elif result == "undeliverable":
-                c["status"] = "invalid"
-            elif result == "risky" and c.get("source") != "website":
-                c["status"] = "risky"
-            elif result == "unknown" and c.get("source") != "website":
-                # Use Hunter's numeric score as a tie-breaker so alias emails still get a real status
-                if isinstance(score, (int, float)) and score >= 70:
+            # Map new engine status → legacy UI status so existing badges keep working
+            status_map = {
+                "VALID":        "verified",
+                "LIKELY_VALID": "verified",
+                "ACCEPT_ALL":   "risky",
+                "INVALID":      "invalid",
+                "UNKNOWN":      "unverified",
+            }
+            new_status = status_map.get(v.get("status"), "unverified")
+            # Website source NEVER downgrades — site publication is the strongest signal
+            if c.get("source") == "website":
+                if new_status in ("verified",):
                     c["status"] = "verified"
-                elif isinstance(score, (int, float)) and score >= 30:
-                    c["status"] = "risky"
-                else:
-                    c["status"] = "invalid"
-            # Always lift the displayed confidence to the Hunter score when present
-            if isinstance(score, (int, float)) and score:
-                c["confidence_score"] = max(c.get("confidence_score") or 0, int(score))
+                # else keep "verified" from earlier block
+            else:
+                c["status"] = new_status
+
+            # Score: take the higher of engine score vs base score
+            engine_score = v.get("score") or 0
+            if isinstance(engine_score, (int, float)) and engine_score:
+                c["confidence_score"] = max(c.get("confidence_score") or 0, int(engine_score))
             c["verifier"] = v
+
     # Convert _sources set → list so the contact serializes to JSON / MongoDB cleanly
     for c in merged["contacts"]:
         c["sources_list"] = sorted(list(c.pop("_sources", set())))
-    steps.append({"name": "Email Verifier", "status": "ok" if HUNTER_API_KEY else "skip"})
+
+    # Sort contacts by confidence_score desc so the BEST email is always first
+    merged["contacts"].sort(key=lambda c: (c.get("confidence_score") or 0), reverse=True)
+
+    steps.append({"name": "Alias Verifier", "status": "ok"})
 
     logs.append(f"> [DONE] {len(merged['contacts'])} contacts ready to save")
     return {

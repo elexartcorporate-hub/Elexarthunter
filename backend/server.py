@@ -2857,12 +2857,26 @@ def _email_view(c: dict) -> dict:
     elif v_result == "risky":
         bits.append("Verifier: risky ⚠ — mungkin catch-all / role-based, ~50% chance bounce")
     elif v_result == "unknown":
-        bits.append(f"Verifier: unknown — score Hunter {v_score or 0}")
+        bits.append(f"Verifier: unknown — score {v_score or 0}, SMTP tidak respon (port mungkin diblok)")
+    # New alias-verifier engine details
+    engine_status = verifier.get("status")
+    if engine_status == "VALID":
+        bits.append("Status: VALID ✓ — public + SMTP 250")
+    elif engine_status == "LIKELY_VALID":
+        bits.append("Status: LIKELY_VALID — alias + SMTP 250 (bukan catch-all)")
+    elif engine_status == "ACCEPT_ALL":
+        bits.append("Status: ACCEPT_ALL ⚠ — domain catch-all, tidak bisa pastikan user")
+    elif engine_status == "INVALID":
+        bits.append("Status: INVALID ✗ — SMTP reject / domain tidak ada")
+    elif engine_status == "UNKNOWN":
+        bits.append("Status: UNKNOWN — SMTP tidak respon")
+    if verifier.get("provider"):
+        bits.append(f"Provider: {verifier['provider']}")
     if verifier.get("webmail"):
         bits.append("Webmail (Gmail/Yahoo dll) — kurang ideal untuk B2B outreach")
     if verifier.get("disposable"):
         bits.append("Disposable address — tidak disarankan")
-    if verifier.get("accept_all"):
+    if verifier.get("accept_all") or verifier.get("catch_all"):
         bits.append("Server accept-all — tidak bisa pastikan ada user-nya")
     description = " · ".join(bits) if bits else "—"
     return {
@@ -2875,7 +2889,10 @@ def _email_view(c: dict) -> dict:
         "confidence": score,
         "status": status,
         "description": description,
-        "verifier": {k: verifier.get(k) for k in ("result", "score", "webmail", "disposable", "accept_all", "smtp_check")},
+        "verifier": {k: verifier.get(k) for k in (
+            "result", "score", "webmail", "disposable", "accept_all", "smtp_check",
+            "status", "catch_all", "mx_found", "provider", "smtp_code", "reasons",
+        )},
     }
 
 
