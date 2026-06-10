@@ -674,9 +674,11 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
 }
 
 /* ─────────────── EMAIL PICKER MODAL ─────────────── */
-function EmailPickerModal({ emails, company, domain, nextMode, initialCategoryId, onClose, onConfirm }) {
-  const [selected, setSelected] = useState(new Set(emails.map((e) => e.email)));
-  const [primary, setPrimary] = useState(emails[0]?.email || "");
+function EmailPickerModal({ emails: initialEmails, company, domain, nextMode, initialCategoryId, onClose, onConfirm }) {
+  const [emails, setEmails] = useState(initialEmails);  // local copy so probe results update in place
+  const [selected, setSelected] = useState(new Set(initialEmails.map((e) => e.email)));
+  const [primary, setPrimary] = useState(initialEmails[0]?.email || "");
+  const [probing, setProbing] = useState({});  // {email: true} while testing
 
   // Category & Location for the prospect being saved
   const [categories, setCategories] = useState([]);
@@ -738,6 +740,34 @@ function EmailPickerModal({ emails, company, domain, nextMode, initialCategoryId
       if (!primary) setPrimary(email);
     }
     setSelected(s);
+  };
+
+  const probeEmail = async (email) => {
+    setProbing((p) => ({ ...p, [email]: true }));
+    try {
+      const { data } = await api.post("/email-verifier/probe", { email });
+      // Merge probe result into the email object in-place
+      setEmails((prev) => prev.map((e) =>
+        e.email === email
+          ? {
+              ...e,
+              status: data.ui_status || e.status,
+              confidence: Math.max(e.confidence || 0, data.score || 0),
+              verifier: { ...(e.verifier || {}), ...data },
+              description: `🧪 Re-checked: ${data.recommendation}`,
+            }
+          : e
+      ));
+      const tone = data.status === "VALID" || data.status === "LIKELY_VALID" ? "success"
+                 : data.status === "INVALID" ? "error" : "info";
+      toast[tone === "error" ? "error" : tone === "success" ? "success" : "info"](
+        `${email}: ${data.status} — ${data.recommendation}`
+      );
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setProbing((p) => ({ ...p, [email]: false }));
+    }
   };
 
   const toggleAll = () => {
@@ -946,13 +976,22 @@ function EmailPickerModal({ emails, company, domain, nextMode, initialCategoryId
                     >
                       Set primary
                     </button>
+                    <button
+                      onClick={() => probeEmail(e.email)}
+                      disabled={probing[e.email]}
+                      title="Re-check email pakai SMTP/MX/catch-all"
+                      className="text-[10px] px-2 py-1 rounded font-medium transition-colors shrink-0 bg-violet-100 text-violet-700 hover:bg-violet-200 disabled:opacity-40 disabled:cursor-wait inline-flex items-center gap-1"
+                      data-testid={`picker-probe-${e.email}`}
+                    >
+                      {probing[e.email] ? <Spinner size={10} weight="bold" className="animate-spin" /> : "🧪"} Test
+                    </button>
                   </div>
                 );
               })}
             </div>
 
             <div className="text-[11px] text-slate-500 mt-3">
-              💡 Email primary akan jadi default penerima saat kirim outreach. Status &quot;risky&quot; biasanya catch-all/role-based — bisa kena bounce.
+              💡 Klik <b>🧪 Test</b> untuk re-check satu email (SMTP probe + catch-all detection). Berguna untuk verifikasi alias yang masih ⚠ unverified.
             </div>
           </div>
 

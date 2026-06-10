@@ -3381,6 +3381,46 @@ async def send_test_email(payload: TestSendReq, user: dict = Depends(get_current
     return {"ok": True, "to": payload.to_email, "subject": subject}
 
 
+class ProbeEmailReq(BaseModel):
+    email: str
+    domain: Optional[str] = None  # optional, derived from email if missing
+
+
+@api.post("/email-verifier/probe")
+async def probe_single_email(payload: ProbeEmailReq, user: dict = Depends(get_current_user)):
+    """Per-email aggressive re-check — runs the alias verifier on JUST this email
+    with extra rigor (multiple polls, fresh cache). Returns the latest engine result.
+    Use case: user clicks 🧪 Test button next to an UNVERIFIED alias to re-attempt
+    deliverability proof on a catch-all domain."""
+    from alias_verifier import verify_email
+    email = (payload.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Email tidak valid")
+    # Re-run with fresh catch-all cache for this single email
+    res = await verify_email(
+        email,
+        public_on_website=False,
+        alias_match=True,
+        catch_all_cache={},
+    )
+    out = res.to_dict()
+    # Map engine status to UI-friendly hint
+    out["ui_status"] = {
+        "VALID":        "verified",
+        "LIKELY_VALID": "verified",
+        "ACCEPT_ALL":   "unverified",   # alias-only — still can't prove per-user
+        "INVALID":      "invalid",
+        "UNKNOWN":      "unverified",
+    }.get(res.status, "unverified")
+    out["recommendation"] = (
+        "Email aman dikirim" if res.status in ("VALID", "LIKELY_VALID")
+        else "Server catch-all — kirim test mail dulu untuk pastikan" if res.status == "ACCEPT_ALL"
+        else "JANGAN kirim — SMTP tolak / domain bermasalah" if res.status == "INVALID"
+        else "Tidak ada respon SMTP — coba lagi nanti atau kirim test"
+    )
+    return out
+
+
 # ─── Email Templates ───
 async def _attach_template_attachments(rows: List[dict]) -> List[dict]:
     """Enrich template rows with attachment metadata (no file data)."""
