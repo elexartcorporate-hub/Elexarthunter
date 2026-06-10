@@ -2670,6 +2670,43 @@ async def update_working_config(payload: WorkingConfigUpdate, user: dict = Depen
     }
 
 
+def _email_view(c: dict) -> dict:
+    """Build a UI-friendly email object from a workflow contact, preserving verifier details."""
+    score = c.get("confidence_score") or 0
+    status = c.get("status") or ("verified" if score >= 80 else "risky")
+    verifier = c.get("verifier") or {}
+    # Build a human-readable description so users can decide whether to save / send
+    bits = []
+    if c.get("source") == "website":
+        bits.append("Ditemukan langsung di website (sumber paling tepercaya)")
+    elif c.get("source") == "hunter":
+        bits.append("Dari Hunter.io (verified via API)")
+    v_result = (verifier.get("result") or "").lower()
+    if v_result == "deliverable":
+        bits.append("Verifier: deliverable ✓ — aman dikirim")
+    elif v_result == "undeliverable":
+        bits.append("Verifier: undeliverable ✗ — kemungkinan besar bounce, JANGAN kirim")
+    elif v_result == "risky":
+        bits.append("Verifier: risky ⚠ — mungkin catch-all / role-based, ~50% chance bounce")
+    if verifier.get("webmail"):
+        bits.append("Webmail (Gmail/Yahoo dll) — kurang ideal untuk B2B outreach")
+    if verifier.get("disposable"):
+        bits.append("Disposable address — tidak disarankan")
+    if verifier.get("accept_all"):
+        bits.append("Server accept-all — tidak bisa pastikan ada user-nya")
+    description = " · ".join(bits) if bits else "—"
+    return {
+        "email": c["email"],
+        "name": c.get("name"),
+        "job_title": c.get("job_title"),
+        "source": c.get("source"),
+        "confidence": score,
+        "status": status,
+        "description": description,
+        "verifier": {k: verifier.get(k) for k in ("result", "score", "webmail", "disposable", "accept_all", "smtp_check")},
+    }
+
+
 @api.post("/prospects/discover")
 async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_current_user)):
     """Discover company info + emails for a domain (without saving). Front-end displays results."""
@@ -2681,13 +2718,7 @@ async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_
             return {
                 "domain": domain,
                 "company": cached["company"],
-                "emails": [
-                    {
-                        "email": c["email"], "name": c.get("name"), "job_title": c.get("job_title"),
-                        "source": c.get("source"), "confidence": c.get("confidence_score", 50),
-                        "status": "verified" if c.get("confidence_score", 0) >= 80 else "risky",
-                    } for c in cached["contacts"]
-                ],
+                "emails": [_email_view(c) for c in cached["contacts"]],
                 "cached": True, "age_days": age_days,
             }
     result = await run_hunter_workflow(domain)
@@ -2701,13 +2732,7 @@ async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_
     return {
         "domain": domain,
         "company": result["company"],
-        "emails": [
-            {
-                "email": c["email"], "name": c.get("name"), "job_title": c.get("job_title"),
-                "source": c.get("source"), "confidence": c.get("confidence_score", 50),
-                "status": "verified" if c.get("confidence_score", 0) >= 80 else "risky",
-            } for c in result["contacts"]
-        ],
+        "emails": [_email_view(c) for c in result["contacts"]],
         "cached": False,
     }
 

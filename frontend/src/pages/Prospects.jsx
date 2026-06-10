@@ -438,18 +438,38 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
-                      <tr><th className="text-left p-2">Email</th><th className="text-left p-2">Name</th><th className="text-left p-2">Title</th><th className="text-left p-2">Score</th><th className="text-left p-2">Status</th></tr>
+                      <tr>
+                        <th className="text-left p-2">Email</th>
+                        <th className="text-left p-2">Name</th>
+                        <th className="text-left p-2">Title</th>
+                        <th className="text-left p-2">Score</th>
+                        <th className="text-left p-2">Status</th>
+                        <th className="text-left p-2 hidden md:table-cell">Catatan / Risk</th>
+                      </tr>
                     </thead>
                     <tbody>
-                      {result.emails.map((e, i) => (
-                        <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
-                          <td className="p-2 font-mono text-xs text-slate-900">{e.email}</td>
-                          <td className="p-2 text-xs text-slate-700">{e.name || "—"}</td>
-                          <td className="p-2 text-xs text-slate-500">{e.job_title || "—"}</td>
-                          <td className="p-2"><Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>{e.confidence ?? "—"}</Badge></td>
-                          <td className="p-2"><Badge tone={e.status === "verified" ? "success" : e.status === "risky" ? "warning" : "error"}>{e.status}</Badge></td>
-                        </tr>
-                      ))}
+                      {result.emails.map((e, i) => {
+                        const statusTone = e.status === "verified" ? "success"
+                                         : e.status === "risky" ? "warning"
+                                         : e.status === "invalid" ? "error" : "neutral";
+                        const noteColor = e.status === "invalid"
+                          ? "text-rose-600"
+                          : e.status === "risky"
+                          ? "text-amber-700"
+                          : "text-slate-500";
+                        return (
+                          <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                            <td className="p-2 font-mono text-xs text-slate-900 align-top">{e.email}</td>
+                            <td className="p-2 text-xs text-slate-700 align-top">{e.name || "—"}</td>
+                            <td className="p-2 text-xs text-slate-500 align-top">{e.job_title || "—"}</td>
+                            <td className="p-2 align-top"><Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>{e.confidence ?? "—"}</Badge></td>
+                            <td className="p-2 align-top"><Badge tone={statusTone}>{e.status}</Badge></td>
+                            <td className={`p-2 text-[11px] leading-snug hidden md:table-cell ${noteColor}`} title={e.description}>
+                              {e.description || "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -740,7 +760,7 @@ function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfir
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono text-sm text-slate-900 break-all">{e.email}</span>
                         {isPrimary && isChecked && <Badge tone="info">primary</Badge>}
-                        <Badge tone={e.status === "verified" ? "success" : e.status === "risky" ? "warning" : "error"}>{e.status}</Badge>
+                        <Badge tone={e.status === "verified" ? "success" : e.status === "risky" ? "warning" : e.status === "invalid" ? "error" : "neutral"}>{e.status}</Badge>
                         {e.confidence != null && (
                           <Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>score {e.confidence}</Badge>
                         )}
@@ -750,6 +770,15 @@ function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfir
                         {e.job_title && <span> · {e.job_title}</span>}
                         {e.source && <span> · src: {e.source}</span>}
                       </div>
+                      {e.description && e.description !== "—" && (
+                        <div className={`text-[11px] mt-1 leading-snug ${
+                          e.status === "invalid" ? "text-rose-600"
+                          : e.status === "risky" ? "text-amber-700"
+                          : "text-slate-500"
+                        }`}>
+                          {e.description}
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={() => { setPrimary(e.email); if (!isChecked) toggle(e.email); }}
