@@ -445,18 +445,25 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
 
         v = verify_map.get(c["email"])
         if v:
-            # Map new engine status → legacy UI status so existing badges keep working.
-            # IMPORTANT: ACCEPT_ALL means SMTP accepted the email (250) — it IS sendable.
-            # The catch-all caveat is communicated via the description text + lower score,
-            # not by blocking the send. Aliases on catch-all domains stay GREEN/verified.
-            status_map = {
-                "VALID":        "verified",
-                "LIKELY_VALID": "verified",
-                "ACCEPT_ALL":   "verified",   # ← sendable, just lower confidence
-                "INVALID":      "invalid",
-                "UNKNOWN":      "unverified",
-            }
-            new_status = status_map.get(v.get("status"), "unverified")
+            # Map new engine status → legacy UI status.
+            # ACCEPT_ALL is the tricky one: SMTP accepted but server is catch-all so we
+            # can't prove a specific user exists. We differentiate by SOURCE:
+            #   - source=website  → alias was actually printed on the company site → verified
+            #   - source=hunter   → Hunter.io domain-search returned it → verified
+            #   - source=alias    → only auto-injected pattern, never seen elsewhere
+            #                       → "unverified" (sendable but no per-user proof)
+            engine_status = v.get("status")
+            source = c.get("source")
+            if engine_status == "VALID":
+                new_status = "verified"
+            elif engine_status == "LIKELY_VALID":
+                new_status = "verified"
+            elif engine_status == "ACCEPT_ALL":
+                new_status = "verified" if source in ("website", "hunter") else "unverified"
+            elif engine_status == "INVALID":
+                new_status = "invalid"
+            else:  # UNKNOWN or missing
+                new_status = "unverified"
             # Website source NEVER downgrades — site publication is the strongest signal
             if c.get("source") == "website":
                 if new_status in ("verified",):

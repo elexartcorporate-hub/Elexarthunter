@@ -6,6 +6,7 @@ import {
   Plus, MagnifyingGlass, Crosshair, ListBullets, UsersFour, Globe, Buildings,
   CaretRight, Spinner, PaperPlaneTilt, FloppyDisk, CheckCircle, Lock, LockOpen,
   Target, ArrowRight, X, CalendarCheck, Clock, Trash, ChartLine,
+  XCircle, Warning, Question, SealCheck,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import ReactQuill from "react-quill-new";
@@ -880,9 +881,25 @@ function EmailPickerModal({ emails, company, domain, nextMode, initialCategoryId
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
+                        {/* Status icon — instant visual signal for "can I send this?" */}
+                        {(() => {
+                          const eng = e.verifier?.status;
+                          if (e.status === "verified" && eng === "VALID")        return <CheckCircle size={18} weight="fill" className="text-emerald-500" title="VALID — public + SMTP ok" />;
+                          if (e.status === "verified" && eng === "LIKELY_VALID") return <CheckCircle size={18} weight="fill" className="text-emerald-500" title="LIKELY_VALID — SMTP ok" />;
+                          if (e.status === "verified" && eng === "ACCEPT_ALL")   return <SealCheck  size={18} weight="fill" className="text-emerald-500" title="ACCEPT_ALL — alias confirmed on website" />;
+                          if (e.status === "verified")                            return <CheckCircle size={18} weight="fill" className="text-emerald-500" title="Verified" />;
+                          if (e.status === "invalid")                             return <XCircle    size={18} weight="fill" className="text-rose-500"    title="INVALID — SMTP rejected" />;
+                          if (e.status === "risky")                               return <Warning    size={18} weight="fill" className="text-amber-500"   title="Risky" />;
+                          if (eng === "ACCEPT_ALL")                               return <Warning    size={18} weight="fill" className="text-amber-500"   title="ACCEPT_ALL — domain catch-all, tidak terbukti user spesifik" />;
+                          if (eng === "UNKNOWN")                                  return <Question   size={18} weight="fill" className="text-slate-400"   title="UNKNOWN — SMTP tidak respon" />;
+                          return <Question size={18} weight="fill" className="text-slate-400" title="Unverified" />;
+                        })()}
                         <span className="font-mono text-sm text-slate-900 break-all">{e.email}</span>
                         {isPrimary && isChecked && <Badge tone="info">primary</Badge>}
                         <Badge tone={e.status === "verified" ? "success" : e.status === "risky" ? "warning" : e.status === "invalid" ? "error" : "neutral"}>{e.status}</Badge>
+                        {e.verifier?.status && e.verifier.status !== "VALID" && e.verifier.status !== "LIKELY_VALID" && (
+                          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{e.verifier.status}</span>
+                        )}
                         {e.confidence != null && (
                           <Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>score {e.confidence}</Badge>
                         )}
