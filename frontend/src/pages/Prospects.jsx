@@ -511,7 +511,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                          : <><Crosshair size={14} weight="bold" /> Search Emails</>}
               </PrimaryButton>
             </div>
-            <div className="text-[11px] text-slate-500 mt-2">Discovery pipeline: Playwright deep crawl + Hunter.io. Alias diinjeksi sesuai kategori. Cache 30 hari.</div>
+            <div className="text-[11px] text-slate-500 mt-2">Discovery pipeline: Playwright deep crawl + Hunter.io domain-search → Alias Verifier internal (SMTP/MX/catch-all). Cache 30 hari.</div>
           </Card>
 
           {result && (

@@ -254,17 +254,19 @@ async def verify_email(
             res.catch_all = cached
 
     # ─── Score & status ───
+    # Re-tuned weights so a clean LIKELY_VALID alias lands around 85–95 (per spec example),
+    # ACCEPT_ALL alias around 55–65, INVALID 0–10, UNKNOWN 20.
     score = 0
     if public_on_website:
         score += 50
     if code == 250:
-        score += 30
+        score += 50          # SMTP accepted = strongest deliverability signal
     if alias_match:
-        score += 10
+        score += 30          # alias pattern bonus (sales/gm/event configured)
     if res.mx_found:
-        score += 10
+        score += 15          # MX exists
     if res.catch_all:
-        score -= 20
+        score -= 30          # catch-all = unreliable, penalize harder
     res.score = max(0, min(100, score))
 
     if code is None:
@@ -283,6 +285,7 @@ async def verify_email(
     elif code >= 500:
         res.status = "INVALID"
         res.reasons.append(f"smtp_reject_{code}")
+        res.score = min(res.score, 10)   # INVALID → score capped near zero regardless of bonuses
     else:
         res.status = "UNKNOWN"
         res.reasons.append(f"smtp_other_{code}")

@@ -2845,9 +2845,9 @@ def _email_view(c: dict) -> dict:
     elif c.get("source") == "website":
         bits.append("Ditemukan langsung di website — dianggap verified")
     elif c.get("source") == "hunter":
-        bits.append("Dari Hunter.io (verifier dijalankan)")
+        bits.append("Dari Hunter.io domain-search (alias verifier internal dijalankan)")
     elif c.get("source") == "alias":
-        bits.append("Alias generic (auto-injected) — diverifikasi via Hunter.io")
+        bits.append("Alias generic (auto-injected) — diverifikasi via Alias Verifier internal (SMTP/MX/catch-all)")
     v_result = (verifier.get("result") or "").lower()
     v_score = verifier.get("score")
     if v_result == "deliverable":

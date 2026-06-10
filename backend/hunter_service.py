@@ -462,9 +462,12 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
             else:
                 c["status"] = new_status
 
-            # Score: take the higher of engine score vs base score
+            # Score: INVALID forces low score (override), otherwise take the higher
             engine_score = v.get("score") or 0
-            if isinstance(engine_score, (int, float)) and engine_score:
+            engine_status = v.get("status") or ""
+            if engine_status == "INVALID":
+                c["confidence_score"] = int(engine_score)
+            elif isinstance(engine_score, (int, float)) and engine_score:
                 c["confidence_score"] = max(c.get("confidence_score") or 0, int(engine_score))
             c["verifier"] = v
 
