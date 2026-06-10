@@ -252,11 +252,15 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
 
   const loadToday = async () => {
     try {
-      // If there's an active task, scope the sidebar to that task's prospects only
-      // (so previously-submitted tasks don't pollute the new task's progress view).
-      if (activeTask?.id) {
+      // While a task is in progress, scope sidebar to that task's prospects so a fresh
+      // task starts clean. Once the task is READY-to-ship (target reached) or SUBMITTED
+      // (status not draft/ready), the sidebar should be empty — those prospects belong
+      // to a finished cycle and should only live in Analitik now.
+      if (activeTask?.id && activeTask.prospect_count < activeTask.target) {
         const { data } = await api.get(`/tasks/${activeTask.id}`);
         setTodayList(data.prospects || []);
+      } else if (activeTask?.id && activeTask.prospect_count >= activeTask.target) {
+        setTodayList([]);
       } else {
         const { data } = await api.get("/prospects/today");
         setTodayList(data);
@@ -352,9 +356,16 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
     ? (activeTask.prospect_count >= activeTask.target)
     : !quota?.locked;
 
+  // A task is "in progress" only while user is still hunting prospects. Once the target
+  // is hit, the task is "ready to ship" — UI on Add Prospect tab should be CLEAN so user
+  // is nudged to the Email tab. After submit, the task disappears entirely (handled by
+  // /tasks auto-heal + setActiveTask(null)).
+  const taskInProgress = !!activeTask && activeTask.prospect_count < activeTask.target;
+  const taskReady = !!activeTask && activeTask.prospect_count >= activeTask.target;
+
   return (
     <div className="space-y-5">
-      {activeTask && (
+      {taskInProgress && (
         <Card className="p-4 bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3">
@@ -382,6 +393,25 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
               <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all" style={{ width: `${Math.min(100, Math.round((activeTask.prospect_count / activeTask.target) * 100))}%` }} />
             </div>
           )}
+        </Card>
+      )}
+      {taskReady && (
+        <Card className="p-4 bg-gradient-to-br from-emerald-50 to-teal-50 border-emerald-200" data-testid="task-ready-banner">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white grid place-items-center">
+                <CheckCircle size={20} weight="bold" />
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-widest text-emerald-600 font-semibold">Tugas Siap Dikirim</div>
+                <div className="font-display text-base font-semibold text-slate-900">{activeTask.name}</div>
+                <div className="text-xs text-slate-500">Target {activeTask.target} prospect tercapai — lanjut ke tab Email untuk kirim / jadwalkan.</div>
+              </div>
+            </div>
+            <PrimaryButton onClick={onGoEmail} data-testid="goto-email-btn-clean">
+              <PaperPlaneTilt size={14} weight="bold" /> Ke Tab Email →
+            </PrimaryButton>
+          </div>
         </Card>
       )}
       {!activeTask && (
@@ -561,8 +591,16 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
           )}
         </div>
 
-        {/* RIGHT — Added Today sidebar */}
+        {/* RIGHT — Added Today sidebar (hidden when task is READY-to-ship — those prospects
+            now belong to the finished cycle and only live in Analitik) */}
         <div className="lg:col-span-1">
+          {taskReady ? (
+            <Card className="p-5 sticky top-6 bg-slate-50 border-slate-200">
+              <div className="text-xs text-slate-500 text-center">
+                Tugas sedang siap kirim. Cek <b className="text-slate-700">tab Email</b> untuk submit, atau <b className="text-slate-700">Analitik</b> untuk status setelah submit.
+              </div>
+            </Card>
+          ) : (
           <Card className="p-5 sticky top-6">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-display text-sm font-semibold text-slate-900 flex items-center gap-2">
@@ -610,6 +648,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
               </button>
             )}
           </Card>
+          )}
         </div>
       </div>
 
