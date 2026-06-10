@@ -61,22 +61,29 @@ User language: **Bahasa Indonesia** (respond in Indonesian).
 
 ## Prioritized Backlog
 
+### Recently Completed (Feb 2026)
+- Category-based dynamic alias injection (backend + Settings UI) — DONE
+- Required category dropdown before domain search on Add Prospect tab — DONE
+- Added Today sidebar isolated per active task (no stale prospects from submitted tasks) — DONE
+- OutreachModal: Mode toggle Kirim Sekarang vs Jadwalkan with date+time picker — DONE
+- Backend defensive validation: `scheduled_at` past-date rejected with 400 — DONE
+
 ### P1
-- Real Hunter.io API integration (swap mock when user supplies key in Settings → Hunter.io API)
-- Email body WYSIWYG (currently raw HTML textarea — works fine but plain)
+- Real Hunter.io API integration (swap mock when user supplies key in Settings → Hunter.io API) — DONE (real API + Playwright deep crawl)
+- Email body WYSIWYG (currently raw HTML textarea — works fine but plain) — DONE (ReactQuill)
+- Audit log untuk aksi user (login, send email, add prospect)
+- AES encryption untuk SMTP/IMAP password di MongoDB
 - Lead Export to CSV (My Leads + Master Database)
 - Per-user statistics on Dashboard (leads saved by each team member)
 
 ### P2
-- Email templates library + `{{variable}}` substitution per recipient
-- Unsubscribe link auto-injection + suppression list
-- Campaign scheduling (`schedule_at` field exists in model but no scheduler yet)
-- Pagination meta on /api/companies and /api/contacts
+- Email templates library + `{{variable}}` substitution per recipient — DONE
+- Unsubscribe link auto-injection + suppression list — DONE
 - Forgot-password flow
 - Webhook receiver for SMTP bounces
 - Custom tracking domains
 - WebSocket streaming for Hunter pipeline (currently 2s polling)
-- Refactor backend/server.py (now ~1495 lines) into routers (auth, hunter, campaigns, sub_companies, team)
+- Refactor backend/server.py (>3600 lines) into routers (auth, hunter, prospects, email, inbox)
 
 ## Auth credentials
 See `/app/memory/test_credentials.md`. Active demo: `demo@test.com / demo1234`.

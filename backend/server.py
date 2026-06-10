@@ -3130,11 +3130,12 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
             sched_dt = datetime.fromisoformat(payload.scheduled_at.replace("Z", "+00:00"))
             if sched_dt.tzinfo is None:
                 sched_dt = sched_dt.replace(tzinfo=timezone.utc)
-            if sched_dt > datetime.now(timezone.utc) + timedelta(minutes=1):
-                is_scheduled = True
-                sched_iso = sched_dt.isoformat()
         except Exception:
-            pass
+            raise HTTPException(400, "scheduled_at format invalid — use ISO datetime (e.g. 2026-06-11T10:00:00Z)")
+        if sched_dt <= datetime.now(timezone.utc) + timedelta(minutes=1):
+            raise HTTPException(400, "scheduled_at harus minimal 1 menit dari sekarang")
+        is_scheduled = True
+        sched_iso = sched_dt.isoformat()
 
     # SMTP only required for immediate send. Scheduled emails will resolve SMTP at send-time.
     smtp_src = await _resolve_smtp(user["tenant_id"], user, payload.sub_company_id)
