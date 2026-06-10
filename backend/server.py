@@ -2675,12 +2675,18 @@ def _email_view(c: dict) -> dict:
     score = c.get("confidence_score") or 0
     status = c.get("status") or ("verified" if score >= 80 else "risky")
     verifier = c.get("verifier") or {}
+    sources_list = c.get("sources_list") or []
+    cross_validated = len(sources_list) > 1
     # Build a human-readable description so users can decide whether to save / send
     bits = []
-    if c.get("source") == "website":
-        bits.append("Ditemukan langsung di website (sumber paling tepercaya)")
+    if cross_validated:
+        bits.append("Cross-validated: ditemukan di Website crawl DAN Hunter.io (paling tepercaya, verifier di-skip)")
+    elif c.get("source") == "website":
+        bits.append("Ditemukan langsung di website")
     elif c.get("source") == "hunter":
-        bits.append("Dari Hunter.io (verified via API)")
+        bits.append("Dari Hunter.io (verifier dijalankan)")
+    elif c.get("source") == "alias":
+        bits.append("Alias generic (sales/gm/event) — auto-injected, verifier dijalankan")
     v_result = (verifier.get("result") or "").lower()
     if v_result == "deliverable":
         bits.append("Verifier: deliverable ✓ — aman dikirim")
@@ -2700,6 +2706,8 @@ def _email_view(c: dict) -> dict:
         "name": c.get("name"),
         "job_title": c.get("job_title"),
         "source": c.get("source"),
+        "sources": sources_list,
+        "cross_validated": cross_validated,
         "confidence": score,
         "status": status,
         "description": description,

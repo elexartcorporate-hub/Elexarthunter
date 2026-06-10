@@ -279,7 +279,11 @@ def _confidence_score(source: str, hunter_confidence: Optional[int] = None) -> i
 
 
 def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list) -> Dict:
-    """Merge website & hunter results, dedupe by email, compute confidence."""
+    """Merge website & hunter results, dedupe by email, compute confidence.
+    Tags each contact with `_sources` (set of sources) so the caller knows which emails
+    are cross-validated (found in both) and can skip the verifier on those.
+    Also injects 3 mandatory generic aliases (sales/gm/event) for the domain, unless they
+    already appear in the merged set."""
     domain = hunter_result["domain"]
     company_name = crawl_result.get("company_name") or hunter_result.get("organization") or domain
 
@@ -297,6 +301,7 @@ def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list) -> Dict
                 "job_title": None,
                 "department": local if is_generic else None,
                 "source": "website",
+                "_sources": {"website"},
                 "confidence_score": _confidence_score("website"),
                 "status": "unverified",
             }
@@ -306,13 +311,14 @@ def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list) -> Dict
         key = em["value"].lower()
         full_name = " ".join(x for x in [em.get("first_name"), em.get("last_name")] if x) or None
         if key in contacts_map:
-            # update with richer info if from hunter
             existing = contacts_map[key]
             if not existing["name"] and full_name:
                 existing["name"] = full_name
             if not existing["job_title"] and em.get("position"):
                 existing["job_title"] = em["position"]
-            # source becomes website (more authoritative) - keep score
+            existing["_sources"].add("hunter")
+            # Cross-validated: bump score to max
+            existing["confidence_score"] = 100
         else:
             contacts_map[key] = {
                 "email": key,
@@ -320,14 +326,30 @@ def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list) -> Dict
                 "job_title": em.get("position"),
                 "department": em.get("department"),
                 "source": "hunter",
+                "_sources": {"hunter"},
                 "confidence_score": _confidence_score("hunter", em.get("confidence")),
+                "status": "unverified",
+            }
+
+    # Inject 3 mandatory dummy aliases — only if not already present
+    for alias in ("sales", "gm", "event"):
+        key = f"{alias}@{domain}"
+        if key not in contacts_map:
+            contacts_map[key] = {
+                "email": key,
+                "name": None,
+                "job_title": None,
+                "department": alias,
+                "source": "alias",
+                "_sources": {"alias"},
+                "confidence_score": 50,
                 "status": "unverified",
             }
 
     contacts = list(contacts_map.values())
 
-    logs.append(f"  > Merged {len(contacts)} unique contacts (dedupe done)")
-    logs.append(f"  > Confidence scoring applied")
+    cross = sum(1 for c in contacts if len(c["_sources"]) > 1)
+    logs.append(f"  > Merged {len(contacts)} unique contacts ({cross} cross-validated, skip verifier)")
 
     company = {
         "company_name": company_name,
@@ -376,12 +398,16 @@ async def run_hunter_workflow(domain: str) -> Dict:
     steps.append({"name": "Data Merge", "status": "ok"})
     steps.append({"name": "Confidence Scoring", "status": "ok"})
 
-    # Step 5: Email verifier on all merged emails (REAL Hunter verifier)
-    logs.append(f"> [STEP 5] Verifying {len(merged['contacts'])} email(s) via Hunter.io verifier")
-    all_emails = [c["email"] for c in merged["contacts"] if c.get("email")]
-    verify_map = await verify_emails_bulk(all_emails, logs)
-    # Apply verifier results — promote/demote status + score
+    # Step 5: Email verifier — ONLY for contacts NOT cross-validated by both Playwright+Hunter.
+    # Cross-validated contacts (in both sources) are already trusted → skip to save Hunter quota.
+    to_verify = [c["email"] for c in merged["contacts"] if len(c.get("_sources") or set()) <= 1]
+    skipped = len(merged["contacts"]) - len(to_verify)
+    logs.append(f"> [STEP 5] Verifier on {len(to_verify)} email(s) ({skipped} skipped — cross-validated)")
+    verify_map = await verify_emails_bulk(to_verify, logs)
     for c in merged["contacts"]:
+        # mark cross-validated as verified automatically
+        if len(c.get("_sources") or set()) > 1:
+            c["status"] = "verified"
         v = verify_map.get(c["email"])
         if not v:
             continue
@@ -392,11 +418,13 @@ async def run_hunter_workflow(domain: str) -> Dict:
             c["status"] = "invalid"
         elif result == "risky":
             c["status"] = "risky"
-        # Boost score if verifier confirms deliverable
         score = v.get("score")
         if isinstance(score, (int, float)) and score:
             c["confidence_score"] = max(c.get("confidence_score") or 0, int(score))
         c["verifier"] = v
+    # Convert _sources set → list so the contact serializes to JSON / MongoDB cleanly
+    for c in merged["contacts"]:
+        c["sources_list"] = sorted(list(c.pop("_sources", set())))
     steps.append({"name": "Email Verifier", "status": "ok" if HUNTER_API_KEY else "skip"})
 
     logs.append(f"> [DONE] {len(merged['contacts'])} contacts ready to save")
