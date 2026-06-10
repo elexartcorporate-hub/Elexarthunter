@@ -247,14 +247,23 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
   const inputRef = useRef(null);
 
   const loadToday = async () => {
-    try { const { data } = await api.get("/prospects/today"); setTodayList(data); }
-    catch (err) { /* ignore */ }
+    try {
+      // If there's an active task, scope the sidebar to that task's prospects only
+      // (so previously-submitted tasks don't pollute the new task's progress view).
+      if (activeTask?.id) {
+        const { data } = await api.get(`/tasks/${activeTask.id}`);
+        setTodayList(data.prospects || []);
+      } else {
+        const { data } = await api.get("/prospects/today");
+        setTodayList(data);
+      }
+    } catch (err) { /* ignore */ }
   };
   const loadCategories = async () => {
     try { const { data } = await api.get("/hunter-settings/categories"); setCategories(data || []); }
     catch (err) { /* ignore */ }
   };
-  useEffect(() => { loadToday(); loadCategories(); }, []);
+  useEffect(() => { loadToday(); loadCategories(); }, [activeTask?.id, activeTask?.prospect_count]);
 
   const selectedCategory = useMemo(
     () => categories.find((c) => c.id === searchCategoryId),
@@ -588,7 +597,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
         </div>
       </div>
 
-      {showOutreach && <OutreachModal todayList={todayList} onClose={() => setShowOutreach(false)} />}
+      {showOutreach && <OutreachModal todayList={todayList} activeTask={activeTask} onClose={() => setShowOutreach(false)} onSent={() => { setShowOutreach(false); loadToday(); refreshTask?.(); onProspectSaved?.(); }} />}
       {pickerMode && result && (
         <EmailPickerModal
           emails={result.emails}
@@ -868,7 +877,7 @@ function EmailPickerModal({ emails, company, domain, nextMode, initialCategoryId
 }
 
 /* ─────────────── BULK OUTREACH MODAL ─────────────── */
-function OutreachModal({ todayList, onClose }) {
+function OutreachModal({ todayList, activeTask, onClose, onSent }) {
   const { user } = useAuth();
   const [templates, setTemplates] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set(todayList.map((p) => p.id)));
@@ -876,6 +885,9 @@ function OutreachModal({ todayList, onClose }) {
     template_id: "",
     subject: "Hi {{name}}, interested in a quick chat?",
     body_html: "<p>Hi {{name}},</p>\n<p>I came across {{company}} and wanted to reach out about a quick chat.</p>\n<p>Best,<br/>Your Name</p>",
+    send_mode: "now",
+    scheduled_date: activeTask?.date || new Date().toISOString().slice(0, 10),
+    scheduled_time: "09:00",
   });
   const [sending, setSending] = useState(false);
   const [testEmail, setTestEmail] = useState(user?.email || "");
@@ -913,14 +925,25 @@ function OutreachModal({ todayList, onClose }) {
     }
     setSending(true);
     try {
-      const { data } = await api.post("/prospects/bulk-send-email", {
+      const payload = {
         prospect_ids: Array.from(selectedIds),
         subject: form.subject,
         body_html: form.body_html,
         template_id: form.template_id || null,
-      });
-      toast.success(`Queued ${data.queued} email — jeda 3 menit per pengiriman`);
-      onClose();
+      };
+      if (form.send_mode === "scheduled") {
+        const dt = new Date(`${form.scheduled_date}T${form.scheduled_time}:00`);
+        if (isNaN(dt.getTime())) { setSending(false); return toast.error("Tanggal/jam jadwal tidak valid"); }
+        if (dt.getTime() < Date.now() + 60_000) { setSending(false); return toast.error("Jadwal harus minimal 1 menit dari sekarang"); }
+        payload.scheduled_at = dt.toISOString();
+      }
+      const { data } = await api.post("/prospects/bulk-send-email", payload);
+      if (data.scheduled) {
+        toast.success(`✓ ${data.queued} email terjadwal pada ${form.scheduled_date} ${form.scheduled_time}`);
+      } else {
+        toast.success(`Queued ${data.queued} email — jeda 3 menit per pengiriman`);
+      }
+      onSent ? onSent() : onClose();
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setSending(false); }
   };
@@ -999,6 +1022,61 @@ function OutreachModal({ todayList, onClose }) {
             </div>
           </div>
           <div className="px-6 py-4 border-t border-slate-200 rounded-b-xl space-y-3">
+            {/* Send Mode toggle (Now vs Schedule) */}
+            <div>
+              <div className="text-xs font-medium text-slate-700 mb-2">Mode Pengiriman</div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, send_mode: "now" })}
+                  data-testid="outreach-mode-now"
+                  className={`text-left border rounded-xl p-3 transition-all ${form.send_mode === "now" ? "border-emerald-500 ring-2 ring-emerald-100 bg-emerald-50" : "border-slate-200 hover:border-slate-300"}`}
+                >
+                  <PaperPlaneTilt size={16} weight="bold" className={form.send_mode === "now" ? "text-emerald-600" : "text-slate-400"} />
+                  <div className="font-medium text-slate-900 text-sm mt-1">Kirim Sekarang</div>
+                  <div className="text-[11px] text-slate-500">Langsung antri & terkirim (jeda 3 menit)</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, send_mode: "scheduled" })}
+                  data-testid="outreach-mode-scheduled"
+                  className={`text-left border rounded-xl p-3 transition-all ${form.send_mode === "scheduled" ? "border-purple-500 ring-2 ring-purple-100 bg-purple-50" : "border-slate-200 hover:border-slate-300"}`}
+                >
+                  <Clock size={16} weight="bold" className={form.send_mode === "scheduled" ? "text-purple-600" : "text-slate-400"} />
+                  <div className="font-medium text-slate-900 text-sm mt-1">Jadwalkan</div>
+                  <div className="text-[11px] text-slate-500">Pilih tanggal & jam pengiriman</div>
+                </button>
+              </div>
+              {form.send_mode === "scheduled" && (
+                <div className="mt-2 grid grid-cols-2 gap-2 p-3 bg-purple-50 border border-purple-200 rounded-xl">
+                  <div>
+                    <label className="text-[11px] font-medium text-purple-900 block mb-1">Tanggal</label>
+                    <input
+                      type="date"
+                      value={form.scheduled_date}
+                      min={new Date().toISOString().slice(0, 10)}
+                      onChange={(e) => setForm({ ...form, scheduled_date: e.target.value })}
+                      className="w-full px-2.5 py-1.5 border border-purple-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      data-testid="outreach-scheduled-date"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-purple-900 block mb-1">Jam</label>
+                    <input
+                      type="time"
+                      value={form.scheduled_time}
+                      onChange={(e) => setForm({ ...form, scheduled_time: e.target.value })}
+                      className="w-full px-2.5 py-1.5 border border-purple-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      data-testid="outreach-scheduled-time"
+                    />
+                  </div>
+                  <div className="col-span-2 text-[10px] text-purple-700">
+                    Email akan otomatis terkirim sesuai jadwal (worker scheduler memeriksa tiap menit). Sebelum waktunya, status “scheduled” di Analitik.
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Test Email row */}
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
               <div className="flex items-center gap-2 mb-2">
@@ -1036,7 +1114,9 @@ function OutreachModal({ todayList, onClose }) {
               <div className="flex gap-2">
                 <GhostButton onClick={onClose}>Cancel</GhostButton>
                 <PrimaryButton onClick={send} disabled={sending || selectedIds.size === 0} data-testid="outreach-send-btn">
-                  <PaperPlaneTilt size={14} weight="bold" /> {sending ? "Queuing..." : `Send ${totalEmails} email`}
+                  {form.send_mode === "scheduled"
+                    ? <><Clock size={14} weight="bold" /> {sending ? "Scheduling..." : `Jadwalkan ${totalEmails} email`}</>
+                    : <><PaperPlaneTilt size={14} weight="bold" /> {sending ? "Queuing..." : `Send ${totalEmails} email`}</>}
                 </PrimaryButton>
               </div>
             </div>
