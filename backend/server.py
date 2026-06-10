@@ -3239,6 +3239,26 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
             queued += 1
             new_send_ids.append(send_id)
 
+    # Transition any draft/ready task that contains these prospects → scheduled/sending.
+    # Without this, the OutreachModal flow (Start Email Outreach button) would leave the
+    # task as "draft" and it would keep showing up as "Tugas Aktif" forever.
+    new_task_status = "scheduled" if is_scheduled else "sending"
+    update_payload = {
+        "status": new_task_status,
+        "submit_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    if is_scheduled:
+        update_payload["scheduled_send_at"] = sched_iso
+    await db.outreach_tasks.update_many(
+        {
+            "tenant_id": user["tenant_id"], "user_id": user["id"],
+            "status": {"$in": ["draft", "ready"]},
+            "prospect_ids": {"$elemMatch": {"$in": payload.prospect_ids}},
+        },
+        {"$set": update_payload},
+    )
+
     # If scheduled, don't run now — scheduler worker picks it up
     if is_scheduled:
         return {"queued": queued, "scheduled_at": sched_iso, "scheduled": True}
