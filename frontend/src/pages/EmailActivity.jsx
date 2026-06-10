@@ -5,9 +5,9 @@ import { PageHeader, Card, TermInput, TermSelect, PrimaryButton, GhostButton, Ba
 import { EnvelopeOpen, MagnifyingGlass, CalendarBlank, ArrowRight } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
-const STATUSES = ["queued", "delivered", "opened", "clicked", "replied", "bounce", "unsubscribed"];
+const STATUSES = ["scheduled", "queued", "delivered", "opened", "clicked", "replied", "bounce", "unsubscribed"];
 const TONE = {
-  queued: "neutral", delivered: "success", opened: "info",
+  scheduled: "purple", queued: "neutral", delivered: "success", opened: "info",
   clicked: "purple", replied: "success", bounce: "error", unsubscribed: "warning",
 };
 const RANGES = [
@@ -145,7 +145,13 @@ export default function EmailActivity() {
             <tbody>
               {filtered.map((s) => (
                 <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="p-3 text-xs text-slate-500">{fmtTime(s.created_at)}</td>
+                  <td className="p-3 text-xs text-slate-500">
+                    {s.status === "scheduled" && s.scheduled_at ? (
+                      <span className="text-purple-600 font-medium">⏱ {fmtTime(s.scheduled_at)}</span>
+                    ) : (
+                      fmtTime(s.sent_at || s.created_at)
+                    )}
+                  </td>
                   <td className="p-3 font-mono text-xs text-slate-900">{s.to_email}</td>
                   <td className="p-3 text-xs text-slate-700 max-w-xs truncate">{s.subject}</td>
                   <td className="p-3 text-xs text-slate-700">{s.prospect_name || "—"}</td>

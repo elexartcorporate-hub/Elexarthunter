@@ -1996,16 +1996,51 @@ async def prospects_calendar(
 
 @api.get("/prospects/calendar/day/{date}")
 async def prospects_calendar_day(date: str, user: dict = Depends(get_current_user)):
-    """Detail for a single day: prospects added, emails sent, emails scheduled."""
+    """Detail for a single day: prospects added (scoped to tasks on that date), emails sent, emails scheduled.
+
+    Prospect filtering rule:
+      - A prospect "belongs to" a date if it is part of a task whose `date == date`.
+      - Plus "loose" prospects (not attached to any task) whose `created_at` falls on that date,
+        so legacy prospects added without a task still show up where they were created.
+    """
     try:
         dt = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
     nxt = dt + timedelta(days=1)
-    prospects = await db.prospects.find({
+
+    # 1) Prospects from tasks scheduled for this date
+    tasks_on_day = await db.outreach_tasks.find({
+        "tenant_id": user["tenant_id"], "user_id": user["id"], "date": date,
+    }, {"_id": 0, "prospect_ids": 1}).to_list(500)
+    pids_on_day: List[str] = []
+    for t in tasks_on_day:
+        pids_on_day.extend(t.get("prospect_ids") or [])
+
+    task_prospects = []
+    if pids_on_day:
+        task_prospects = await db.prospects.find(
+            {"id": {"$in": pids_on_day}, "tenant_id": user["tenant_id"]},
+            {"_id": 0},
+        ).sort("created_at", -1).to_list(500)
+
+    # 2) Loose prospects created on this day (NOT attached to any task for any date)
+    all_attached_pids = set()
+    all_tasks = await db.outreach_tasks.find(
+        {"tenant_id": user["tenant_id"], "user_id": user["id"]},
+        {"_id": 0, "prospect_ids": 1},
+    ).to_list(2000)
+    for t in all_tasks:
+        all_attached_pids.update(t.get("prospect_ids") or [])
+
+    loose_prospects = await db.prospects.find({
         "tenant_id": user["tenant_id"], "assigned_user_id": user["id"],
         "created_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()},
+        "id": {"$nin": list(all_attached_pids)},
     }, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+    prospects = task_prospects + loose_prospects
+
     sent_emails = await db.email_sends.find({
         "tenant_id": user["tenant_id"], "sender_user_id": user["id"],
         "sent_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()},
