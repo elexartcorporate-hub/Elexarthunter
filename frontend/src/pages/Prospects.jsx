@@ -51,12 +51,16 @@ export default function Prospects() {
   };
   useEffect(() => { loadQuota(); }, [refreshKey]);
 
-  // Auto-pick today's task as active (latest draft/ready for today)
+  // Auto-pick the most-recent draft/ready task as the active one ONLY when nothing is set.
+  // Never override an existing activeTask (e.g. one just created via the Calendar) — that
+  // would clobber the user's intent and snap them back to an older task they already worked on.
+  // We sort tasks by date DESC so a future-dated new task takes precedence over an older draft.
   useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    api.get("/tasks", { params: { date: today } }).then(({ data }) => {
-      const active = data.find((t) => t.status === "draft" || t.status === "ready");
-      if (active && (!activeTask || activeTask.id !== active.id)) setActiveTask(active);
+    if (activeTask) return; // do not override a user-selected/just-created task
+    api.get("/tasks").then(({ data }) => {
+      // tasks already sorted by date desc on the backend
+      const active = (data || []).find((t) => t.status === "draft" || t.status === "ready");
+      if (active) setActiveTask(active);
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasksRefresh]);

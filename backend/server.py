@@ -2088,6 +2088,30 @@ async def list_tasks(
     status: Optional[str] = None,
     date: Optional[str] = None,
 ):
+    # Self-healing: auto-transition any draft/ready task whose prospects are ALL already
+    # in email_sends with processed status (queued/scheduled/sending/sent/delivered/...).
+    # This cleans up legacy tasks that were submitted via bulk-send when the status wasn't
+    # propagated, so they stop showing up as "Tugas Aktif" forever.
+    stale = await db.outreach_tasks.find(
+        {"tenant_id": user["tenant_id"], "user_id": user["id"], "status": {"$in": ["draft", "ready"]}},
+        {"_id": 0, "id": 1, "prospect_ids": 1},
+    ).to_list(500)
+    for st in stale:
+        pids = st.get("prospect_ids") or []
+        if not pids:
+            continue
+        sends = await db.email_sends.find(
+            {"prospect_id": {"$in": pids}, "status": {"$in": ["queued", "scheduled", "sending", "sent", "delivered", "opened", "clicked", "replied", "bounce"]}},
+            {"_id": 0, "prospect_id": 1, "status": 1},
+        ).to_list(2000)
+        covered = {s["prospect_id"] for s in sends}
+        if covered and set(pids).issubset(covered):
+            new_status = "scheduled" if any(s["status"] == "scheduled" for s in sends) else "sending"
+            await db.outreach_tasks.update_one(
+                {"id": st["id"]},
+                {"$set": {"status": new_status, "auto_healed_at": now_iso(), "updated_at": now_iso()}},
+            )
+
     q = {"tenant_id": user["tenant_id"], "user_id": user["id"]}
     if status: q["status"] = status
     if date: q["date"] = date
