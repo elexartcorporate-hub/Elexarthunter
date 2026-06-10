@@ -152,6 +152,7 @@ class UpdateUserReq(BaseModel):
 class HunterSearchReq(BaseModel):
     domain: str
     force_refresh: bool = False
+    category_id: Optional[str] = None
 
 
 class RoleCreate(BaseModel):
@@ -166,6 +167,12 @@ class RoleUpdate(BaseModel):
 
 class CategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    aliases: Optional[List[str]] = None  # generic email prefixes auto-injected per search in this category
+
+
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    aliases: Optional[List[str]] = None
 
 
 class LocationCreate(BaseModel):
@@ -705,6 +712,32 @@ async def delete_role(role_id: str, user: dict = Depends(require_permission("man
 # ────────────────────────────────────────────────────────────
 # HUNTER SETTINGS: Categories & Locations (tenant-wide)
 # ────────────────────────────────────────────────────────────
+# Default fallback aliases used when no category-specific list is configured.
+DEFAULT_HUNTER_ALIASES = ["sales", "gm", "event"]
+
+
+def _clean_aliases(raw) -> List[str]:
+    if not raw: return []
+    out, seen = [], set()
+    for a in raw:
+        v = (a or "").strip().lower().lstrip("@").split("@")[0]
+        if v and v not in seen and len(v) <= 40:
+            seen.add(v); out.append(v)
+    return out
+
+
+async def _resolve_aliases_for_search(tenant_id: str, category_id: Optional[str]) -> List[str]:
+    """Pick aliases for this search: category-specific → tenant default → hardcoded default."""
+    if category_id:
+        cat = await db.categories.find_one({"id": category_id, "tenant_id": tenant_id}, {"_id": 0, "aliases": 1})
+        if cat and cat.get("aliases"):
+            return _clean_aliases(cat["aliases"])
+    tenant = await db.tenants.find_one({"id": tenant_id}, {"_id": 0, "default_aliases": 1})
+    if tenant and tenant.get("default_aliases"):
+        return _clean_aliases(tenant["default_aliases"])
+    return DEFAULT_HUNTER_ALIASES
+
+
 @api.get("/hunter-settings/categories")
 async def list_categories(user: dict = Depends(get_current_user)):
     rows = await db.categories.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("name", 1).to_list(500)
@@ -720,12 +753,48 @@ async def create_category(payload: CategoryCreate, user: dict = Depends(get_curr
         "id": str(uuid.uuid4()),
         "tenant_id": user["tenant_id"],
         "name": name,
+        "aliases": _clean_aliases(payload.aliases) if payload.aliases is not None else [],
         "created_by": user["id"],
         "created_at": now_iso(),
     }
     await db.categories.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+@api.patch("/hunter-settings/categories/{cat_id}")
+async def update_category(cat_id: str, payload: CategoryUpdate, user: dict = Depends(get_current_user)):
+    upd = {}
+    if payload.name is not None:
+        upd["name"] = payload.name.strip()
+    if payload.aliases is not None:
+        upd["aliases"] = _clean_aliases(payload.aliases)
+    if not upd:
+        return {"updated": 0}
+    res = await db.categories.update_one({"id": cat_id, "tenant_id": user["tenant_id"]}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(404, "Category not found")
+    return await db.categories.find_one({"id": cat_id}, {"_id": 0})
+
+
+@api.get("/hunter-settings/default-aliases")
+async def get_default_aliases(user: dict = Depends(get_current_user)):
+    tenant = await db.tenants.find_one({"id": user["tenant_id"]}, {"_id": 0, "default_aliases": 1})
+    aliases = (tenant or {}).get("default_aliases") or DEFAULT_HUNTER_ALIASES
+    return {"aliases": aliases, "is_default": not bool((tenant or {}).get("default_aliases"))}
+
+
+class DefaultAliasesReq(BaseModel):
+    aliases: List[str]
+
+
+@api.put("/hunter-settings/default-aliases")
+async def set_default_aliases(payload: DefaultAliasesReq, user: dict = Depends(get_current_user)):
+    if user["role"] not in ("Owner", "Admin"):
+        raise HTTPException(403, "Owner/Admin only")
+    cleaned = _clean_aliases(payload.aliases)
+    await db.tenants.update_one({"id": user["tenant_id"]}, {"$set": {"default_aliases": cleaned}})
+    return {"aliases": cleaned}
 
 
 @api.delete("/hunter-settings/categories/{cat_id}")
@@ -1185,7 +1254,8 @@ async def hunter_search(payload: HunterSearchReq, user: dict = Depends(get_curre
     else:
         logs.append("  > Cache MISS or refresh forced. Running full workflow...")
         steps.append({"name": "Global DB Check", "status": "miss"})
-        result = await run_hunter_workflow(domain)
+        aliases = await _resolve_aliases_for_search(user["tenant_id"], payload.category_id)
+        result = await run_hunter_workflow(domain, aliases=aliases)
         result["logs"] = logs + result["logs"]
         result["steps"] = steps + result["steps"]
         # Update global cache
@@ -2729,7 +2799,8 @@ async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_
                 "emails": [_email_view(c) for c in cached["contacts"]],
                 "cached": True, "age_days": age_days,
             }
-    result = await run_hunter_workflow(domain)
+    aliases = await _resolve_aliases_for_search(user["tenant_id"], payload.category_id)
+    result = await run_hunter_workflow(domain, aliases=aliases)
     # update global cache
     await db.global_hunter_cache.update_one(
         {"domain": domain},

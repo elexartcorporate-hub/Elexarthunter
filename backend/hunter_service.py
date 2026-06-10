@@ -278,7 +278,7 @@ def _confidence_score(source: str, hunter_confidence: Optional[int] = None) -> i
     return 70
 
 
-def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list) -> Dict:
+def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list, aliases: Optional[List[str]] = None) -> Dict:
     """Merge website & hunter results, dedupe by email, compute confidence.
     Tags each contact with `_sources` (set of sources) so the caller knows which emails
     are cross-validated (found in both) and can skip the verifier on those.
@@ -331,8 +331,9 @@ def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list) -> Dict
                 "status": "unverified",
             }
 
-    # Inject 3 mandatory dummy aliases — only if not already present
-    for alias in ("sales", "gm", "event"):
+    # Inject mandatory dummy aliases for this category — only if not already present
+    alias_list = aliases if aliases is not None else ["sales", "gm", "event"]
+    for alias in alias_list:
         key = f"{alias}@{domain}"
         if key not in contacts_map:
             contacts_map[key] = {
@@ -363,7 +364,7 @@ def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list) -> Dict
     return {"company": company, "contacts": contacts}
 
 
-async def run_hunter_workflow(domain: str) -> Dict:
+async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) -> Dict:
     """
     Full pipeline. Returns:
       {
@@ -392,9 +393,9 @@ async def run_hunter_workflow(domain: str) -> Dict:
     hunter_result = await hunter_io_search(domain, logs)
     steps.append({"name": "Hunter.io Domain Search", "status": "ok" if HUNTER_API_KEY else "skip"})
 
-    # Step 4: Merge & dedupe
-    logs.append(f"> [STEP 4] Merging & deduplicating results")
-    merged = merge_and_score(crawl_result, hunter_result, logs)
+    # Step 4: Merge & dedupe (with category-aware aliases)
+    logs.append(f"> [STEP 4] Merging & deduplicating results (aliases: {aliases or 'default'})")
+    merged = merge_and_score(crawl_result, hunter_result, logs, aliases=aliases)
     steps.append({"name": "Data Merge", "status": "ok"})
     steps.append({"name": "Confidence Scoring", "status": "ok"})
 

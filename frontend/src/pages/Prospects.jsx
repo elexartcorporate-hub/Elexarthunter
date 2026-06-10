@@ -235,6 +235,8 @@ function ConfettiBurst() {
 function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmail }) {
   const navigate = useNavigate();
   const [domain, setDomain] = useState("");
+  const [searchCategoryId, setSearchCategoryId] = useState("");
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [savedId, setSavedId] = useState(null);
@@ -248,13 +250,26 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
     try { const { data } = await api.get("/prospects/today"); setTodayList(data); }
     catch (err) { /* ignore */ }
   };
-  useEffect(() => { loadToday(); }, []);
+  const loadCategories = async () => {
+    try { const { data } = await api.get("/hunter-settings/categories"); setCategories(data || []); }
+    catch (err) { /* ignore */ }
+  };
+  useEffect(() => { loadToday(); loadCategories(); }, []);
+
+  const selectedCategory = useMemo(
+    () => categories.find((c) => c.id === searchCategoryId),
+    [categories, searchCategoryId]
+  );
 
   const search = async () => {
-    if (!domain.trim()) return toast.error("Enter a domain");
+    if (!domain.trim()) return toast.error("Masukkan domain dulu");
+    if (!searchCategoryId) return toast.error("Pilih kategori dulu — alias pencarian disesuaikan per kategori");
     setLoading(true); setResult(null); setSavedId(null);
     try {
-      const { data } = await api.post("/prospects/discover", { domain: domain.trim() });
+      const { data } = await api.post("/prospects/discover", {
+        domain: domain.trim(),
+        category_id: searchCategoryId,
+      });
       setResult(data);
       toast.success(`Found ${data.emails.length} email(s) on ${data.domain}`);
     } catch (err) { toast.error(formatApiError(err)); }
@@ -386,6 +401,44 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                 </button>
               )}
             </div>
+
+            {/* Category selector — required so the backend injects the right aliases */}
+            <div className="mb-2">
+              <label className="text-[11px] font-medium text-slate-600 flex items-center justify-between mb-1">
+                <span>Kategori target <span className="text-rose-500">*</span></span>
+                {selectedCategory && (selectedCategory.aliases?.length || 0) > 0 && (
+                  <span className="text-[10px] text-emerald-600">
+                    {selectedCategory.aliases.length} alias akan diinjeksi
+                  </span>
+                )}
+                {selectedCategory && (selectedCategory.aliases?.length || 0) === 0 && (
+                  <span className="text-[10px] text-amber-600">
+                    Belum ada alias — pakai default tenant
+                  </span>
+                )}
+              </label>
+              <select
+                value={searchCategoryId}
+                onChange={(e) => setSearchCategoryId(e.target.value)}
+                className={`w-full px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                  searchCategoryId ? "border-slate-200" : "border-amber-300"
+                }`}
+                data-testid="search-category-select"
+              >
+                <option value="">— Pilih kategori target (wajib) —</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{c.aliases?.length ? ` (${c.aliases.length} alias)` : ""}
+                  </option>
+                ))}
+              </select>
+              {categories.length === 0 && (
+                <div className="text-[10px] text-rose-600 mt-1">
+                  Belum ada kategori. Tambahkan dulu di Settings → Hunter → Categories.
+                </div>
+              )}
+            </div>
+
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Globe size={16} weight="bold" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -399,12 +452,12 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                   data-testid="discover-domain-input"
                 />
               </div>
-              <PrimaryButton onClick={search} disabled={loading} data-testid="discover-search-btn">
+              <PrimaryButton onClick={search} disabled={loading || !searchCategoryId} data-testid="discover-search-btn">
                 {loading ? <><Spinner size={14} weight="bold" className="animate-spin" /> Searching...</>
                          : <><Crosshair size={14} weight="bold" /> Search Emails</>}
               </PrimaryButton>
             </div>
-            <div className="text-[11px] text-slate-500 mt-2">Discovery pipeline: Playwright deep crawl + Hunter.io (mock). Cache 30 days.</div>
+            <div className="text-[11px] text-slate-500 mt-2">Discovery pipeline: Playwright deep crawl + Hunter.io. Alias diinjeksi sesuai kategori. Cache 30 hari.</div>
           </Card>
 
           {result && (
@@ -542,6 +595,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
           company={result.company.company_name || result.domain}
           domain={result.domain}
           nextMode={pickerMode === "save_next"}
+          initialCategoryId={searchCategoryId}
           onClose={() => setPickerMode(null)}
           onConfirm={confirmSave}
         />
@@ -551,14 +605,14 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
 }
 
 /* ─────────────── EMAIL PICKER MODAL ─────────────── */
-function EmailPickerModal({ emails, company, domain, nextMode, onClose, onConfirm }) {
+function EmailPickerModal({ emails, company, domain, nextMode, initialCategoryId, onClose, onConfirm }) {
   const [selected, setSelected] = useState(new Set(emails.map((e) => e.email)));
   const [primary, setPrimary] = useState(emails[0]?.email || "");
 
   // Category & Location for the prospect being saved
   const [categories, setCategories] = useState([]);
   const [locations, setLocations] = useState([]);
-  const [categoryId, setCategoryId] = useState("");
+  const [categoryId, setCategoryId] = useState(initialCategoryId || "");
   const [locationId, setLocationId] = useState("");
   const [newCatName, setNewCatName] = useState("");
   const [newLocName, setNewLocName] = useState("");

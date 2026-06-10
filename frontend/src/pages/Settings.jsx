@@ -53,7 +53,7 @@ export default function Settings() {
           {section === "roles"      && <RolesSection currentUser={user} />}
           {section === "targets"    && <TargetsSection currentUser={user} />}
           {section === "schedule"   && <ScheduleSection />}
-          {section === "categories" && <SimpleListSection title="Categories" subtitle="Industry, niche or vertical — used to organize your saved leads." path="categories" icon={Tag} placeholder="e.g. Travel, SaaS, E-commerce" />}
+          {section === "categories" && <CategoriesSection />}
           {section === "locations"  && <SimpleListSection title="Locations" subtitle="City, country or region — to filter your leads geographically." path="locations" icon={MapPin} placeholder="e.g. Jakarta, Bali, Singapore" />}
           {section === "api"        && <ApiSection />}
         </section>
@@ -749,6 +749,136 @@ function RolesSection({ currentUser }) {
 }
 
 /* ──────────── Generic list (categories / locations) ──────────── */
+function CategoriesSection() {
+  const [items, setItems] = useState([]);
+  const [name, setName] = useState("");
+  const [defaultAliases, setDefaultAliases] = useState([]);
+  const [defaultDraft, setDefaultDraft] = useState("");
+  const [defaultIsCustom, setDefaultIsCustom] = useState(false);
+  const [editing, setEditing] = useState(null); // category being edited
+  const [editName, setEditName] = useState("");
+  const [editAliases, setEditAliases] = useState("");
+
+  const load = async () => {
+    try {
+      const [c, d] = await Promise.all([
+        api.get("/hunter-settings/categories"),
+        api.get("/hunter-settings/default-aliases"),
+      ]);
+      setItems(c.data);
+      setDefaultAliases(d.data.aliases || []);
+      setDefaultIsCustom(!d.data.is_default);
+    } catch (e) { /* */ }
+  };
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
+    if (!name.trim()) return;
+    try { await api.post("/hunter-settings/categories", { name: name.trim() }); setName(""); load(); toast.success("Category added"); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
+  const del = async (id) => {
+    if (!window.confirm("Delete category?")) return;
+    try { await api.delete(`/hunter-settings/categories/${id}`); load(); toast.success("Deleted"); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
+
+  const startEdit = (cat) => {
+    setEditing(cat.id);
+    setEditName(cat.name);
+    setEditAliases((cat.aliases || []).join(", "));
+  };
+  const saveEdit = async () => {
+    const aliases = editAliases.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    try {
+      await api.patch(`/hunter-settings/categories/${editing}`, { name: editName.trim(), aliases });
+      toast.success("Updated"); setEditing(null); load();
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
+
+  const saveDefaults = async () => {
+    const aliases = defaultDraft.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (aliases.length === 0) { toast.error("Setidaknya 1 alias"); return; }
+    try {
+      const { data } = await api.put("/hunter-settings/default-aliases", { aliases });
+      setDefaultAliases(data.aliases); setDefaultIsCustom(true); setDefaultDraft("");
+      toast.success("Default aliases tersimpan");
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-6">
+        <div className="flex items-center gap-2 mb-1">
+          <Tag size={20} weight="bold" className="text-indigo-600" />
+          <h2 className="font-display text-lg font-semibold text-slate-900">Categories <span className="text-slate-400 font-normal">({items.length})</span></h2>
+        </div>
+        <p className="text-sm text-slate-500 mb-4">
+          Industry / niche tags. Setiap kategori bisa punya <b>aliases</b> (email prefix umum) yang otomatis di-inject saat search domain di kategori tsb.
+        </p>
+
+        <div className="flex gap-2 mb-4">
+          <input className="flex-1 bg-white border border-slate-200 text-slate-900 rounded-lg px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+            placeholder="e.g. Hotel & Resort, SaaS, Event Venue"
+            value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+          <PrimaryButton onClick={add}><Plus size={14} weight="bold" /> Add</PrimaryButton>
+        </div>
+
+        <div className="space-y-2">
+          {items.length === 0 && <div className="text-sm text-slate-400 py-3 text-center">Belum ada kategori</div>}
+          {items.map((c) => (
+            <div key={c.id} className="border border-slate-200 rounded-lg p-3">
+              {editing === c.id ? (
+                <div className="space-y-2">
+                  <input className="w-full bg-white border border-indigo-300 rounded-lg px-3 py-2 text-sm" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Category name" />
+                  <input className="w-full bg-white border border-indigo-300 rounded-lg px-3 py-2 text-sm font-mono" value={editAliases} onChange={(e) => setEditAliases(e.target.value)} placeholder="aliases (pisah dgn koma): gm, sales, event, reservations" />
+                  <div className="text-[11px] text-slate-500">Hanya prefix sebelum @, contoh: <code>gm</code> → akan jadi <code>gm@domain.com</code></div>
+                  <div className="flex gap-2 justify-end">
+                    <GhostButton onClick={() => setEditing(null)}>Cancel</GhostButton>
+                    <PrimaryButton onClick={saveEdit}>Save</PrimaryButton>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-slate-900">{c.name}</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">
+                      {(c.aliases || []).length > 0 ? (
+                        <>Aliases: <span className="font-mono text-indigo-700">{(c.aliases || []).join(", ")}</span></>
+                      ) : (
+                        <span className="text-slate-400">No custom aliases — pakai default tenant</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => startEdit(c)} className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded" title="Edit aliases"><PencilSimple size={14} weight="bold" /></button>
+                    <button onClick={() => del(c.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded" title="Delete"><Trash size={14} weight="bold" /></button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h2 className="font-display text-lg font-semibold text-slate-900 mb-1">Default Aliases (Tenant Fallback)</h2>
+        <p className="text-sm text-slate-500 mb-4">
+          Digunakan kalau category yang dipilih tidak punya aliases (atau search tanpa category). {defaultIsCustom ? <Badge tone="success">Custom</Badge> : <Badge tone="neutral">System default</Badge>}
+        </p>
+        <div className="mb-3">
+          <div className="text-xs text-slate-500 mb-1">Active default:</div>
+          <div className="font-mono text-sm text-slate-900 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">{defaultAliases.join(", ") || "—"}</div>
+        </div>
+        <div className="flex gap-2">
+          <input className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono" placeholder="ganti default: e.g. info, contact, sales, support, hr" value={defaultDraft} onChange={(e) => setDefaultDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveDefaults()} />
+          <PrimaryButton onClick={saveDefaults}>Save default</PrimaryButton>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function SimpleListSection({ title, subtitle, path, icon: Icon, placeholder }) {
   const [items, setItems] = useState([]);
   const [name, setName] = useState("");

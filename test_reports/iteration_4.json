@@ -1,0 +1,39 @@
+{
+  "summary": "Verified category-based alias injection end-to-end. Backend: 10/10 tests pass — categories CRUD with aliases (POST/PATCH/GET/DELETE) persists+cleans+dedupes aliases; /api/prospects/discover accepts category_id and resolves aliases via _resolve_aliases_for_search; falls back gracefully for missing/invalid category_id. Frontend: full UI flow verified — category dropdown shows ABOVE domain input, amber border when empty, Search Emails button DISABLED until category selected, error toast 'Pilih kategori dulu — alias pencarian disesuaikan per kategori' shown when pressing Enter without category AND zero /api/prospects/discover calls made; after selecting a seeded category 'UI_TEST_Hotel' (4 aliases), helper text '4 alias akan diinjeksi' renders, button enables, network intercept confirms POST body is {\"domain\":\"hilton-ui-test.com\",\"category_id\":\"<cat_id>\"}, results render with 'Alias generic (sales/gm/event) — auto-injected' tag on each row, and EmailPickerModal opens with picker-category PRE-FILLED to the same cat_id (initialCategoryId prop wiring verified).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/hunter-settings/categories", "issue": "Legacy categories created before the 'aliases' field was added (e.g. 'Hospitality') are returned WITHOUT an 'aliases' key. Frontend handles gracefully via c.aliases?.length but consider backfilling via migration so 'aliases' is always [] on response."},
+      {"endpoint": "Routes naming", "issue": "Review request mentions PUT /api/hunter-settings/categories/<id> but actual route is PATCH. Functionally fine; just confirming PATCH is the canonical method."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_category_alias_injection.py",
+    "/app/test_reports/pytest/category_alias_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: backfill missing 'aliases' field on legacy category docs (Hospitality, etc.) with [] so the API contract is uniform.",
+    "OPTIONAL: clean up the UI_TEST_Hotel category seeded in demo tenant (or keep — name is namespaced)."
+  ],
+  "critical_code_review_comments": [
+    "_resolve_aliases_for_search at server.py:729 correctly implements 3-tier fallback: category aliases → tenant default_aliases → DEFAULT_HUNTER_ALIASES. Clean, single-purpose, async-correct.",
+    "_clean_aliases handles lowercasing, @-stripping, dedup, length cap (40 chars), and email-prefix extraction. Solid validation.",
+    "Frontend Prospects.jsx AddProspect (lines ~235-461) correctly: (a) disables search btn via `disabled={loading || !searchCategoryId}`, (b) guards with toast in search() before any network call, (c) sends category_id in POST body, (d) passes initialCategoryId={searchCategoryId} to EmailPickerModal which uses useState(initialCategoryId || '').",
+    "category_id is Optional in HunterSearchReq backend-side, so older clients without UI update still work — good backward compat."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_category_alias_injection.py (new — 10 tests)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% of tested flows"},
+  "test_credentials": "demo@test.com / demo1234 (Owner)",
+  "seed_data_creation": "Created tenant category 'UI_TEST_Hotel' with aliases [sales, gm, event, marketing] in HunterCorp Demo tenant for UI flow verification. Backend pytest categories prefixed with 'TEST_' are auto-cleaned via fixture teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test suite at /app/backend/tests/test_category_alias_injection.py covers categories CRUD + discover endpoint. Run: REACT_APP_BACKEND_URL=<url> pytest backend/tests/test_category_alias_injection.py -v. Frontend uses localStorage key 'lh_token' (NOT 'token') — use page.evaluate(\"() => localStorage.getItem('lh_token')\"). After login, dashboard renders at '/' not '/dashboard' — wait for selector 'text=Good morning' instead. Note the categories endpoint uses PATCH (not PUT) for updates.",
+  "rca of the issue": "N/A — no defects found. Implementation matches spec end-to-end. The pre-existing 'Hospitality' category missing 'aliases' field is a data-shape inconsistency (not a bug) handled gracefully by both backend (cat.get('aliases') → falls back) and frontend (optional chaining)."
+}
