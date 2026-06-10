@@ -270,7 +270,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
     [categories, searchCategoryId]
   );
 
-  const search = async () => {
+  const search = async (forceRefresh = false) => {
     if (!domain.trim()) return toast.error("Masukkan domain dulu");
     if (!searchCategoryId) return toast.error("Pilih kategori dulu — alias pencarian disesuaikan per kategori");
     setLoading(true); setResult(null); setSavedId(null);
@@ -278,9 +278,10 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
       const { data } = await api.post("/prospects/discover", {
         domain: domain.trim(),
         category_id: searchCategoryId,
+        force_refresh: forceRefresh,
       });
       setResult(data);
-      toast.success(`Found ${data.emails.length} email(s) on ${data.domain}`);
+      toast.success(`Found ${data.emails.length} email(s) on ${data.domain}${forceRefresh ? " (fresh)" : ""}`);
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setLoading(false); }
   };
@@ -485,6 +486,11 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                   </div>
                 </div>
                 <div className="flex gap-2 shrink-0">
+                  {result.cached && (
+                    <GhostButton onClick={() => search(true)} disabled={loading} data-testid="refresh-search-btn" title="Force re-crawl & re-verify (bypass 30-day cache)">
+                      <Spinner size={14} weight="bold" className={loading ? "animate-spin" : ""} /> Refresh
+                    </GhostButton>
+                  )}
                   <GhostButton onClick={() => openPicker(false)} disabled={savedId} data-testid="save-prospect-btn">
                     <FloppyDisk size={14} weight="bold" /> {savedId ? "Saved" : "Save"}
                   </GhostButton>

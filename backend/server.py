@@ -2750,20 +2750,23 @@ def _email_view(c: dict) -> dict:
     # Build a human-readable description so users can decide whether to save / send
     bits = []
     if cross_validated:
-        bits.append("Cross-validated: ditemukan di Website crawl DAN Hunter.io (paling tepercaya, verifier di-skip)")
+        bits.append("Cross-validated: ditemukan di Website crawl DAN Hunter.io (paling tepercaya)")
     elif c.get("source") == "website":
-        bits.append("Ditemukan langsung di website")
+        bits.append("Ditemukan langsung di website — dianggap verified")
     elif c.get("source") == "hunter":
         bits.append("Dari Hunter.io (verifier dijalankan)")
     elif c.get("source") == "alias":
-        bits.append("Alias generic (sales/gm/event) — auto-injected, verifier dijalankan")
+        bits.append("Alias generic (auto-injected) — diverifikasi via Hunter.io")
     v_result = (verifier.get("result") or "").lower()
+    v_score = verifier.get("score")
     if v_result == "deliverable":
         bits.append("Verifier: deliverable ✓ — aman dikirim")
     elif v_result == "undeliverable":
         bits.append("Verifier: undeliverable ✗ — kemungkinan besar bounce, JANGAN kirim")
     elif v_result == "risky":
         bits.append("Verifier: risky ⚠ — mungkin catch-all / role-based, ~50% chance bounce")
+    elif v_result == "unknown":
+        bits.append(f"Verifier: unknown — score Hunter {v_score or 0}")
     if verifier.get("webmail"):
         bits.append("Webmail (Gmail/Yahoo dll) — kurang ideal untuk B2B outreach")
     if verifier.get("disposable"):

@@ -67,6 +67,10 @@ User language: **Bahasa Indonesia** (respond in Indonesian).
 - Added Today sidebar isolated per active task (no stale prospects from submitted tasks) — DONE
 - OutreachModal: Mode toggle Kirim Sekarang vs Jadwalkan with date+time picker — DONE
 - Backend defensive validation: `scheduled_at` past-date rejected with 400 — DONE
+- **Hunter verifier polling for HTTP 202 pending status** — DONE (3 polls × 2s)
+- **Website-sourced emails auto-marked `verified`** (published on official site = trustworthy) — DONE
+- **Alias emails get accurate status** based on Hunter.io verifier (deliverable→verified, undeliverable→invalid, risky→risky, unknown→score-based) — DONE
+- **Refresh button** on Prospects search result to bypass 30-day cache & re-verify — DONE
 
 ### P1
 - Real Hunter.io API integration (swap mock when user supplies key in Settings → Hunter.io API) — DONE (real API + Playwright deep crawl)

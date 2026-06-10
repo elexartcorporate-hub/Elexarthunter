@@ -217,19 +217,33 @@ async def hunter_io_search(domain: str, logs: list) -> Dict:
     }
 
 
-async def hunter_io_verify(email: str) -> Dict:
-    """Hunter.io email-verifier — best-effort, returns empty dict on fail."""
+async def hunter_io_verify(email: str, max_polls: int = 3, poll_delay: float = 2.0) -> Dict:
+    """Hunter.io email-verifier — best-effort. Hunter sometimes returns HTTP 202 ("still pending")
+    when the SMTP check is async; we poll up to `max_polls` times with `poll_delay`s between."""
     if not HUNTER_API_KEY or not email:
         return {}
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(
-                f"{HUNTER_BASE}/email-verifier",
-                params={"email": email, "api_key": HUNTER_API_KEY},
-            )
-            if r.status_code != 200:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=10.0)) as client:
+            data = None
+            for attempt in range(max_polls):
+                r = await client.get(
+                    f"{HUNTER_BASE}/email-verifier",
+                    params={"email": email, "api_key": HUNTER_API_KEY},
+                )
+                if r.status_code == 200:
+                    data = (r.json().get("data") or {})
+                    break
+                if r.status_code == 202:
+                    # Pending — wait and retry
+                    if attempt < max_polls - 1:
+                        await asyncio.sleep(poll_delay)
+                        continue
+                    logger.warning(f"verifier still pending for {email} after {max_polls} polls")
+                    return {}
+                logger.warning(f"verifier non-200 for {email}: {r.status_code} {r.text[:120]}")
                 return {}
-            data = (r.json().get("data") or {})
+        if not data:
+            return {}
         return {
             "status": data.get("status"),
             "result": data.get("result"),
@@ -241,7 +255,7 @@ async def hunter_io_verify(email: str) -> Dict:
             "block": data.get("block"),
         }
     except Exception as e:
-        logger.debug(f"verifier failed for {email}: {e}")
+        logger.warning(f"verifier failed for {email}: {e}")
         return {}
 
 
@@ -406,23 +420,38 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
     logs.append(f"> [STEP 5] Verifier on {len(to_verify)} email(s) ({skipped} skipped — cross-validated)")
     verify_map = await verify_emails_bulk(to_verify, logs)
     for c in merged["contacts"]:
-        # mark cross-validated as verified automatically
-        if len(c.get("_sources") or set()) > 1:
+        sources = c.get("_sources") or set()
+        # Cross-validated (website + hunter) → highest trust
+        if len(sources) > 1:
             c["status"] = "verified"
+        # Website-only emails are inherently verified (published on official site = real)
+        elif c.get("source") == "website":
+            c["status"] = "verified"
+
         v = verify_map.get(c["email"])
-        if not v:
-            continue
-        result = (v.get("result") or "").lower()
-        if result == "deliverable":
-            c["status"] = "verified"
-        elif result == "undeliverable":
-            c["status"] = "invalid"
-        elif result == "risky":
-            c["status"] = "risky"
-        score = v.get("score")
-        if isinstance(score, (int, float)) and score:
-            c["confidence_score"] = max(c.get("confidence_score") or 0, int(score))
-        c["verifier"] = v
+        if v:
+            result = (v.get("result") or "").lower()
+            score = v.get("score") or 0
+            # Verifier wins for deliverability classification, EXCEPT:
+            # - Website source stays "verified" even if Hunter says risky/unknown (trust the site).
+            if result == "deliverable":
+                c["status"] = "verified"
+            elif result == "undeliverable":
+                c["status"] = "invalid"
+            elif result == "risky" and c.get("source") != "website":
+                c["status"] = "risky"
+            elif result == "unknown" and c.get("source") != "website":
+                # Use Hunter's numeric score as a tie-breaker so alias emails still get a real status
+                if isinstance(score, (int, float)) and score >= 70:
+                    c["status"] = "verified"
+                elif isinstance(score, (int, float)) and score >= 30:
+                    c["status"] = "risky"
+                else:
+                    c["status"] = "invalid"
+            # Always lift the displayed confidence to the Hunter score when present
+            if isinstance(score, (int, float)) and score:
+                c["confidence_score"] = max(c.get("confidence_score") or 0, int(score))
+            c["verifier"] = v
     # Convert _sources set → list so the contact serializes to JSON / MongoDB cleanly
     for c in merged["contacts"]:
         c["sources_list"] = sorted(list(c.pop("_sources", set())))
