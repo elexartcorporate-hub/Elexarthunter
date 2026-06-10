@@ -2865,7 +2865,7 @@ def _email_view(c: dict) -> dict:
     elif engine_status == "LIKELY_VALID":
         bits.append("Status: LIKELY_VALID — alias + SMTP 250 (bukan catch-all)")
     elif engine_status == "ACCEPT_ALL":
-        bits.append("Status: ACCEPT_ALL ⚠ — domain catch-all, tidak bisa pastikan user")
+        bits.append("Status: ACCEPT_ALL ⚠ — SMTP terima email (sendable), tapi domain catch-all sehingga tidak bisa pastikan user spesifik ada")
     elif engine_status == "INVALID":
         bits.append("Status: INVALID ✗ — SMTP reject / domain tidak ada")
     elif engine_status == "UNKNOWN":

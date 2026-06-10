@@ -445,11 +445,14 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
 
         v = verify_map.get(c["email"])
         if v:
-            # Map new engine status → legacy UI status so existing badges keep working
+            # Map new engine status → legacy UI status so existing badges keep working.
+            # IMPORTANT: ACCEPT_ALL means SMTP accepted the email (250) — it IS sendable.
+            # The catch-all caveat is communicated via the description text + lower score,
+            # not by blocking the send. Aliases on catch-all domains stay GREEN/verified.
             status_map = {
                 "VALID":        "verified",
                 "LIKELY_VALID": "verified",
-                "ACCEPT_ALL":   "risky",
+                "ACCEPT_ALL":   "verified",   # ← sendable, just lower confidence
                 "INVALID":      "invalid",
                 "UNKNOWN":      "unverified",
             }
