@@ -71,7 +71,11 @@ export default function Prospects() {
     catch (err) { /* ignore */ }
   };
 
-  const emailTabUnlocked = activeTask && (activeTask.prospect_count >= activeTask.target);
+  // Tab "3 · Email" hanya terbuka kalau task masih actionable (draft/ready) DAN sudah hit target.
+  // Task yang sudah scheduled/sending/completed dianggap selesai — user lihat status di Analitik.
+  const emailTabUnlocked = !!activeTask
+    && (activeTask.status === "draft" || activeTask.status === "ready")
+    && (activeTask.prospect_count >= activeTask.target);
 
   return (
     <div className="p-6 md:p-8 fade-up max-w-[1600px] mx-auto">
@@ -1395,6 +1399,35 @@ function EmailStep({ task, onSubmitted }) {
 
   return (
     <div className="space-y-5">
+      {/* If the task has been submitted (scheduled / sending / sent / completed) → show a
+          clean read-only confirmation. No form, no buttons. User is nudged to Analitik. */}
+      {task.status && !["draft", "ready"].includes(task.status) ? (
+        <Card className="p-6 bg-gradient-to-br from-emerald-50 to-teal-50 border-emerald-200" data-testid="task-submitted-confirmation">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white grid place-items-center shrink-0">
+              <CheckCircle size={28} weight="fill" />
+            </div>
+            <div className="flex-1">
+              <div className="text-[10px] uppercase tracking-widest text-emerald-700 font-semibold">
+                {task.status === "scheduled" ? "Email Telah Dijadwalkan" : task.status === "completed" ? "Email Telah Terkirim" : "Email Sedang Diproses"}
+              </div>
+              <div className="font-display text-lg font-semibold text-slate-900 mt-0.5">{task.name}</div>
+              <div className="text-sm text-slate-600 mt-1">
+                {task.prospect_count} prospect · target {task.target} · tanggal {task.date}
+              </div>
+              {task.status === "scheduled" && task.scheduled_send_at && (
+                <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-emerald-200 text-xs text-emerald-700 font-medium">
+                  <Clock size={14} weight="bold" /> Akan terkirim: {new Date(task.scheduled_send_at).toLocaleString()}
+                </div>
+              )}
+              <div className="text-xs text-slate-500 mt-4">
+                Tugas tanggal ini sudah selesai. Cek progress di tab <b className="text-slate-700">4 · Analitik</b> untuk status pengiriman (queued / delivered / opened / replied).
+              </div>
+            </div>
+          </div>
+        </Card>
+      ) : (
+      <>
       <Card className="p-4 bg-emerald-50 border-emerald-200">
         <div className="flex items-center gap-3">
           <CheckCircle size={20} weight="fill" className="text-emerald-600" />
@@ -1537,6 +1570,8 @@ function EmailStep({ task, onSubmitted }) {
           </div>
         </Card>
       </div>
+      </>
+      )}
     </div>
   );
 }

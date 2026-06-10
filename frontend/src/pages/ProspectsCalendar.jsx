@@ -234,10 +234,14 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
               <div className="space-y-1.5">
                 {tasks.map((t) => {
                   const isCompleted = t.status === "completed";
+                  // A task is "actionable" only while still draft/ready. Once it's submitted
+                  // (sending/scheduled/sent/completed/...), hide the continue/edit links and
+                  // show a clean status badge — user is nudged to Analitik for tracking.
+                  const isActionable = t.status === "draft" || t.status === "ready";
                   const handleContinue = (e) => {
                     e?.stopPropagation();
-                    if (isCompleted) {
-                      toast.info("Tugas sudah selesai");
+                    if (!isActionable) {
+                      toast.info(t.status === "scheduled" ? "Tugas sudah dijadwalkan — cek Analitik" : "Tugas sudah disubmit");
                       return;
                     }
                     if (onTaskContinue) onTaskContinue(t);
@@ -266,15 +270,16 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           <Badge tone={isCompleted ? "success" : t.status === "scheduled" ? "purple" : t.status === "draft" ? "neutral" : "info"}>{t.status}</Badge>
-                          <button
-                            onClick={handleContinue}
-                            disabled={isCompleted}
-                            title={isCompleted ? "Tugas selesai" : "Lanjut kerja tugas ini"}
-                            className="p-1.5 rounded-md text-indigo-600 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                            data-testid={`task-edit-${t.id}`}
-                          >
-                            <PencilSimple size={14} weight="bold" />
-                          </button>
+                          {isActionable && (
+                            <button
+                              onClick={handleContinue}
+                              title="Lanjut kerja tugas ini"
+                              className="p-1.5 rounded-md text-indigo-600 hover:bg-indigo-100 transition-colors"
+                              data-testid={`task-edit-${t.id}`}
+                            >
+                              <PencilSimple size={14} weight="bold" />
+                            </button>
+                          )}
                           <button
                             onClick={handleDelete}
                             title="Hapus tugas"
@@ -285,7 +290,7 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
                           </button>
                         </div>
                       </div>
-                      {!isCompleted && (
+                      {isActionable && (
                         <button
                           onClick={handleContinue}
                           className="mt-2 w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-medium transition-colors"
@@ -293,6 +298,11 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
                         >
                           {t.prospect_count >= t.target ? "Lanjut ke Email" : "Lanjut tambah prospect"} <ArrowRight size={12} weight="bold" />
                         </button>
+                      )}
+                      {!isActionable && t.status === "scheduled" && t.scheduled_send_at && (
+                        <div className="mt-2 px-2 py-1.5 rounded-md bg-purple-50 border border-purple-200 text-[11px] text-purple-700 text-center">
+                          ⏱ Akan terkirim: {new Date(t.scheduled_send_at).toLocaleString()}
+                        </div>
                       )}
                     </div>
                   );
