@@ -341,7 +341,12 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
     }
   };
 
-  const isUnlocked = !quota?.locked;
+  // Email Outreach is gated by the ACTIVE TASK's domain target (1 prospect = 1 domain),
+  // NOT the global daily quota — emails per domain are unlimited.
+  // Fallback to daily quota only when no active task is set.
+  const isUnlocked = activeTask
+    ? (activeTask.prospect_count >= activeTask.target)
+    : !quota?.locked;
 
   return (
     <div className="space-y-5">
@@ -386,7 +391,10 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
           </div>
         </Card>
       )}
-      <QuotaHero quota={quota} justHit={justHit} />
+      {/* QuotaHero shows the GLOBAL daily progress. When there's an active task,
+          the "Tugas Aktif" card above already shows the task-scoped progress, so we hide
+          this one to avoid two conflicting counters (e.g. task 0/2 vs daily 2/2). */}
+      {!activeTask && <QuotaHero quota={quota} justHit={justHit} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* LEFT — search + result */}
@@ -394,20 +402,18 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
           <Card className="p-5">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-medium text-slate-700">Search a domain for emails</div>
-              {quota?.daily_target > 0 && quota?.is_working_day && (
+              {/* Hide the CTA entirely when there's an active task that's not yet complete —
+                  the user must finish the task target first. Falls back to the daily-quota
+                  gate when no active task is set. */}
+              {isUnlocked && (
                 <button
-                  onClick={() => isUnlocked && setShowOutreach(true)}
-                  disabled={!isUnlocked}
+                  onClick={() => setShowOutreach(true)}
                   data-testid="email-outreach-cta"
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    isUnlocked
-                      ? "bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
-                      : "bg-slate-100 text-slate-400 cursor-not-allowed"
-                  }`}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
                 >
-                  {isUnlocked ? <LockOpen size={12} weight="bold" /> : <Lock size={12} weight="bold" />}
+                  <LockOpen size={12} weight="bold" />
                   Email Outreach
-                  {isUnlocked && <ArrowRight size={12} weight="bold" />}
+                  <ArrowRight size={12} weight="bold" />
                 </button>
               )}
             </div>
@@ -590,7 +596,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                 })}
               </div>
             )}
-            {todayList.length > 0 && quota && !quota.locked && quota.daily_target > 0 && (
+            {todayList.length > 0 && isUnlocked && (
               <button
                 onClick={() => setShowOutreach(true)}
                 data-testid="open-outreach-btn"
