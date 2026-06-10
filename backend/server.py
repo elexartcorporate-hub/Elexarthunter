@@ -1812,10 +1812,26 @@ async def _quota_state(user: dict) -> dict:
 
     target = (await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1})).get("daily_target") or 0
     tomorrow = today + timedelta(days=1)
-    prospects_today = await db.prospects.count_documents({
+
+    # Exclude prospects that already belong to a SUBMITTED task today — they were "spent"
+    # on a previous outreach cycle and shouldn't count toward the next task's quota.
+    # Active tasks (draft/ready) still count so the in-progress task can hit its target.
+    submitted_today = await db.outreach_tasks.find({
+        "tenant_id": user["tenant_id"], "user_id": user["id"],
+        "status": {"$nin": ["draft", "ready"]},
+        "date": today_str,
+    }, {"_id": 0, "prospect_ids": 1}).to_list(1000)
+    spent_pids: List[str] = []
+    for t_ in submitted_today:
+        spent_pids.extend(t_.get("prospect_ids") or [])
+
+    q_today = {
         "tenant_id": user["tenant_id"], "assigned_user_id": user["id"],
         "created_at": {"$gte": today.isoformat(), "$lt": tomorrow.isoformat()},
-    })
+    }
+    if spent_pids:
+        q_today["id"] = {"$nin": spent_pids}
+    prospects_today = await db.prospects.count_documents(q_today)
     # Determine lock: only locked when working day + target > 0 AND haven't met target
     locked = bool(is_working_day and target > 0 and prospects_today < target)
     remaining = max(0, target - prospects_today) if is_working_day else 0
@@ -1870,11 +1886,27 @@ async def get_quota(user: dict = Depends(get_current_user)):
 async def list_today_prospects(user: dict = Depends(get_current_user)):
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
-    rows = await db.prospects.find({
+    today_str = today.strftime("%Y-%m-%d")
+
+    # Exclude prospects already locked into a submitted task today — they were "spent"
+    # on a previous outreach cycle.
+    submitted = await db.outreach_tasks.find({
+        "tenant_id": user["tenant_id"], "user_id": user["id"],
+        "status": {"$nin": ["draft", "ready"]},
+        "date": today_str,
+    }, {"_id": 0, "prospect_ids": 1}).to_list(1000)
+    spent_pids: List[str] = []
+    for t_ in submitted:
+        spent_pids.extend(t_.get("prospect_ids") or [])
+
+    q = {
         "tenant_id": user["tenant_id"],
         "assigned_user_id": user["id"],
         "created_at": {"$gte": today.isoformat(), "$lt": tomorrow.isoformat()},
-    }, {"_id": 0}).sort("created_at", -1).to_list(500)
+    }
+    if spent_pids:
+        q["id"] = {"$nin": spent_pids}
+    rows = await db.prospects.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
     return rows
 
 
