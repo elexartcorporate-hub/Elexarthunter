@@ -918,6 +918,22 @@ function EmailPickerModal({ emails, company, domain, nextMode, initialCategoryId
                           {e.description}
                         </div>
                       )}
+                      {/* Verifier checks breakdown — proves engine ran SMTP/MX/catch-all */}
+                      {e.verifier && (e.verifier.smtp_code != null || e.verifier.mx_found != null) && (
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap text-[10px]">
+                          <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded ${e.verifier.mx_found ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-600"}`}>
+                            {e.verifier.mx_found ? "✓" : "✗"} MX{e.verifier.provider ? ` · ${e.verifier.provider}` : ""}
+                          </span>
+                          <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded ${e.verifier.smtp_code === 250 ? "bg-emerald-50 text-emerald-700" : e.verifier.smtp_code == null ? "bg-slate-100 text-slate-500" : "bg-rose-50 text-rose-600"}`}>
+                            {e.verifier.smtp_code === 250 ? "✓" : e.verifier.smtp_code == null ? "?" : "✗"} SMTP {e.verifier.smtp_code ?? "no-resp"}
+                          </span>
+                          {e.verifier.catch_all != null && (
+                            <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded ${e.verifier.catch_all ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}`}>
+                              {e.verifier.catch_all ? "⚠ catch-all" : "✓ unique"}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={() => { setPrimary(e.email); if (!isChecked) toggle(e.email); }}
