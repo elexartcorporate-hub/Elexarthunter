@@ -278,7 +278,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
       const { data } = await api.post("/prospects/discover", {
         domain: domain.trim(),
         category_id: searchCategoryId,
-        force_refresh: forceRefresh,
+        force_refresh: forceRefresh === true,
       });
       setResult(data);
       toast.success(`Found ${data.emails.length} email(s) on ${data.domain}${forceRefresh ? " (fresh)" : ""}`);
@@ -468,7 +468,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                   data-testid="discover-domain-input"
                 />
               </div>
-              <PrimaryButton onClick={search} disabled={loading || !searchCategoryId} data-testid="discover-search-btn">
+              <PrimaryButton onClick={() => search()} disabled={loading || !searchCategoryId} data-testid="discover-search-btn">
                 {loading ? <><Spinner size={14} weight="bold" className="animate-spin" /> Searching...</>
                          : <><Crosshair size={14} weight="bold" /> Search Emails</>}
               </PrimaryButton>
