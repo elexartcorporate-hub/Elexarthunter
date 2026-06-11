@@ -2973,6 +2973,8 @@ def _email_view(c: dict) -> dict:
         bits.append("Cross-validated: ditemukan di Website crawl DAN Hunter.io (paling tepercaya)")
     elif c.get("source") == "website":
         bits.append("Ditemukan langsung di website — dianggap verified")
+    elif c.get("source") == "website_external":
+        bits.append("Ditemukan di website tapi domain berbeda (sibling brand / sub-domain group) — masih dianggap kontak resmi")
     elif c.get("source") == "hunter":
         bits.append("Dari Hunter.io domain-search (alias verifier internal dijalankan)")
     elif c.get("source") == "alias":

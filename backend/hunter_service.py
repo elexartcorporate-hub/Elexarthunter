@@ -83,9 +83,27 @@ def _extract_from_html(html: str, domain: str) -> Dict:
         href = a.get("href", "").replace("mailto:", "").split("?")[0].strip()
         if href:
             raw_emails.add(href)
-    emails = [e.lower() for e in raw_emails if domain in e.lower().split("@")[-1]]
-    # Also include emails matching exact root domain
-    emails = list(set(emails))
+
+    # Categorise emails: domain-match (primary) vs external (still found on the site
+    # but using a sibling/sub-brand domain — e.g. pactoltd.com publishes info@pactodmc.com).
+    # External emails are kept and exposed separately so we don't silently discard real
+    # contacts just because the brand uses multiple domains.
+    primary_emails: List[str] = []
+    external_emails: List[str] = []
+    for e in raw_emails:
+        e_lower = e.lower()
+        email_domain = e_lower.split("@")[-1] if "@" in e_lower else ""
+        if not email_domain:
+            continue
+        # Skip obvious noise (image hashes, sentry IDs, etc.)
+        if email_domain.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+            continue
+        if domain in email_domain:
+            primary_emails.append(e_lower)
+        else:
+            external_emails.append(e_lower)
+    emails = list(set(primary_emails))
+    externals = list(set(external_emails))
 
     # Phones - very loose
     phones = list({p.strip() for p in PHONE_RE.findall(text) if len(re.sub(r"\D", "", p)) >= 8})[:5]
@@ -112,6 +130,7 @@ def _extract_from_html(html: str, domain: str) -> Dict:
     return {
         "company_name": company_name,
         "emails": emails,
+        "external_emails": externals,
         "phones": phones,
         "whatsapps": whatsapps,
         "socials": socials,
@@ -125,6 +144,7 @@ async def playwright_deep_crawl(domain: str, logs: list) -> Dict:
     aggregated = {
         "company_name": None,
         "emails": set(),
+        "external_emails": set(),
         "phones": set(),
         "whatsapps": set(),
         "socials": {},
@@ -148,17 +168,19 @@ async def playwright_deep_crawl(domain: str, logs: list) -> Dict:
         if data["company_name"] and not aggregated["company_name"]:
             aggregated["company_name"] = data["company_name"]
         aggregated["emails"].update(data["emails"])
+        aggregated["external_emails"].update(data.get("external_emails") or [])
         aggregated["phones"].update(data["phones"])
         aggregated["whatsapps"].update(data["whatsapps"])
         for k, v in data["socials"].items():
             aggregated["socials"].setdefault(k, v)
-        logs.append(f"  > {url} [OK] emails={len(data['emails'])}")
+        logs.append(f"  > {url} [OK] emails={len(data['emails'])} external={len(data.get('external_emails') or [])}")
 
     logs.append(f"  > Crawl complete. Scanned {pages_scanned} pages.")
 
     return {
         "company_name": aggregated["company_name"] or domain.split(".")[0].capitalize(),
         "emails": sorted(aggregated["emails"]),
+        "external_emails": sorted(aggregated["external_emails"]),
         "phones": sorted(aggregated["phones"]),
         "whatsapps": sorted(aggregated["whatsapps"]),
         "socials": aggregated["socials"],
@@ -322,6 +344,26 @@ def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list, aliases
                 "status": "unverified",
             }
 
+    # From website crawl — EXTERNAL emails (different domain, but published on this site)
+    # e.g. pactoltd.com lists info@pactodmc.com on its contact page — clearly a real contact
+    # belonging to a sibling brand. Treat as "website_external" with strong confidence.
+    for em in crawl_result.get("external_emails", []):
+        key = em.lower()
+        if key in contacts_map:
+            continue
+        local = key.split("@")[0]
+        is_generic = local in GENERIC_EMAIL_PREFIXES
+        contacts_map[key] = {
+            "email": key,
+            "name": None,
+            "job_title": None,
+            "department": local if is_generic else None,
+            "source": "website_external",   # found on site, but uses sibling/sub-brand domain
+            "_sources": {"website_external"},
+            "confidence_score": 90,         # high — explicitly published on the official site
+            "status": "verified",
+        }
+
     # From hunter
     for em in hunter_result.get("emails", []):
         key = em["value"].lower()
@@ -440,7 +482,7 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
         if len(sources) > 1:
             c["status"] = "verified"
         # Website-only emails are inherently verified (published on official site = real)
-        elif c.get("source") == "website":
+        elif c.get("source") in ("website", "website_external"):
             c["status"] = "verified"
 
         v = verify_map.get(c["email"])
@@ -459,7 +501,7 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
             elif engine_status == "LIKELY_VALID":
                 new_status = "verified"
             elif engine_status == "ACCEPT_ALL":
-                new_status = "verified" if source in ("website", "hunter") else "unverified"
+                new_status = "verified" if source in ("website", "website_external", "hunter") else "unverified"
             elif engine_status == "INVALID":
                 new_status = "invalid"
             else:  # UNKNOWN or missing
