@@ -746,23 +746,37 @@ function EmailPickerModal({ emails: initialEmails, company, domain, nextMode, in
     setProbing((p) => ({ ...p, [email]: true }));
     try {
       const { data } = await api.post("/email-verifier/probe", { email });
+      const eng = data.status; // VALID | LIKELY_VALID | ACCEPT_ALL | INVALID | UNKNOWN
+      const newUiStatus = data.ui_status || "unverified";
+      const tested = {
+        at: new Date().toISOString(),
+        status: eng,
+        ui_status: newUiStatus,
+        recommendation: data.recommendation,
+        score: data.score || 0,
+      };
       // Merge probe result into the email object in-place
       setEmails((prev) => prev.map((e) =>
         e.email === email
           ? {
               ...e,
-              status: data.ui_status || e.status,
+              status: newUiStatus,
               confidence: Math.max(e.confidence || 0, data.score || 0),
               verifier: { ...(e.verifier || {}), ...data },
-              description: `🧪 Re-checked: ${data.recommendation}`,
+              _tested: tested,
             }
           : e
       ));
-      const tone = data.status === "VALID" || data.status === "LIKELY_VALID" ? "success"
-                 : data.status === "INVALID" ? "error" : "info";
-      toast[tone === "error" ? "error" : tone === "success" ? "success" : "info"](
-        `${email}: ${data.status} — ${data.recommendation}`
-      );
+      // Visible feedback toast — long enough to read
+      if (eng === "VALID" || eng === "LIKELY_VALID") {
+        toast.success(`✓ ${email} — VERIFIED (${eng}). Aman dikirim.`);
+      } else if (eng === "INVALID") {
+        toast.error(`✗ ${email} — INVALID. JANGAN kirim.`);
+      } else if (eng === "ACCEPT_ALL") {
+        toast.info(`⚠ ${email} — ACCEPT_ALL (catch-all). SMTP terima, tapi user spesifik tidak terbukti.`);
+      } else {
+        toast.info(`? ${email} — UNKNOWN. SMTP tidak respon.`);
+      }
     } catch (err) {
       toast.error(formatApiError(err));
     } finally {
@@ -964,6 +978,41 @@ function EmailPickerModal({ emails: initialEmails, company, domain, nextMode, in
                           )}
                         </div>
                       )}
+
+                      {/* Test result banner — appears after user clicks 🧪 Test */}
+                      {e._tested && (() => {
+                        const t = e._tested;
+                        const isOk = t.status === "VALID" || t.status === "LIKELY_VALID";
+                        const isFail = t.status === "INVALID";
+                        const tone = isOk ? "emerald" : isFail ? "rose" : t.status === "ACCEPT_ALL" ? "amber" : "slate";
+                        const icon = isOk ? "✓" : isFail ? "✗" : t.status === "ACCEPT_ALL" ? "⚠" : "?";
+                        const label = isOk ? "VERIFIED — Aman dikirim" : isFail ? "INVALID — JANGAN kirim" : `${t.status} — Sendable, tapi belum 100% terbukti`;
+                        const timeStr = new Date(t.at).toLocaleTimeString();
+                        return (
+                          <div
+                            data-testid={`probe-result-${e.email}`}
+                            className={`mt-2 rounded-lg border p-2.5 text-xs flex items-start gap-2 bg-${tone}-50 border-${tone}-200 text-${tone}-900`}
+                            style={{
+                              backgroundColor: isOk ? "#ecfdf5" : isFail ? "#fef2f2" : t.status === "ACCEPT_ALL" ? "#fffbeb" : "#f8fafc",
+                              borderColor: isOk ? "#a7f3d0" : isFail ? "#fecaca" : t.status === "ACCEPT_ALL" ? "#fde68a" : "#e2e8f0",
+                            }}
+                          >
+                            <div className="text-base leading-none mt-0.5">{icon}</div>
+                            <div className="flex-1">
+                              <div className="font-semibold flex items-center gap-1.5 flex-wrap">
+                                Re-checked: {label}
+                                <span className="text-[10px] font-normal opacity-70">@ {timeStr}</span>
+                              </div>
+                              <div className="text-[11px] mt-0.5 opacity-90">
+                                {t.recommendation}
+                              </div>
+                              <div className="text-[10px] mt-1 opacity-70">
+                                Status baru: <b>{t.ui_status}</b> · score <b>{t.score}</b>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                     <button
                       onClick={() => { setPrimary(e.email); if (!isChecked) toggle(e.email); }}
