@@ -2063,6 +2063,135 @@ async def prospects_calendar_day(date: str, user: dict = Depends(get_current_use
     }
 
 
+@api.get("/prospects/calendar/pipeline/{date}")
+async def prospects_calendar_pipeline(date: str, user: dict = Depends(get_current_user)):
+    """Pipeline for a single day grouped by Sub-Company → Sales user.
+
+    Each company card shows the users assigned to that company who did outreach work on
+    `date`, with their stats (prospects collected, emails sent / scheduled / delivered).
+
+    RBAC:
+      - Owner / Admin       → see ALL companies + ALL users in the tenant
+      - Sub-Company Manager → see ONLY their assigned sub_companies + users in them
+      - Staff               → see ONLY themselves
+    """
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+    nxt = dt + timedelta(days=1)
+
+    # 1) Resolve which users this caller can see (RBAC)
+    role = user.get("role")
+    if role in ("Owner", "Admin"):
+        users_q = {"tenant_id": user["tenant_id"]}
+    elif role == "Manager":
+        my_subs = user.get("sub_company_ids") or []
+        users_q = {"tenant_id": user["tenant_id"], "sub_company_ids": {"$in": my_subs}} if my_subs else {"id": user["id"]}
+    else:  # Staff or anything else
+        users_q = {"id": user["id"]}
+
+    visible_users = await db.users.find(users_q, {"_id": 0, "id": 1, "name": 1, "email": 1, "sub_company_ids": 1, "role": 1}).to_list(500)
+    user_ids = [u["id"] for u in visible_users]
+
+    # 2) Sub-companies in tenant (always loaded so we can group)
+    sub_companies = await db.sub_companies.find(
+        {"tenant_id": user["tenant_id"]},
+        {"_id": 0, "id": 1, "name": 1, "color": 1},
+    ).to_list(500)
+    sub_map = {sc["id"]: sc for sc in sub_companies}
+
+    # 3) For each visible user, gather their stats on this date
+    # Prospects attached to a task with date == date OR loose prospects created on date
+    user_stats: Dict[str, dict] = {uid: {"prospects": 0, "sent": 0, "scheduled": 0, "delivered": 0, "replied": 0, "domains": set()} for uid in user_ids}
+
+    tasks_today = await db.outreach_tasks.find(
+        {"tenant_id": user["tenant_id"], "user_id": {"$in": user_ids}, "date": date},
+        {"_id": 0, "user_id": 1, "prospect_ids": 1, "status": 1},
+    ).to_list(500)
+    task_pid_owner: Dict[str, str] = {}  # prospect_id → user_id
+    for t in tasks_today:
+        for pid in (t.get("prospect_ids") or []):
+            task_pid_owner[pid] = t["user_id"]
+    if task_pid_owner:
+        task_prospects = await db.prospects.find(
+            {"id": {"$in": list(task_pid_owner.keys())}},
+            {"_id": 0, "id": 1, "domain": 1, "email_count": 1},
+        ).to_list(1000)
+        for p in task_prospects:
+            uid = task_pid_owner[p["id"]]
+            if uid in user_stats:
+                user_stats[uid]["prospects"] += 1
+                if p.get("domain"):
+                    user_stats[uid]["domains"].add(p["domain"])
+
+    # Email activity on the date
+    sends = await db.email_sends.find({
+        "tenant_id": user["tenant_id"],
+        "sender_user_id": {"$in": user_ids},
+        "$or": [
+            {"created_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()}},
+            {"scheduled_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()}},
+            {"sent_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()}},
+        ],
+    }, {"_id": 0, "sender_user_id": 1, "status": 1}).to_list(5000)
+    for s in sends:
+        uid = s.get("sender_user_id")
+        if uid not in user_stats:
+            continue
+        st = s.get("status")
+        if st == "scheduled":
+            user_stats[uid]["scheduled"] += 1
+        elif st in ("queued", "sending", "sent"):
+            user_stats[uid]["sent"] += 1
+        elif st in ("delivered", "opened", "clicked"):
+            user_stats[uid]["delivered"] += 1
+        elif st == "replied":
+            user_stats[uid]["replied"] += 1
+
+    # 4) Group users by sub-company. A user can belong to multiple sub_companies → appear
+    # in each. Users without any sub_company go into "Unassigned".
+    by_company: Dict[str, dict] = {}
+    for u in visible_users:
+        sub_ids = u.get("sub_company_ids") or []
+        keys = sub_ids if sub_ids else ["__unassigned__"]
+        st = user_stats.get(u["id"], {})
+        user_card = {
+            "id": u["id"],
+            "name": u.get("name") or u.get("email"),
+            "email": u.get("email"),
+            "role": u.get("role"),
+            "prospects": st.get("prospects", 0),
+            "domains": sorted(list(st.get("domains", set()))),
+            "sent": st.get("sent", 0),
+            "scheduled": st.get("scheduled", 0),
+            "delivered": st.get("delivered", 0),
+            "replied": st.get("replied", 0),
+        }
+        for key in keys:
+            sc = sub_map.get(key)
+            grp = by_company.setdefault(key, {
+                "id": key,
+                "name": sc["name"] if sc else "Unassigned",
+                "color": (sc or {}).get("color") or "#64748b",
+                "users": [],
+                "total_prospects": 0,
+                "total_sent": 0,
+                "total_scheduled": 0,
+            })
+            grp["users"].append(user_card)
+            grp["total_prospects"] += user_card["prospects"]
+            grp["total_sent"] += user_card["sent"]
+            grp["total_scheduled"] += user_card["scheduled"]
+
+    # Sort: companies by total_prospects desc, users within by prospects desc
+    companies = sorted(by_company.values(), key=lambda c: c["total_prospects"], reverse=True)
+    for c in companies:
+        c["users"].sort(key=lambda u: u["prospects"], reverse=True)
+
+    return {"date": date, "companies": companies}
+
+
 @api.post("/scheduled-emails/{send_id}/cancel")
 async def cancel_scheduled_email(send_id: str, user: dict = Depends(get_current_user)):
     res = await db.email_sends.update_one(
