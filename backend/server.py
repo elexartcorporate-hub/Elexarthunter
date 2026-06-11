@@ -3938,17 +3938,20 @@ async def _scheduler_loop():
                 )
                 if claim.modified_count == 0:
                     continue  # already claimed by previous tick
-                # Resolve SMTP per send
+                # Resolve SMTP per send — use the SAME helper that send-now uses so we
+                # honour the user → sub_company → tenant fallback chain correctly.
+                # Without this, scheduled emails for users with smtp_use_company=true
+                # fail with "SMTP not configured at send-time" even though send-now works.
                 tenant = await db.tenants.find_one({"id": s["tenant_id"]}) or {}
                 sender = await db.users.find_one({"id": s["sender_user_id"]})
-                smtp_src = None
-                if s.get("sub_company_id"):
-                    sc = await db.sub_companies.find_one({"id": s["sub_company_id"], "tenant_id": s["tenant_id"]})
-                    if sc and sc.get("smtp_host"): smtp_src = sc
-                if smtp_src is None and sender and sender.get("smtp_use_company") is False and sender.get("smtp_host"):
-                    smtp_src = sender
-                if smtp_src is None and tenant.get("smtp_host"):
-                    smtp_src = tenant
+                if not sender:
+                    await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": "Sender user not found at send-time"}})
+                    continue
+                try:
+                    smtp_src = await _resolve_smtp(s["tenant_id"], sender, s.get("sub_company_id"))
+                except Exception as ex:
+                    smtp_src = None
+                    logger.warning(f"scheduler _resolve_smtp failed for {s['id']}: {ex}")
                 if not smtp_src:
                     await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": "SMTP not configured at send-time"}})
                     continue
