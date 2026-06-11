@@ -3889,12 +3889,21 @@ async def _scheduler_loop():
     while _scheduler_state["running"]:
         try:
             now = now_iso()
-            # Find due scheduled emails
+            # Find due scheduled emails — pick ONE at a time so we can throttle properly
+            # between sends (most SMTP relays rate-limit to 1 email/sec or 1/minute).
+            # Without this, all due emails would fire simultaneously → relay rejects → bounce.
             due = await db.email_sends.find({
                 "status": "scheduled",
                 "scheduled_at": {"$lte": now},
-            }, {"_id": 0}).limit(50).to_list(50)
-            for s in due:
+            }, {"_id": 0}).sort("scheduled_at", 1).limit(50).to_list(50)
+            for idx, s in enumerate(due):
+                # Mark as 'sending' first to prevent another worker tick from picking it up
+                claim = await db.email_sends.update_one(
+                    {"id": s["id"], "status": "scheduled"},
+                    {"$set": {"status": "sending"}},
+                )
+                if claim.modified_count == 0:
+                    continue  # already claimed by previous tick
                 # Resolve SMTP per send
                 tenant = await db.tenants.find_one({"id": s["tenant_id"]}) or {}
                 sender = await db.users.find_one({"id": s["sender_user_id"]})
@@ -3934,6 +3943,10 @@ async def _scheduler_loop():
                                                        {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
                 else:
                     await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+                # Throttle 3 minutes between sends to dodge SMTP relay rate-limits
+                # (matches the immediate-send runner). Skip sleep after the last one.
+                if idx < len(due) - 1:
+                    await asyncio.sleep(180)
         except Exception as ex:
             logger.error("scheduler error: %s", ex)
         await asyncio.sleep(60)

@@ -156,7 +156,14 @@ export default function EmailActivity() {
                   <td className="p-3 text-xs text-slate-700 max-w-xs truncate">{s.subject}</td>
                   <td className="p-3 text-xs text-slate-700">{s.prospect_name || "—"}</td>
                   <td className="p-3 text-xs text-slate-500">{s.sender_name || "—"}</td>
-                  <td className="p-3"><Badge tone={TONE[s.status] || "neutral"}>{s.status}</Badge></td>
+                  <td className="p-3">
+                    <Badge tone={TONE[s.status] || "neutral"}>{s.status}</Badge>
+                    {s.status === "bounce" && s.error && (
+                      <div className="text-[10px] text-rose-600 mt-1 max-w-xs leading-tight" title={s.error}>
+                        ⚠ {String(s.error).slice(0, 80)}{s.error.length > 80 ? "..." : ""}
+                      </div>
+                    )}
+                  </td>
                   <td className="p-3 text-xs">{s.opens > 0 ? <Badge tone="info">{s.opens}</Badge> : <span className="text-slate-400">0</span>}</td>
                   <td className="p-3 text-xs">{s.clicks > 0 ? <Badge tone="purple">{s.clicks}</Badge> : <span className="text-slate-400">0</span>}</td>
                   <td className="p-3 text-right">
