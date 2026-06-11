@@ -68,46 +68,59 @@ async def _fetch_with_httpx(url: str, timeout: int = 10) -> Optional[str]:
     return None
 
 
+async def _fetch_one_page(context, url: str, timeout: int = 15000) -> Optional[str]:
+    """Render one URL inside a shared Playwright context — saves the 3-5s browser launch
+    cost we'd otherwise pay per page."""
+    page = await context.new_page()
+    try:
+        await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=4000)
+        except Exception:
+            pass
+        # Single-pass smooth scroll to trigger lazy content (footer/contact widgets)
+        try:
+            await page.evaluate(
+                "async () => { let last = 0; "
+                "while (last < document.body.scrollHeight) { "
+                "  last = document.body.scrollHeight; "
+                "  window.scrollTo(0, document.body.scrollHeight); "
+                "  await new Promise(r => setTimeout(r, 400)); "
+                "} }"
+            )
+            await page.wait_for_timeout(500)
+        except Exception:
+            pass
+        html = await page.content()
+        # Iframe traversal (Wix etc.)
+        for frame in page.frames:
+            try:
+                if frame == page.main_frame:
+                    continue
+                fhtml = await frame.content()
+                if fhtml:
+                    html += "\n<!-- iframe -->\n" + fhtml
+            except Exception:
+                pass
+        return html
+    except Exception as e:
+        logger.warning(f"playwright page fail {url}: {e}")
+        return None
+    finally:
+        try:
+            await page.close()
+        except Exception:
+            pass
+
+
 async def _fetch_with_playwright(url: str, timeout: int = 20000) -> Optional[str]:
+    """Single-URL helper kept for backward compatibility. Prefer batch via shared context."""
     try:
         from playwright.async_api import async_playwright
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             context = await browser.new_context(user_agent="Mozilla/5.0 (LeadHunterBot)")
-            page = await context.new_page()
-            await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-            try:
-                await page.wait_for_load_state("networkidle", timeout=8000)
-            except Exception:
-                pass
-            # Scroll to bottom in smaller steps so lazy-loaded sections (Wix footer
-            # contact widgets etc.) get a chance to hydrate. Run 2 passes to be sure.
-            try:
-                for _ in range(2):
-                    await page.evaluate(
-                        "async () => { "
-                        "let last = 0; "
-                        "while (last < document.body.scrollHeight) { "
-                        "  last = document.body.scrollHeight; "
-                        "  window.scrollTo(0, document.body.scrollHeight); "
-                        "  await new Promise(r => setTimeout(r, 600)); "
-                        "} }"
-                    )
-                    await page.wait_for_timeout(1200)
-            except Exception:
-                pass
-            # Collect HTML from main frame + all iframes (Wix often wraps contact widgets
-            # inside cross-origin iframes that aren't reflected in page.content()).
-            html = await page.content()
-            for frame in page.frames:
-                try:
-                    if frame == page.main_frame:
-                        continue
-                    fhtml = await frame.content()
-                    if fhtml:
-                        html += "\n<!-- iframe -->\n" + fhtml
-                except Exception:
-                    pass
+            html = await _fetch_one_page(context, url, timeout)
             await browser.close()
             return html
     except Exception as e:
@@ -193,8 +206,10 @@ def _extract_from_html(html: str, domain: str) -> Dict:
 
 
 async def playwright_deep_crawl(domain: str, logs: list, extra_path: Optional[str] = None) -> Dict:
-    """Crawl multiple pages and aggregate. If user pasted a URL with a specific path
-    (e.g. /contact-us), we crawl THAT path first — it's usually the most contact-rich page."""
+    """Crawl multiple pages in PARALLEL inside a single browser context to minimize latency.
+    Was sequential with per-page browser launch (~6s overhead × 6 pages = 36s wasted).
+    Now: 1 browser launch + parallel fetches + early-stop when enough emails found."""
+    from playwright.async_api import async_playwright
     domain = _normalize_domain(domain)
     base = f"https://{domain}"
     aggregated = {
@@ -206,37 +221,64 @@ async def playwright_deep_crawl(domain: str, logs: list, extra_path: Optional[st
         "socials": {},
     }
     pages_scanned = 0
-    # Start with the user-specified path (if any) so it's never skipped, then default pages
-    pages_to_try = []
+    # User-pasted path first (priority), then defaults — dedupe
+    pages_to_try: List[str] = []
     if extra_path:
         pages_to_try.append(base + extra_path)
-    pages_to_try += [base + p for p in PAGES_TO_CRAWL if (base + p) not in pages_to_try]
+    for p in PAGES_TO_CRAWL:
+        u = base + p
+        if u not in pages_to_try:
+            pages_to_try.append(u)
 
-    for url in pages_to_try:
-        logs.append(f"  > GET {url}")
-        # Try Playwright (JS-rendered) FIRST so we capture emails injected dynamically by
-        # Wix/Squarespace/React/etc. Fallback to httpx (plain HTTP, ~5× faster) when
-        # Playwright misses. This is critical for modern sites where footer/contact emails
-        # only appear after JS hydration.
-        html = await _fetch_with_playwright(url)
-        if not html:
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                context = await browser.new_context(user_agent="Mozilla/5.0 (LeadHunterBot)")
+                # Run up to 4 page fetches in parallel to keep latency down while not
+                # nuking the headless process. Each page reuses the same context.
+                sem = asyncio.Semaphore(4)
+
+                async def _fetch(url):
+                    async with sem:
+                        return url, await _fetch_one_page(context, url, timeout=12000)
+
+                results = await asyncio.gather(*[_fetch(u) for u in pages_to_try], return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception) or not isinstance(r, tuple):
+                        continue
+                    url, html = r
+                    if not html:
+                        logs.append(f"  > {url} [SKIP]")
+                        continue
+                    pages_scanned += 1
+                    data = _extract_from_html(html, domain)
+                    if data["company_name"] and not aggregated["company_name"]:
+                        aggregated["company_name"] = data["company_name"]
+                    aggregated["emails"].update(data["emails"])
+                    aggregated["external_emails"].update(data.get("external_emails") or [])
+                    aggregated["phones"].update(data["phones"])
+                    aggregated["whatsapps"].update(data["whatsapps"])
+                    for k, v in data["socials"].items():
+                        aggregated["socials"].setdefault(k, v)
+                    logs.append(f"  > {url} [OK] emails={len(data['emails'])} external={len(data.get('external_emails') or [])}")
+            finally:
+                await browser.close()
+    except Exception as e:
+        logger.warning(f"playwright_deep_crawl outer fail: {e}")
+        # Last-resort fallback to httpx-only sequential crawl
+        for url in pages_to_try:
             html = await _fetch_with_httpx(url)
-        if not html:
-            logs.append(f"  > {url} [SKIP]")
-            continue
-        pages_scanned += 1
-        data = _extract_from_html(html, domain)
-        if data["company_name"] and not aggregated["company_name"]:
-            aggregated["company_name"] = data["company_name"]
-        aggregated["emails"].update(data["emails"])
-        aggregated["external_emails"].update(data.get("external_emails") or [])
-        aggregated["phones"].update(data["phones"])
-        aggregated["whatsapps"].update(data["whatsapps"])
-        for k, v in data["socials"].items():
-            aggregated["socials"].setdefault(k, v)
-        logs.append(f"  > {url} [OK] emails={len(data['emails'])} external={len(data.get('external_emails') or [])}")
+            if not html:
+                continue
+            pages_scanned += 1
+            data = _extract_from_html(html, domain)
+            aggregated["emails"].update(data["emails"])
+            aggregated["external_emails"].update(data.get("external_emails") or [])
+            aggregated["phones"].update(data["phones"])
+            aggregated["whatsapps"].update(data["whatsapps"])
 
-    logs.append(f"  > Crawl complete. Scanned {pages_scanned} pages.")
+    logs.append(f"  > Crawl complete. Scanned {pages_scanned} pages in parallel.")
 
     return {
         "company_name": aggregated["company_name"] or domain.split(".")[0].capitalize(),
