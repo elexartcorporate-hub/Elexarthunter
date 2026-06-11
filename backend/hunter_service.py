@@ -68,7 +68,7 @@ async def _fetch_with_httpx(url: str, timeout: int = 10) -> Optional[str]:
     return None
 
 
-async def _fetch_with_playwright(url: str, timeout: int = 15000) -> Optional[str]:
+async def _fetch_with_playwright(url: str, timeout: int = 20000) -> Optional[str]:
     try:
         from playwright.async_api import async_playwright
         async with async_playwright() as p:
@@ -77,10 +77,37 @@ async def _fetch_with_playwright(url: str, timeout: int = 15000) -> Optional[str
             page = await context.new_page()
             await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
+                await page.wait_for_load_state("networkidle", timeout=8000)
             except Exception:
                 pass
+            # Scroll to bottom in smaller steps so lazy-loaded sections (Wix footer
+            # contact widgets etc.) get a chance to hydrate. Run 2 passes to be sure.
+            try:
+                for _ in range(2):
+                    await page.evaluate(
+                        "async () => { "
+                        "let last = 0; "
+                        "while (last < document.body.scrollHeight) { "
+                        "  last = document.body.scrollHeight; "
+                        "  window.scrollTo(0, document.body.scrollHeight); "
+                        "  await new Promise(r => setTimeout(r, 600)); "
+                        "} }"
+                    )
+                    await page.wait_for_timeout(1200)
+            except Exception:
+                pass
+            # Collect HTML from main frame + all iframes (Wix often wraps contact widgets
+            # inside cross-origin iframes that aren't reflected in page.content()).
             html = await page.content()
+            for frame in page.frames:
+                try:
+                    if frame == page.main_frame:
+                        continue
+                    fhtml = await frame.content()
+                    if fhtml:
+                        html += "\n<!-- iframe -->\n" + fhtml
+                except Exception:
+                    pass
             await browser.close()
             return html
     except Exception as e:
@@ -106,13 +133,25 @@ def _extract_from_html(html: str, domain: str) -> Dict:
     # contacts just because the brand uses multiple domains.
     primary_emails: List[str] = []
     external_emails: List[str] = []
+    NOISE_DOMAIN_SUFFIXES = (
+        ".wixpress.com", ".sentry.io", ".sentry-next.wixpress.com",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    )
+    VERSION_RE = re.compile(r"^\d+(\.\d+){1,3}$")  # 1.2.3 or 1.2.3.4
     for e in raw_emails:
         e_lower = e.lower()
-        email_domain = e_lower.split("@")[-1] if "@" in e_lower else ""
-        if not email_domain:
+        if "@" not in e_lower:
             continue
-        # Skip obvious noise (image hashes, sentry IDs, etc.)
-        if email_domain.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+        local, _, email_domain = e_lower.partition("@")
+        if not email_domain or not local:
+            continue
+        # Filter noise — JS bundles, sentry IDs, npm versions (e.g. react@18.3.1)
+        if VERSION_RE.match(email_domain):
+            continue
+        if any(email_domain.endswith(suf) for suf in NOISE_DOMAIN_SUFFIXES):
+            continue
+        # Hex-blob local-part 24+ chars without dot/dash → probably an asset hash
+        if len(local) >= 24 and re.fullmatch(r"[a-f0-9]+", local):
             continue
         if domain in email_domain:
             primary_emails.append(e_lower)
@@ -175,10 +214,11 @@ async def playwright_deep_crawl(domain: str, logs: list, extra_path: Optional[st
 
     for url in pages_to_try:
         logs.append(f"  > GET {url}")
-        # Prefer Playwright for the homepage (JS-rendered), httpx for the rest (faster)
-        html = None
-        if url == base or url == base + "/":
-            html = await _fetch_with_playwright(url)
+        # Try Playwright (JS-rendered) FIRST so we capture emails injected dynamically by
+        # Wix/Squarespace/React/etc. Fallback to httpx (plain HTTP, ~5× faster) when
+        # Playwright misses. This is critical for modern sites where footer/contact emails
+        # only appear after JS hydration.
+        html = await _fetch_with_playwright(url)
         if not html:
             html = await _fetch_with_httpx(url)
         if not html:
