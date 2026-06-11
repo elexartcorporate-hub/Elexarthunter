@@ -1242,7 +1242,7 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
                     />
                   </div>
                   <div className="col-span-2 text-[10px] text-purple-700">
-                    Email akan otomatis terkirim sesuai jadwal (worker scheduler memeriksa tiap menit). Sebelum waktunya, status “scheduled” di Analitik.
+                    Email akan otomatis terkirim sesuai jadwal · zona waktu <b>Asia/Makassar (WITA, UTC+8)</b> · worker scheduler poll tiap 60 detik · throttle 180 detik antar pengiriman.
                   </div>
                 </div>
               )}

@@ -3863,6 +3863,34 @@ async def root():
 
 
 
+@api.get("/system/clock")
+async def system_clock():
+    """Return server's current time in both UTC and the configured app timezone (Asia/Makassar).
+    Use this to verify scheduled emails will fire at the right wall-clock time relative to user's
+    own browser timezone — both display strings should match expectations.
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    tz_name = os.environ.get("APP_TIMEZONE", "Asia/Makassar")
+    offset_str = os.environ.get("APP_TIMEZONE_OFFSET", "+08:00")
+    sign = 1 if offset_str.startswith("+") else -1
+    hh, mm = offset_str.lstrip("+-").split(":")
+    offset = _td(hours=sign * int(hh), minutes=sign * int(mm))
+    app_tz = _tz(offset, name=tz_name)
+    utc_now = _dt.now(_tz.utc)
+    app_now = utc_now.astimezone(app_tz)
+    return {
+        "utc_iso": utc_now.isoformat(),
+        "app_iso": app_now.isoformat(),
+        "app_timezone": tz_name,
+        "app_offset": offset_str,
+        "scheduler": {
+            "running": _scheduler_state.get("running", False),
+            "poll_interval_seconds": 60,
+            "throttle_per_send_seconds": 180,
+        },
+    }
+
+
 app.include_router(api)
 
 app.add_middleware(
@@ -3896,6 +3924,8 @@ async def _scheduler_loop():
                 "status": "scheduled",
                 "scheduled_at": {"$lte": now},
             }, {"_id": 0}).sort("scheduled_at", 1).limit(50).to_list(50)
+            if due:
+                logger.info(f"[scheduler tick @ {now}] {len(due)} email(s) due — dispatching sequentially with 180s throttle")
             for idx, s in enumerate(due):
                 # Mark as 'sending' first to prevent another worker tick from picking it up
                 claim = await db.email_sends.update_one(
@@ -3956,4 +3986,5 @@ async def _scheduler_loop():
 async def _start_scheduler():
     if _scheduler_state.get("task") is None:
         _scheduler_state["task"] = asyncio.create_task(_scheduler_loop())
-        logger.info("Scheduled-email worker started (60s poll)")
+        tz = os.environ.get("APP_TIMEZONE", "UTC")
+        logger.info(f"Scheduled-email worker started (60s poll, 180s throttle, TZ={tz})")
