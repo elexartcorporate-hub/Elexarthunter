@@ -3030,6 +3030,8 @@ def _email_view(c: dict) -> dict:
 @api.post("/prospects/discover")
 async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_current_user)):
     """Discover company info + emails for a domain (without saving). Front-end displays results."""
+    from hunter_service import _extract_extra_path
+    extra_path = _extract_extra_path(payload.domain)
     domain = _normalize_domain(payload.domain)
     cached = await db.global_hunter_cache.find_one({"domain": domain})
     if cached and not payload.force_refresh:
@@ -3042,7 +3044,7 @@ async def prospects_discover(payload: HunterSearchReq, user: dict = Depends(get_
                 "cached": True, "age_days": age_days,
             }
     aliases = await _resolve_aliases_for_search(user["tenant_id"], payload.category_id)
-    result = await run_hunter_workflow(domain, aliases=aliases)
+    result = await run_hunter_workflow(domain, aliases=aliases, extra_path=extra_path)
     # update global cache
     await db.global_hunter_cache.update_one(
         {"domain": domain},

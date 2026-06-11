@@ -33,11 +33,27 @@ PAGES_TO_CRAWL = ["/", "/contact", "/contact-us", "/about", "/about-us", "/team"
 
 
 def _normalize_domain(domain: str) -> str:
+    """Strip protocol, www, path, and trailing slash. Keeps subdomain (e.g. id.villabalimanagement.com)."""
     d = domain.strip().lower()
-    d = d.replace("https://", "").replace("http://", "").rstrip("/")
+    d = d.replace("https://", "").replace("http://", "")
+    # Strip path/query if user pasted a full URL
+    d = d.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     if d.startswith("www."):
         d = d[4:]
-    return d
+    return d.rstrip("/")
+
+
+def _extract_extra_path(raw: str) -> Optional[str]:
+    """If the user pasted a URL with a path (e.g. https://example.com/contact-us), return
+    that path so the crawler can hit it directly — often the page they want to see is
+    the one they pasted. Returns None for bare domains."""
+    s = raw.strip().lower()
+    s = s.replace("https://", "").replace("http://", "")
+    if "/" not in s:
+        return None
+    path = "/" + s.split("/", 1)[1]
+    path = path.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return path if path and path != "/" else None
 
 
 async def _fetch_with_httpx(url: str, timeout: int = 10) -> Optional[str]:
@@ -137,8 +153,9 @@ def _extract_from_html(html: str, domain: str) -> Dict:
     }
 
 
-async def playwright_deep_crawl(domain: str, logs: list) -> Dict:
-    """Crawl multiple pages and aggregate."""
+async def playwright_deep_crawl(domain: str, logs: list, extra_path: Optional[str] = None) -> Dict:
+    """Crawl multiple pages and aggregate. If user pasted a URL with a specific path
+    (e.g. /contact-us), we crawl THAT path first — it's usually the most contact-rich page."""
     domain = _normalize_domain(domain)
     base = f"https://{domain}"
     aggregated = {
@@ -150,7 +167,11 @@ async def playwright_deep_crawl(domain: str, logs: list) -> Dict:
         "socials": {},
     }
     pages_scanned = 0
-    pages_to_try = [base + p for p in PAGES_TO_CRAWL]
+    # Start with the user-specified path (if any) so it's never skipped, then default pages
+    pages_to_try = []
+    if extra_path:
+        pages_to_try.append(base + extra_path)
+    pages_to_try += [base + p for p in PAGES_TO_CRAWL if (base + p) not in pages_to_try]
 
     for url in pages_to_try:
         logs.append(f"  > GET {url}")
@@ -422,7 +443,7 @@ def merge_and_score(crawl_result: Dict, hunter_result: Dict, logs: list, aliases
     return {"company": company, "contacts": contacts}
 
 
-async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) -> Dict:
+async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None, extra_path: Optional[str] = None) -> Dict:
     """
     Full pipeline. Returns:
       {
@@ -439,7 +460,7 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None) 
     # Step 2: Playwright crawl
     logs.append(f"> [STEP 2] Playwright deep crawl: {domain}")
     try:
-        crawl_result = await playwright_deep_crawl(domain, logs)
+        crawl_result = await playwright_deep_crawl(domain, logs, extra_path=extra_path)
         steps.append({"name": "Playwright Deep Crawl", "status": "ok"})
     except Exception as e:
         logs.append(f"  > ERROR: {e}")
