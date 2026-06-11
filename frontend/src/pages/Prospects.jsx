@@ -155,8 +155,8 @@ function QuotaHero({ quota, justHit }) {
         <div className="flex items-center gap-3">
           <Target size={20} weight="bold" className="text-slate-500" />
           <div>
-            <div className="text-sm font-medium text-slate-700">No daily target set — emails are unlocked</div>
-            <div className="text-xs text-slate-500">Set a target from the Dashboard to enable the daily quest mode</div>
+            <div className="text-sm font-medium text-slate-700">No daily prospect target set — outreach unlocked</div>
+            <div className="text-xs text-slate-500">Set a target (domain count) from the Dashboard to enable the daily quest mode</div>
           </div>
         </div>
       </Card>
@@ -179,14 +179,14 @@ function QuotaHero({ quota, justHit }) {
           </div>
           <div className="font-display text-3xl md:text-4xl font-bold text-slate-900" data-testid="quota-count">
             {added}<span className="text-slate-400 text-2xl"> / {target}</span>
-            <span className="ml-3 text-base font-medium text-slate-500">prospects</span>
+            <span className="ml-3 text-base font-medium text-slate-500">prospects (domain)</span>
           </div>
         </div>
 
         <div className="text-right">
           <div className={`text-3xl font-bold ${quota.locked ? "text-indigo-600" : "text-emerald-600"}`}>{pct}%</div>
           <div className="text-[11px] text-slate-500">
-            {quota.locked ? <>🔒 Email outreach unlocks at {target}/{target}</> : <>✓ Email outreach unlocked</>}
+            {quota.locked ? <>🔒 Email outreach unlocks at {target}/{target} domain</> : <>✓ Email outreach unlocked (email per domain bebas)</>}
           </div>
         </div>
       </div>

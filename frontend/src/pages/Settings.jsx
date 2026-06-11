@@ -111,10 +111,10 @@ function TargetsSection({ currentUser }) {
     <div className="space-y-5">
       <Card className="p-6">
         <h2 className="font-display text-xl text-slate-900">Target Harian Saya</h2>
-        <p className="text-sm text-slate-500 mb-4">Berapa prospect yang harus Anda tambahkan per hari kerja. Email outreach terkunci sampai target tercapai.</p>
+        <p className="text-sm text-slate-500 mb-4">Berapa <b>prospect (domain)</b> yang harus Anda tambahkan per hari kerja. Email per domain bebas berapa pun — yang dihitung di target adalah jumlah domain. Email outreach terkunci sampai target tercapai.</p>
         <div className="flex items-end gap-3 max-w-md">
           <div className="flex-1">
-            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-1">Daily target</label>
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-1">Daily target (domain count)</label>
             <input
               type="number"
               min="0"
