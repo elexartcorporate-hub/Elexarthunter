@@ -89,6 +89,25 @@ export default function Calendar({ quota, onChanged, onTaskCreated, onTaskContin
           ))}
         </div>
 
+        {/* Sales user legend — color mapping for the dots on each day cell */}
+        {data?.days && (() => {
+          const seen = new Map();
+          for (const d of data.days) for (const u of (d.users || [])) if (!seen.has(u.id)) seen.set(u.id, u);
+          const userList = [...seen.values()];
+          if (userList.length === 0) return null;
+          return (
+            <div className="flex items-center gap-3 mb-3 flex-wrap text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2" data-testid="calendar-sales-legend">
+              <span className="text-slate-500 font-semibold uppercase tracking-wider">Sales:</span>
+              {userList.map((u) => (
+                <span key={u.id} className="flex items-center gap-1.5 text-slate-700" title={u.email}>
+                  <span className="w-2.5 h-2.5 rounded-full ring-1 ring-white shadow-sm" style={{ backgroundColor: u.color }} />
+                  {u.name}
+                </span>
+              ))}
+            </div>
+          );
+        })()}
+
         {/* Days grid */}
         {!data ? (
           <div className="text-center py-12 text-slate-400 text-sm">Loading...</div>
@@ -134,6 +153,25 @@ export default function Calendar({ quota, onChanged, onTaskCreated, onTaskContin
                           </span>
                         )}
                       </div>
+                      {/* Sales user color dots — instant visual signal which sales did work */}
+                      {day.users && day.users.length > 0 && (
+                        <div className="absolute bottom-1 left-1 right-1 flex items-center gap-0.5 justify-start flex-wrap">
+                          {day.users.slice(0, 5).map((u) => (
+                            <span
+                              key={u.id}
+                              className="w-1.5 h-1.5 rounded-full ring-1 ring-white"
+                              style={{ backgroundColor: u.color }}
+                              title={`${u.name} — ${u.prospects || 0} prospect, ${u.sent || 0} sent, ${u.scheduled || 0} scheduled`}
+                              data-testid={`cal-user-dot-${day.date}-${u.id}`}
+                            />
+                          ))}
+                          {day.users.length > 5 && (
+                            <span className="text-[8px] text-slate-500 font-medium ml-0.5" title={`+${day.users.length - 5} more sales`}>
+                              +{day.users.length - 5}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </button>
                   );
                 })}

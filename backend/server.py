@@ -1910,13 +1910,28 @@ async def list_today_prospects(user: dict = Depends(get_current_user)):
     return rows
 
 
+# Stable color palette for sales user dots on calendar cells
+_PIPELINE_COLORS = [
+    "#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4",
+    "#3b82f6", "#8b5cf6", "#ec4899", "#14b8a6", "#a3e635",
+    "#f59e0b", "#84cc16",
+]
+def _color_for(uid: str) -> str:
+    """Hash user id to a stable color so each sales user has consistent dot color."""
+    h = 0
+    for ch in (uid or ""):
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return _PIPELINE_COLORS[h % len(_PIPELINE_COLORS)]
+
+
 @api.get("/prospects/calendar")
 async def prospects_calendar(
     user: dict = Depends(get_current_user),
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),
 ):
-    """Per-day aggregates for a month: prospects_added, emails_sent, emails_scheduled."""
+    """Per-day aggregates for a month: prospects_added, emails_sent, emails_scheduled,
+    plus per-user team breakdown (RBAC-scoped) so calendar cells can show coloured dots."""
     import calendar as cal
     tenant = await db.tenants.find_one({"id": user["tenant_id"]}) or {}
     working_days = tenant.get("working_days") or DEFAULT_WORKING_DAYS
@@ -1959,6 +1974,60 @@ async def prospects_calendar(
     ]
     e_sched = {doc["_id"]: doc["n"] async for doc in db.email_sends.aggregate(e_sched_pipe)}
 
+    # ─── Per-day TEAM breakdown (RBAC-scoped) ──────────────────────────────
+    # For each day, return the list of users who collected prospects or sent/scheduled
+    # email on that date. Each user gets a stable color derived from their id so calendar
+    # cells can show coloured dots.
+    role = user.get("role")
+    if role in ("Owner", "Admin"):
+        team_q = {"tenant_id": user["tenant_id"]}
+    elif role == "Manager":
+        my_subs = user.get("sub_company_ids") or []
+        team_q = {"tenant_id": user["tenant_id"], "sub_company_ids": {"$in": my_subs}} if my_subs else {"id": user["id"]}
+    else:
+        team_q = {"id": user["id"]}
+    team_users = await db.users.find(team_q, {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(500)
+    team_uids = [u["id"] for u in team_users]
+    user_meta = {u["id"]: {"id": u["id"], "name": u.get("name") or u.get("email"), "color": _color_for(u["id"])} for u in team_users}
+
+    # Team prospects by (date, user_id)
+    tp_pipe = [
+        {"$match": {
+            "tenant_id": user["tenant_id"], "assigned_user_id": {"$in": team_uids},
+            "created_at": {"$gte": first.isoformat(), "$lt": last_exc.isoformat()},
+        }},
+        {"$group": {"_id": {"d": {"$substr": ["$created_at", 0, 10]}, "u": "$assigned_user_id"}, "n": {"$sum": 1}}},
+    ]
+    team_day_user: Dict[str, Dict[str, dict]] = {}
+    async for doc in db.prospects.aggregate(tp_pipe):
+        d, u = doc["_id"]["d"], doc["_id"]["u"]
+        team_day_user.setdefault(d, {}).setdefault(u, {"prospects": 0, "sent": 0, "scheduled": 0})
+        team_day_user[d][u]["prospects"] = doc["n"]
+    # Team email sends by (date, user_id)
+    te_pipe = [
+        {"$match": {
+            "tenant_id": user["tenant_id"], "sender_user_id": {"$in": team_uids},
+            "$or": [
+                {"sent_at": {"$gte": first.isoformat(), "$lt": last_exc.isoformat()}},
+                {"scheduled_at": {"$gte": first.isoformat(), "$lt": last_exc.isoformat()}},
+            ],
+        }},
+        {"$project": {
+            "u": "$sender_user_id", "status": 1,
+            "d": {"$substr": [{"$ifNull": ["$sent_at", "$scheduled_at"]}, 0, 10]},
+        }},
+        {"$group": {"_id": {"d": "$d", "u": "$u", "s": "$status"}, "n": {"$sum": 1}}},
+    ]
+    async for doc in db.email_sends.aggregate(te_pipe):
+        d, u, s = doc["_id"]["d"], doc["_id"]["u"], doc["_id"]["s"]
+        if not d:
+            continue
+        team_day_user.setdefault(d, {}).setdefault(u, {"prospects": 0, "sent": 0, "scheduled": 0})
+        if s == "scheduled":
+            team_day_user[d][u]["scheduled"] += doc["n"]
+        elif s in ("queued", "sending", "sent", "delivered", "opened", "clicked", "replied"):
+            team_day_user[d][u]["sent"] += doc["n"]
+
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     days = []
     for d in range(1, days_in_month + 1):
@@ -1970,6 +2039,14 @@ async def prospects_calendar(
         added = p_counts.get(iso, 0)
         sent = e_sent.get(iso, 0)
         scheduled = e_sched.get(iso, 0)
+        # Build per-user breakdown for this day (sorted by prospects desc)
+        day_users = []
+        for uid, stats in (team_day_user.get(iso) or {}).items():
+            meta = user_meta.get(uid)
+            if not meta:
+                continue
+            day_users.append({**meta, **stats})
+        day_users.sort(key=lambda x: (x.get("prospects", 0) + x.get("sent", 0) + x.get("scheduled", 0)), reverse=True)
         if not is_working:
             status = "off"
         elif target > 0 and added >= target:
@@ -1986,6 +2063,7 @@ async def prospects_calendar(
             "is_today": iso == today_str, "is_past": iso < today_str, "is_future": iso > today_str,
             "prospects_added": added, "emails_sent": sent, "emails_scheduled": scheduled,
             "status": status,
+            "users": day_users,   # team breakdown for colour-dot rendering on calendar cells
         })
     return {
         "year": year, "month": month, "daily_target": target,
