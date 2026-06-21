@@ -4,7 +4,7 @@ import { api, formatApiError } from "@/lib/api";
 import { PageHeader, Card, Badge, PrimaryButton } from "@/components/term";
 import {
   Target, UsersFour, PaperPlaneTilt, ChatTeardropDots, Star, Crown,
-  CheckCircle, Circle, ArrowUpRight, Spinner,
+  CheckCircle, Circle, ArrowUpRight, Spinner, Trophy, ChartBar,
 } from "@phosphor-icons/react";
 import {
   AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -139,6 +139,89 @@ export default function Dashboard() {
             })}
           </div>
         </Card>
+
+        {/* Team Performance (Owner/Admin/Manager only) */}
+        {(data.team_breakdown || []).length > 0 && (
+          <Card className="p-5 lg:col-span-3" data-testid="team-performance-card">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 grid place-items-center">
+                  <Trophy size={16} weight="bold" />
+                </div>
+                <div>
+                  <h3 className="font-display text-base font-semibold text-slate-900">Team Performance</h3>
+                  <p className="text-xs text-slate-500">Per-user breakdown · today &amp; lifetime</p>
+                </div>
+              </div>
+              <Badge tone="warning"><ChartBar size={10} weight="bold" /> {data.team_breakdown.length} {data.team_breakdown.length === 1 ? "user" : "users"}</Badge>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-200">
+                    <th className="text-left font-medium py-2 pr-2">#</th>
+                    <th className="text-left font-medium py-2 pr-3">User</th>
+                    <th className="text-right font-medium py-2 px-2" title="Prospects added today">Prospects Today</th>
+                    <th className="text-right font-medium py-2 px-2" title="Today's quota progress">Quota</th>
+                    <th className="text-right font-medium py-2 px-2" title="Emails sent today">Emails Today</th>
+                    <th className="text-right font-medium py-2 px-2" title="Lifetime prospects">Total Prospects</th>
+                    <th className="text-right font-medium py-2 px-2" title="Interested status">Interested</th>
+                    <th className="text-right font-medium py-2 px-2" title="Customer status (won)">Won</th>
+                    <th className="text-right font-medium py-2 pl-2" title="Lifetime replies received">Replies</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.team_breakdown.map((u, idx) => (
+                    <tr
+                      key={u.user_id}
+                      data-testid={`team-row-${u.user_id}`}
+                      className={`border-b border-slate-100 last:border-0 hover:bg-slate-50/60 ${u.is_me ? "bg-indigo-50/40" : ""}`}
+                    >
+                      <td className="py-2.5 pr-2 text-slate-400 text-xs">{idx + 1}</td>
+                      <td className="py-2.5 pr-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: u.color }}
+                            title="User color"
+                          />
+                          <span className="font-medium text-slate-800 truncate">{u.name}</span>
+                          {u.is_me && <Badge tone="info">you</Badge>}
+                          {idx === 0 && u.prospects_today > 0 && <Trophy size={12} weight="fill" className="text-amber-500 shrink-0" title="Top performer today" />}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-slate-900">{u.prospects_today}</td>
+                      <td className="py-2.5 px-2 text-right">
+                        {u.daily_target > 0 ? (
+                          <div className="inline-flex items-center gap-1.5">
+                            <div className="w-14 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                              <div
+                                className={`h-full ${u.quota_pct >= 100 ? "bg-emerald-500" : u.quota_pct >= 50 ? "bg-amber-500" : "bg-rose-400"}`}
+                                style={{ width: `${Math.min(100, u.quota_pct || 0)}%` }}
+                              />
+                            </div>
+                            <span className="text-[11px] text-slate-500 tabular-nums w-8 text-right">{u.quota_pct ?? 0}%</span>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-2 text-right tabular-nums text-slate-700">{u.emails_sent_today}</td>
+                      <td className="py-2.5 px-2 text-right tabular-nums text-slate-500">{u.prospects_total}</td>
+                      <td className="py-2.5 px-2 text-right tabular-nums">
+                        {u.interested_total > 0 ? <span className="text-amber-600 font-medium">{u.interested_total}</span> : <span className="text-slate-400">0</span>}
+                      </td>
+                      <td className="py-2.5 px-2 text-right tabular-nums">
+                        {u.customers_total > 0 ? <span className="text-emerald-700 font-semibold">{u.customers_total}</span> : <span className="text-slate-400">0</span>}
+                      </td>
+                      <td className="py-2.5 pl-2 text-right tabular-nums text-slate-500">{u.replies_total}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
 
         {/* Recent prospects */}
         <Card className="p-5 lg:col-span-3">

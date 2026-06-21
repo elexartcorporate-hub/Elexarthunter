@@ -62,6 +62,7 @@ User language: **Bahasa Indonesia** (respond in Indonesian).
 ## Prioritized Backlog
 
 ### Recently Completed (Feb 2026)
+- **Dashboard Team Performance (P1)** (Feb 21, 2026) — `/dashboard/daily` now returns `team_breakdown` for Owner/Admin/Manager: per-user leaderboard with prospects_today, quota_pct progress bar, emails sent today, total prospects, interested, customers won, replies. Sorted by prospects_today desc with trophy icon on #1. Staff sees own stats only (empty leaderboard). Highlighted "you" row in indigo. Quota bar color: red <50%, amber <100%, emerald 100%.
 - **Per-user Templates scope** (Feb 21, 2026) — `/templates` endpoint + update/delete/duplicate/attachments now filter by `created_by == user.id`. Each user only sees & manages templates they personally created.
 - **Per-user Sub-companies scope** (Feb 21, 2026) — `/sub-companies` endpoint now filters by user's `sub_company_ids`. Staff users only see their assigned company's SMTP. Owner/Admin (manage_company perm) still see all in tenant.
 - **Outreach Modal refresh button** (Feb 21, 2026) — Added explicit "Refresh" button next to Template dropdown + auto-refresh on window focus. Both OutreachModal (Prospects bulk) and EmailStep (Tab 3 task submit) include this. Warning banner shown when user has no templates yet.
@@ -81,7 +82,7 @@ User language: **Bahasa Indonesia** (respond in Indonesian).
 - Audit log untuk aksi user (login, send email, add prospect)
 - AES encryption untuk SMTP/IMAP password di MongoDB
 - Lead Export to CSV (My Leads + Master Database)
-- Per-user statistics on Dashboard (leads saved by each team member)
+- Per-user statistics on Dashboard (leads saved by each team member) — DONE (Feb 21, 2026 — Team Performance leaderboard)
 
 ### P2
 - Email templates library + `{{variable}}` substitution per recipient — DONE

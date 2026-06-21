@@ -3952,6 +3952,88 @@ async def dashboard_daily(user: dict = Depends(get_current_user)):
     # Recent prospects assigned to me
     recent = await db.prospects.find({"tenant_id": tid, "assigned_user_id": uid}, {"_id": 0}).sort("created_at", -1).to_list(5)
 
+    # ─── Team breakdown (RBAC-scoped) ──────────────────────────────────────
+    # Owner / Admin / Manager → leaderboard for users they can see; Staff → omitted.
+    team_breakdown: List[dict] = []
+    role = user.get("role")
+    if role in ("Owner", "Admin"):
+        team_q = {"tenant_id": tid}
+    elif role == "Manager":
+        my_subs = user.get("sub_company_ids") or []
+        team_q = {"tenant_id": tid, "sub_company_ids": {"$in": my_subs}} if my_subs else None
+    else:
+        team_q = None  # Staff: no leaderboard
+
+    if team_q is not None:
+        team_users = await db.users.find(team_q, {"_id": 0, "id": 1, "name": 1, "email": 1, "daily_target": 1}).to_list(500)
+        team_uids = [u["id"] for u in team_users]
+        if team_uids:
+            # 1 aggregation per metric — avoids N+1 queries
+            async def _agg_count(coll, match: dict, group_field: str) -> dict:
+                pipe = [{"$match": match}, {"$group": {"_id": f"${group_field}", "n": {"$sum": 1}}}]
+                return {d["_id"]: d["n"] async for d in coll.aggregate(pipe)}
+
+            prosp_today = await _agg_count(
+                db.prospects,
+                {"tenant_id": tid, "assigned_user_id": {"$in": team_uids},
+                 "created_at": {"$gte": today_iso, "$lt": tomorrow_iso}},
+                "assigned_user_id",
+            )
+            prosp_total = await _agg_count(
+                db.prospects,
+                {"tenant_id": tid, "assigned_user_id": {"$in": team_uids}},
+                "assigned_user_id",
+            )
+            customers = await _agg_count(
+                db.prospects,
+                {"tenant_id": tid, "assigned_user_id": {"$in": team_uids}, "status": "Customer"},
+                "assigned_user_id",
+            )
+            interested_map = await _agg_count(
+                db.prospects,
+                {"tenant_id": tid, "assigned_user_id": {"$in": team_uids}, "status": "Interested"},
+                "assigned_user_id",
+            )
+            sent_today_map = await _agg_count(
+                db.email_sends,
+                {"tenant_id": tid, "sender_user_id": {"$in": team_uids}, "delivered": True,
+                 "sent_at": {"$gte": today_iso, "$lt": tomorrow_iso}},
+                "sender_user_id",
+            )
+            sent_total_map = await _agg_count(
+                db.email_sends,
+                {"tenant_id": tid, "sender_user_id": {"$in": team_uids}, "delivered": True},
+                "sender_user_id",
+            )
+            replied_map = await _agg_count(
+                db.email_sends,
+                {"tenant_id": tid, "sender_user_id": {"$in": team_uids}, "replied": True},
+                "sender_user_id",
+            )
+
+            for u in team_users:
+                u_id = u["id"]
+                p_today = prosp_today.get(u_id, 0)
+                tgt = int(u.get("daily_target") or 0)
+                pct = round(100 * p_today / tgt, 0) if tgt > 0 else None
+                team_breakdown.append({
+                    "user_id": u_id,
+                    "name": u.get("name") or u.get("email"),
+                    "color": _color_for(u_id),
+                    "daily_target": tgt,
+                    "prospects_today": p_today,
+                    "quota_pct": pct,                       # None when no target set
+                    "prospects_total": prosp_total.get(u_id, 0),
+                    "emails_sent_today": sent_today_map.get(u_id, 0),
+                    "emails_sent_total": sent_total_map.get(u_id, 0),
+                    "replies_total": replied_map.get(u_id, 0),
+                    "interested_total": interested_map.get(u_id, 0),
+                    "customers_total": customers.get(u_id, 0),
+                    "is_me": u_id == uid,
+                })
+            # Sort: prospects_today desc, then total desc, then name asc
+            team_breakdown.sort(key=lambda r: (-r["prospects_today"], -r["prospects_total"], r["name"].lower()))
+
     return {
         "daily_target": daily_target,
         "cards": {
@@ -3964,6 +4046,7 @@ async def dashboard_daily(user: dict = Depends(get_current_user)):
         },
         "trend": trend,
         "recent_prospects": recent,
+        "team_breakdown": team_breakdown,
     }
 
 
