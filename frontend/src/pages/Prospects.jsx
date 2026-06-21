@@ -667,8 +667,10 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
 /* ─────────────── EMAIL PICKER MODAL ─────────────── */
 function EmailPickerModal({ emails: initialEmails, company, domain, nextMode, initialCategoryId, onClose, onConfirm }) {
   const [emails, setEmails] = useState(initialEmails);  // local copy so probe results update in place
-  const [selected, setSelected] = useState(new Set(initialEmails.map((e) => e.email)));
-  const [primary, setPrimary] = useState(initialEmails[0]?.email || "");
+  // Pre-select EVERY email except those clearly INVALID (SMTP reject / no MX).
+  // User can manually opt-in invalid ones if they want to save for blacklist tracking.
+  const [selected, setSelected] = useState(new Set(initialEmails.filter((e) => e.status !== "invalid").map((e) => e.email)));
+  const [primary, setPrimary] = useState((initialEmails.find((e) => e.status !== "invalid") || initialEmails[0])?.email || "");
   const [probing, setProbing] = useState({});  // {email: true} while testing
 
   // Category & Location for the prospect being saved

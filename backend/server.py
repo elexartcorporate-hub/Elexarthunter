@@ -237,9 +237,12 @@ EMAIL_STATUSES = ["verified", "risky", "invalid"]
 class ProspectEmail(BaseModel):
     email: EmailStr
     is_primary: bool = False
-    status: Literal["verified", "risky", "invalid"] = "risky"
+    # Allow "unverified" (catch-all alias or no SMTP response) — sendable with caveat.
+    # "invalid" is also allowed at the schema level so we can persist them in My Leads
+    # (e.g. for blacklist tracking), but the front-end disables selection by default.
+    status: Literal["verified", "risky", "unverified", "invalid"] = "risky"
     confidence: Optional[int] = None
-    source: Optional[str] = None  # website / hunter / manual
+    source: Optional[str] = None  # website / website_external / hunter / alias / manual
 
 
 class ProspectCreate(BaseModel):
@@ -280,7 +283,7 @@ class ProspectUpdate(BaseModel):
 class ProspectEmailAdd(BaseModel):
     email: EmailStr
     is_primary: bool = False
-    status: Literal["verified", "risky", "invalid"] = "risky"
+    status: Literal["verified", "risky", "unverified", "invalid"] = "risky"
 
 
 class TemplateCreate(BaseModel):
