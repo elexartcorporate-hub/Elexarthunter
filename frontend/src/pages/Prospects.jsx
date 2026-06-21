@@ -6,7 +6,7 @@ import {
   Plus, MagnifyingGlass, Crosshair, ListBullets, UsersFour, Globe, Buildings,
   CaretRight, Spinner, PaperPlaneTilt, FloppyDisk, CheckCircle, Lock, LockOpen,
   Target, ArrowRight, X, CalendarCheck, Clock, Trash, ChartLine,
-  XCircle, Warning, Question, SealCheck,
+  XCircle, Warning, Question, SealCheck, ArrowsClockwise,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import ReactQuill from "react-quill-new";
@@ -1066,9 +1066,27 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
   const [testEmail, setTestEmail] = useState(user?.email || "");
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState(false);
+  const [refreshingTpl, setRefreshingTpl] = useState(false);
+
+  const loadTemplates = async (showToast = false) => {
+    setRefreshingTpl(true);
+    try {
+      const { data } = await api.get("/templates");
+      setTemplates(data);
+      if (showToast) toast.success(`✓ ${data.length} template Anda dimuat ulang`);
+    } catch {
+      if (showToast) toast.error("Gagal memuat template");
+    } finally {
+      setRefreshingTpl(false);
+    }
+  };
 
   useEffect(() => {
-    api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
+    loadTemplates();
+    // Refresh templates list when window/tab regains focus (user may have created a new template in another tab/page).
+    const onFocus = () => loadTemplates();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   const pickTemplate = (tid) => {
@@ -1153,10 +1171,30 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
           </div>
           <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div className="space-y-3">
-              <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="outreach-template">
-                <option value="">— blank —</option>
-                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </TermSelect>
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="outreach-template">
+                    <option value="">— blank —</option>
+                    {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </TermSelect>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => loadTemplates(true)}
+                  disabled={refreshingTpl}
+                  className="h-[38px] px-3 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-indigo-600 hover:border-indigo-300 disabled:opacity-50 inline-flex items-center gap-1 text-xs"
+                  title="Refresh template list"
+                  data-testid="outreach-refresh-templates"
+                >
+                  <ArrowsClockwise size={14} weight="bold" className={refreshingTpl ? "animate-spin" : ""} />
+                  {refreshingTpl ? "Memuat…" : "Refresh"}
+                </button>
+              </div>
+              {templates.length === 0 && (
+                <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                  Belum ada template Anda. Buat dulu di menu <b>Templates</b> lalu klik <b>Refresh</b>.
+                </div>
+              )}
               <TermInput label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} data-testid="outreach-subject" />
               <div>
                 <label className="text-xs font-medium text-slate-700 block mb-1.5">Body (supports {`{{name}}`} {`{{company}}`} variables)</label>
@@ -1451,10 +1489,27 @@ function EmailStep({ task, onSubmitted }) {
   const [testEmail, setTestEmail] = useState(user?.email || "");
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState(false);
+  const [refreshingTpl, setRefreshingTpl] = useState(false);
+
+  const loadTemplates = async (showToast = false) => {
+    setRefreshingTpl(true);
+    try {
+      const { data } = await api.get("/templates");
+      setTemplates(data);
+      if (showToast) toast.success(`✓ ${data.length} template Anda dimuat ulang`);
+    } catch {
+      if (showToast) toast.error("Gagal memuat template");
+    } finally {
+      setRefreshingTpl(false);
+    }
+  };
 
   useEffect(() => {
-    api.get("/templates").then(({ data }) => setTemplates(data)).catch(() => {});
+    loadTemplates();
     api.get(`/tasks/${task.id}`).then(({ data }) => setProspects(data.prospects || [])).catch(() => {});
+    const onFocus = () => loadTemplates();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [task.id]);
 
   const pickTemplate = (tid) => {
@@ -1558,10 +1613,30 @@ function EmailStep({ task, onSubmitted }) {
             <PaperPlaneTilt size={16} weight="bold" className="text-indigo-600" /> Konfigurasi Email
           </h3>
           <div className="space-y-3">
-            <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="email-template">
-              <option value="">— blank —</option>
-              {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </TermSelect>
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <TermSelect label="Template" value={form.template_id} onChange={(e) => pickTemplate(e.target.value)} data-testid="email-template">
+                  <option value="">— blank —</option>
+                  {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </TermSelect>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadTemplates(true)}
+                disabled={refreshingTpl}
+                className="h-[38px] px-3 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-indigo-600 hover:border-indigo-300 disabled:opacity-50 inline-flex items-center gap-1 text-xs"
+                title="Refresh template list"
+                data-testid="email-refresh-templates"
+              >
+                <ArrowsClockwise size={14} weight="bold" className={refreshingTpl ? "animate-spin" : ""} />
+                {refreshingTpl ? "Memuat…" : "Refresh"}
+              </button>
+            </div>
+            {templates.length === 0 && (
+              <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                Belum ada template Anda. Buat dulu di menu <b>Templates</b> lalu klik <b>Refresh</b>.
+              </div>
+            )}
             <TermInput label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} data-testid="email-subject" />
             <div>
               <label className="text-xs font-medium text-slate-700 block mb-1.5">Body (supports {`{{name}}`} {`{{company}}`})</label>

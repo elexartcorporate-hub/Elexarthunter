@@ -62,6 +62,9 @@ User language: **Bahasa Indonesia** (respond in Indonesian).
 ## Prioritized Backlog
 
 ### Recently Completed (Feb 2026)
+- **Per-user Templates scope** (Feb 21, 2026) — `/templates` endpoint + update/delete/duplicate/attachments now filter by `created_by == user.id`. Each user only sees & manages templates they personally created.
+- **Per-user Sub-companies scope** (Feb 21, 2026) — `/sub-companies` endpoint now filters by user's `sub_company_ids`. Staff users only see their assigned company's SMTP. Owner/Admin (manage_company perm) still see all in tenant.
+- **Outreach Modal refresh button** (Feb 21, 2026) — Added explicit "Refresh" button next to Template dropdown + auto-refresh on window focus. Both OutreachModal (Prospects bulk) and EmailStep (Tab 3 task submit) include this. Warning banner shown when user has no templates yet.
 - Category-based dynamic alias injection (backend + Settings UI) — DONE
 - Required category dropdown before domain search on Add Prospect tab — DONE
 - Added Today sidebar isolated per active task (no stale prospects from submitted tasks) — DONE

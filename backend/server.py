@@ -938,7 +938,16 @@ async def delete_my_lead(lead_id: str, user: dict = Depends(get_current_user)):
 # ────────────────────────────────────────────────────────────
 @api.get("/sub-companies")
 async def list_sub_companies(user: dict = Depends(get_current_user)):
-    rows = await db.sub_companies.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("name", 1).to_list(200)
+    # Owner / users with manage_company see all sub-companies in tenant.
+    # Other users only see sub-companies they are assigned to (their company's SMTP scope).
+    can_manage = (user.get("role") == "Owner") or ("manage_company" in await get_user_permissions(user))
+    q: dict = {"tenant_id": user["tenant_id"]}
+    if not can_manage:
+        my_subs = user.get("sub_company_ids") or []
+        if not my_subs:
+            return []
+        q["id"] = {"$in": my_subs}
+    rows = await db.sub_companies.find(q, {"_id": 0}).sort("name", 1).to_list(200)
     for r in rows:
         r["user_count"] = await db.users.count_documents({
             "tenant_id": user["tenant_id"],
@@ -3656,7 +3665,12 @@ async def _attach_template_attachments(rows: List[dict]) -> List[dict]:
 
 @api.get("/templates")
 async def list_templates(user: dict = Depends(get_current_user)):
-    rows = await db.email_templates.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Each user only sees templates they personally created.
+    # Owner/Admin do NOT see other users' templates — each user has their own library.
+    rows = await db.email_templates.find(
+        {"tenant_id": user["tenant_id"], "created_by": user["id"]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(500)
     return await _attach_template_attachments(rows)
 
 
@@ -3680,10 +3694,16 @@ async def update_template(tid: str, payload: TemplateUpdate, user: dict = Depend
     upd = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if upd:
         upd["updated_at"] = now_iso()
-        res = await db.email_templates.update_one({"id": tid, "tenant_id": user["tenant_id"]}, {"$set": upd})
+        res = await db.email_templates.update_one(
+            {"id": tid, "tenant_id": user["tenant_id"], "created_by": user["id"]},
+            {"$set": upd},
+        )
         if not res.matched_count:
             raise HTTPException(404, "Template not found")
-    row = await db.email_templates.find_one({"id": tid}, {"_id": 0})
+    row = await db.email_templates.find_one(
+        {"id": tid, "tenant_id": user["tenant_id"], "created_by": user["id"]},
+        {"_id": 0},
+    )
     if row:
         await _attach_template_attachments([row])
     return row
@@ -3691,7 +3711,9 @@ async def update_template(tid: str, payload: TemplateUpdate, user: dict = Depend
 
 @api.delete("/templates/{tid}")
 async def delete_template(tid: str, user: dict = Depends(get_current_user)):
-    res = await db.email_templates.delete_one({"id": tid, "tenant_id": user["tenant_id"]})
+    res = await db.email_templates.delete_one(
+        {"id": tid, "tenant_id": user["tenant_id"], "created_by": user["id"]}
+    )
     if res.deleted_count:
         await db.template_attachments.delete_many({"template_id": tid, "tenant_id": user["tenant_id"]})
     return {"deleted": res.deleted_count}
@@ -3699,7 +3721,9 @@ async def delete_template(tid: str, user: dict = Depends(get_current_user)):
 
 @api.post("/templates/{tid}/duplicate")
 async def duplicate_template(tid: str, user: dict = Depends(get_current_user)):
-    src = await db.email_templates.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    src = await db.email_templates.find_one(
+        {"id": tid, "tenant_id": user["tenant_id"], "created_by": user["id"]}
+    )
     if not src:
         raise HTTPException(404, "Template not found")
     new_id = str(uuid.uuid4())
@@ -3742,7 +3766,9 @@ async def upload_template_attachment(
     user: dict = Depends(get_current_user),
 ):
     """Upload an attachment for a template. Stored as base64 in MongoDB (≤8MB per file, ≤20MB total)."""
-    tpl = await db.email_templates.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    tpl = await db.email_templates.find_one(
+        {"id": tid, "tenant_id": user["tenant_id"], "created_by": user["id"]}
+    )
     if not tpl:
         raise HTTPException(404, "Template not found")
     raw = await file.read()
@@ -3777,7 +3803,9 @@ async def upload_template_attachment(
 
 @api.delete("/templates/{tid}/attachments/{att_id}")
 async def delete_template_attachment(tid: str, att_id: str, user: dict = Depends(get_current_user)):
-    tpl = await db.email_templates.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    tpl = await db.email_templates.find_one(
+        {"id": tid, "tenant_id": user["tenant_id"], "created_by": user["id"]}
+    )
     if not tpl:
         raise HTTPException(404, "Template not found")
     res = await db.template_attachments.delete_one({"id": att_id, "template_id": tid, "tenant_id": user["tenant_id"]})
