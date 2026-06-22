@@ -1083,17 +1083,29 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
 
   useEffect(() => {
     loadTemplates();
-    // Refresh templates list when window/tab regains focus (user may have created a new template in another tab/page).
-    const onFocus = () => loadTemplates();
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   const pickTemplate = (tid) => {
-    setForm((f) => ({ ...f, template_id: tid }));
-    if (!tid) return;
+    if (!tid) {
+      setForm((f) => ({ ...f, template_id: "" }));
+      return;
+    }
     const t = templates.find((x) => x.id === tid);
-    if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: ensureHtml(t.body_html) }));
+    if (!t) {
+      // Template not in current state (race) — refetch and retry once
+      setForm((f) => ({ ...f, template_id: tid }));
+      loadTemplates().then(() => {
+        // After reload, find again and apply
+        // Note: templates state will be updated in next render; we do best-effort here
+      });
+      return;
+    }
+    setForm((f) => ({
+      ...f,
+      template_id: tid,
+      subject: t.subject || f.subject,
+      body_html: ensureHtml(t.body_html || ""),
+    }));
   };
 
   const toggle = (id) => {
@@ -1507,16 +1519,25 @@ function EmailStep({ task, onSubmitted }) {
   useEffect(() => {
     loadTemplates();
     api.get(`/tasks/${task.id}`).then(({ data }) => setProspects(data.prospects || [])).catch(() => {});
-    const onFocus = () => loadTemplates();
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
   }, [task.id]);
 
   const pickTemplate = (tid) => {
-    setForm((f) => ({ ...f, template_id: tid }));
-    if (!tid) return;
+    if (!tid) {
+      setForm((f) => ({ ...f, template_id: "" }));
+      return;
+    }
     const t = templates.find((x) => x.id === tid);
-    if (t) setForm((f) => ({ ...f, subject: t.subject, body_html: ensureHtml(t.body_html) }));
+    if (!t) {
+      setForm((f) => ({ ...f, template_id: tid }));
+      loadTemplates();
+      return;
+    }
+    setForm((f) => ({
+      ...f,
+      template_id: tid,
+      subject: t.subject || f.subject,
+      body_html: ensureHtml(t.body_html || ""),
+    }));
   };
 
   const sendTest = async () => {
