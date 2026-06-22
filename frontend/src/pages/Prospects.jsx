@@ -1212,6 +1212,7 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
                 <label className="text-xs font-medium text-slate-700 block mb-1.5">Body (supports {`{{name}}`} {`{{company}}`} variables)</label>
                 <div className="quill-wrapper" data-testid="outreach-body">
                   <ReactQuill
+                    key={`outreach-quill-${form.template_id || "blank"}`}
                     theme="snow"
                     value={form.body_html}
                     onChange={(v) => setForm({ ...form, body_html: v })}
@@ -1663,6 +1664,7 @@ function EmailStep({ task, onSubmitted }) {
               <label className="text-xs font-medium text-slate-700 block mb-1.5">Body (supports {`{{name}}`} {`{{company}}`})</label>
               <div className="quill-wrapper" data-testid="email-body">
                 <ReactQuill
+                  key={`email-quill-${form.template_id || "blank"}`}
                   theme="snow"
                   value={form.body_html}
                   onChange={(v) => setForm({ ...form, body_html: v })}
