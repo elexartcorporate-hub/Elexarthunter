@@ -3850,8 +3850,80 @@ async def download_template_attachment(tid: str, att_id: str, user: dict = Depen
 # di body otomatis dikonversi ke CID inline-attachment supaya gambar muncul
 # langsung di email client tanpa perlu download manual.
 
-MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024  # 5MB per gambar
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024  # 5MB upload cap (before resize)
+MAX_INLINE_IMAGE_DIMENSION = 800           # downscale longest side to this many px
+INLINE_IMAGE_JPEG_QUALITY = 85             # used for JPEG/WebP re-encode
 ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+
+
+def _optimize_inline_image(raw: bytes, ctype: str) -> tuple[bytes, str, str, dict]:
+    """Resize & recompress an uploaded image to keep emails small.
+
+    Rules:
+    - GIF: keep as-is (preserve animation).
+    - Anything else: open with Pillow, downscale if longest side > MAX_INLINE_IMAGE_DIMENSION,
+      keep PNG when image has alpha (transparency — needed for logos/signatures),
+      otherwise re-encode as JPEG quality 85 (typically 5-20× smaller than the original).
+    - If optimization produces a LARGER blob than the input (rare, tiny images), fall back to original.
+
+    Returns (new_bytes, new_content_type, ext, meta_dict).
+    """
+    from io import BytesIO
+    from PIL import Image, ImageOps  # noqa: WPS433 — local import keeps startup fast
+
+    original_size = len(raw)
+    meta = {"original_size": original_size, "original_type": ctype}
+
+    if ctype == "image/gif":
+        # Don't touch GIFs — animation frames are hard to re-encode safely.
+        return raw, ctype, "gif", {**meta, "skipped": "gif-animated-safe", "final_size": original_size}
+
+    try:
+        img = Image.open(BytesIO(raw))
+        img = ImageOps.exif_transpose(img)  # respect EXIF orientation (phone photos)
+        orig_w, orig_h = img.size
+        # Resize if needed (longest side > MAX). LANCZOS = best quality downsampling.
+        if max(orig_w, orig_h) > MAX_INLINE_IMAGE_DIMENSION:
+            img.thumbnail((MAX_INLINE_IMAGE_DIMENSION, MAX_INLINE_IMAGE_DIMENSION), Image.LANCZOS)
+
+        has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+        out = BytesIO()
+        if has_alpha:
+            # Transparency present (signature logos with cutout backgrounds) — keep PNG.
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            img.save(out, format="PNG", optimize=True)
+            new_ctype, ext = "image/png", "png"
+        else:
+            # No alpha → JPEG is much smaller. Convert to RGB to be safe.
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(out, format="JPEG", quality=INLINE_IMAGE_JPEG_QUALITY, optimize=True, progressive=True)
+            new_ctype, ext = "image/jpeg", "jpg"
+
+        new_bytes = out.getvalue()
+        new_w, new_h = img.size
+        # Safety: if no resize happened AND the new file is bigger, keep the original.
+        # (Tiny already-well-compressed PNGs can grow under re-encoding.)
+        was_resized = (orig_w, orig_h) != (new_w, new_h)
+        if not was_resized and len(new_bytes) >= original_size:
+            return raw, ctype, ctype.split("/", 1)[1].replace("jpeg", "jpg"), {
+                **meta, "skipped": "would-grow", "final_size": original_size,
+            }
+        return new_bytes, new_ctype, ext, {
+            **meta,
+            "final_size": len(new_bytes),
+            "original_dimensions": [orig_w, orig_h],
+            "final_dimensions": [new_w, new_h],
+            "reduction_pct": round(100 * (1 - len(new_bytes) / max(1, original_size)), 1),
+        }
+    except Exception as ex:  # noqa: BLE001 — Pillow can throw many things; fall back to original.
+        logger.warning("Inline image optimize failed (%s) — keeping original: %s", ctype, ex)
+        return raw, ctype, ctype.split("/", 1)[1].replace("jpeg", "jpg"), {
+            **meta, "skipped": f"error:{type(ex).__name__}", "final_size": original_size,
+        }
+
+
 INLINE_IMAGE_URL_RE = re.compile(
     r'<img\b[^>]*\bsrc=["\'](?:https?://[^"\']*?)?/api/inline-images/([0-9a-f-]{8,})(?:\.[a-zA-Z]+)?["\'][^>]*>',
     re.IGNORECASE,
@@ -3873,22 +3945,33 @@ async def upload_inline_image(
         raise HTTPException(400, "File kosong")
     if len(raw) > MAX_INLINE_IMAGE_BYTES:
         raise HTTPException(400, f"Gambar terlalu besar (max {MAX_INLINE_IMAGE_BYTES // (1024*1024)} MB)")
+
+    # Auto-resize & recompress (e.g. 4MB phone JPEG → ~150KB, dimensi max 800px)
+    optimized, final_ctype, ext, optimize_meta = await asyncio.to_thread(
+        _optimize_inline_image, raw, ctype
+    )
     img_id = str(uuid.uuid4())
-    ext = ctype.split("/", 1)[1].replace("jpeg", "jpg")
     doc = {
         "id": img_id,
         "tenant_id": user["tenant_id"],
         "user_id": user["id"],
         "filename": file.filename or f"image.{ext}",
-        "content_type": ctype,
-        "size": len(raw),
-        "data_b64": base64.b64encode(raw).decode("ascii"),
+        "content_type": final_ctype,
+        "size": len(optimized),
+        "data_b64": base64.b64encode(optimized).decode("ascii"),
+        "optimize_meta": optimize_meta,
         "created_at": now_iso(),
     }
     await db.inline_images.insert_one(doc)
     base_url = os.environ.get("PUBLIC_BASE_URL") or ""
     url = f"{base_url}/api/inline-images/{img_id}.{ext}"
-    return {"id": img_id, "url": url, "size": len(raw), "content_type": ctype}
+    return {
+        "id": img_id,
+        "url": url,
+        "size": len(optimized),
+        "content_type": final_ctype,
+        "optimize": optimize_meta,
+    }
 
 
 @app.get("/api/inline-images/{img_id}")

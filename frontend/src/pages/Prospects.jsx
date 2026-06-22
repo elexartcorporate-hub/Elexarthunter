@@ -68,7 +68,14 @@ function useQuillModulesWithImage(quillRef) {
                 editor.insertEmbed(range.index, "image", data.url, "user");
                 editor.setSelection(range.index + 1, 0);
               }
-              toast.success("Gambar ditambahkan", { id: t });
+              const opt = data.optimize;
+              let msg = "Gambar ditambahkan";
+              if (opt && opt.reduction_pct > 5) {
+                const origKb = Math.round(opt.original_size / 1024);
+                const newKb = Math.round(opt.final_size / 1024);
+                msg = `Gambar dikompres: ${origKb}KB → ${newKb}KB (-${opt.reduction_pct}%)`;
+              }
+              toast.success(msg, { id: t });
             } catch (err) {
               toast.error("Gagal upload: " + (err?.response?.data?.detail || err.message), { id: t });
             }
