@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactQuill from "react-quill-new";
 import "react-quill-new/dist/quill.snow.css";
@@ -40,6 +40,39 @@ const QUILL_SIMPLE_MODULES = {
     ["clean"],
   ],
 };
+
+// Custom image-upload handler factory bound to a Quill ref.
+// Uploads to backend, gets back URL, inserts as <img>. Backend will convert
+// to inline CID attachment at send-time so recipients see the image inline.
+function buildImageHandler(quillRef) {
+  return () => {
+    const input = document.createElement("input");
+    input.setAttribute("type", "file");
+    input.setAttribute("accept", "image/png,image/jpeg,image/jpg,image/gif,image/webp");
+    input.click();
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append("file", file);
+      const t = toast.loading("Mengunggah gambar…");
+      try {
+        const { data } = await api.post("/uploads/inline-image", fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        const editor = quillRef.current?.getEditor?.();
+        if (editor) {
+          const range = editor.getSelection(true) || { index: editor.getLength() };
+          editor.insertEmbed(range.index, "image", data.url, "user");
+          editor.setSelection(range.index + 1, 0);
+        }
+        toast.success("Gambar ditambahkan", { id: t });
+      } catch (err) {
+        toast.error("Gagal upload: " + (err?.response?.data?.detail || err.message), { id: t });
+      }
+    };
+  };
+}
 
 const VARIABLES = ["name", "company", "email", "industry", "website", "city", "country"];
 
@@ -236,6 +269,37 @@ function TemplateModal({ form, setForm, onClose, onSave, isNew, templateId, onUp
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef(null);
+  const quillHtmlRef = useRef(null);
+  const quillPlainRef = useRef(null);
+
+  // Modules with custom image-upload handler — backend converts uploaded URL
+  // into inline CID attachment at send-time so recipients see image inline.
+  const QUILL_MODULES_WITH_IMG = useMemo(() => ({
+    toolbar: {
+      container: [
+        [{ header: [1, 2, 3, false] }],
+        ["bold", "italic", "underline", "strike"],
+        [{ color: [] }, { background: [] }],
+        [{ list: "ordered" }, { list: "bullet" }],
+        [{ align: [] }],
+        ["link", "image", "blockquote"],
+        ["clean"],
+      ],
+      handlers: { image: buildImageHandler(quillHtmlRef) },
+    },
+  }), []);
+  const QUILL_SIMPLE_MODULES_WITH_IMG = useMemo(() => ({
+    toolbar: {
+      container: [
+        [{ header: [1, 2, 3, false] }],
+        ["bold", "italic", "underline"],
+        [{ list: "ordered" }, { list: "bullet" }],
+        [{ align: ["", "center", "right", "justify"] }],
+        ["link", "image", "clean"],
+      ],
+      handlers: { image: buildImageHandler(quillPlainRef) },
+    },
+  }), []);
 
   const updateField = (patch) => setForm({ ...form, ...patch });
 
@@ -350,21 +414,23 @@ function TemplateModal({ form, setForm, onClose, onSave, isNew, templateId, onUp
           {form.body_type === "html" ? (
             <div className="quill-wrapper" data-testid="tpl-body-html">
               <ReactQuill
+                ref={quillHtmlRef}
                 theme="snow"
                 value={form.body_html}
                 onChange={(v) => updateField({ body_html: v })}
-                modules={QUILL_MODULES}
-                placeholder="Tulis email Anda di sini..."
+                modules={QUILL_MODULES_WITH_IMG}
+                placeholder="Tulis email Anda di sini… (klik ikon 🖼 di toolbar untuk tambah gambar)"
               />
             </div>
           ) : (
             <div className="quill-wrapper" data-testid="tpl-body-plain">
               <ReactQuill
+                ref={quillPlainRef}
                 theme="snow"
                 value={form.body_html}
                 onChange={(v) => updateField({ body_html: v })}
-                modules={QUILL_SIMPLE_MODULES}
-                placeholder="Tulis email plain-text..."
+                modules={QUILL_SIMPLE_MODULES_WITH_IMG}
+                placeholder="Tulis email plain-text… (gambar tetap bisa disisipkan)"
               />
             </div>
           )}

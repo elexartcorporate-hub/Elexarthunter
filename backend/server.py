@@ -7,6 +7,7 @@ from pathlib import Path
 load_dotenv(Path(__file__).parent / ".env")
 
 import os
+import re
 import uuid
 import logging
 import asyncio
@@ -2546,13 +2547,17 @@ async def submit_task(tid: str, payload: OutreachTaskSubmit, background: Backgro
             else:
                 tracked = s["body_html"]
             unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{s['id']}" if PUBLIC_BASE_URL else None
+            final_body, inline_imgs = await _extract_inline_images_for_send(tracked, user["tenant_id"])
             result = await asyncio.to_thread(
                 send_smtp_email,
                 smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
                 smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
                 bool(smtp_src.get("smtp_use_tls", True)),
-                from_email, from_name, s["to_email"], s["subject"], tracked,
-                body_type, atts, unsubscribe_url, from_email,
+                from_email, from_name, s["to_email"], s["subject"], final_body,
+                body_type, atts,
+                inline_images=inline_imgs,
+                list_unsubscribe_url=unsubscribe_url,
+                reply_to=from_email,
             )
             if result["ok"]:
                 await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
@@ -3424,13 +3429,17 @@ async def send_prospect_email(pid: str, payload: SendEmailReq, background: Backg
         else:
             tracked = body
         unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{send_id}" if PUBLIC_BASE_URL else None
+        final_body, inline_imgs = await _extract_inline_images_for_send(tracked, user["tenant_id"])
         result = await asyncio.to_thread(
             send_smtp_email,
             smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
             smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
             bool(smtp_src.get("smtp_use_tls", True)),
-            from_email, from_name, payload.to_email, subject, tracked,
-            body_type, atts, unsubscribe_url, from_email,
+            from_email, from_name, payload.to_email, subject, final_body,
+            body_type, atts,
+            inline_images=inline_imgs,
+            list_unsubscribe_url=unsubscribe_url,
+            reply_to=from_email,
         )
         if result["ok"]:
             await db.email_sends.update_one({"id": send_id}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
@@ -3539,13 +3548,17 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
             else:
                 tracked = s["body_html"]
             unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{s['id']}" if PUBLIC_BASE_URL else None
+            final_body, inline_imgs = await _extract_inline_images_for_send(tracked, user["tenant_id"])
             result = await asyncio.to_thread(
                 send_smtp_email,
                 smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
                 smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
                 bool(smtp_src.get("smtp_use_tls", True)),
-                from_email, from_name, s["to_email"], s["subject"], tracked,
-                body_type, atts, unsubscribe_url, from_email,
+                from_email, from_name, s["to_email"], s["subject"], final_body,
+                body_type, atts,
+                inline_images=inline_imgs,
+                list_unsubscribe_url=unsubscribe_url,
+                reply_to=from_email,
             )
             if result["ok"]:
                 await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})
@@ -3591,13 +3604,17 @@ async def send_test_email(payload: TestSendReq, user: dict = Depends(get_current
     from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
     from_name = smtp_src.get("smtp_from_name")
 
+    final_body, inline_imgs = await _extract_inline_images_for_send(body, user["tenant_id"])
     result = await asyncio.to_thread(
         send_smtp_email,
         smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
         smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
         bool(smtp_src.get("smtp_use_tls", True)),
-        from_email, from_name, payload.to_email, subject, body,
-        body_type, atts, None, from_email,
+        from_email, from_name, payload.to_email, subject, final_body,
+        body_type, atts,
+        inline_images=inline_imgs,
+        list_unsubscribe_url=None,
+        reply_to=from_email,
     )
     if not result["ok"]:
         raise HTTPException(400, f"Test send gagal: {result['error']}")
@@ -3825,6 +3842,106 @@ async def download_template_attachment(tid: str, att_id: str, user: dict = Depen
         media_type=att.get("content_type") or "application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{att["filename"]}"'},
     )
+
+
+# ─── Inline Image Uploads (untuk gambar signature di body email) ──────────
+# Quill editor mengupload gambar lewat endpoint ini → backend simpan base64 di
+# MongoDB → return URL publik. Saat email dikirim, `<img src="...inline-images/{id}">`
+# di body otomatis dikonversi ke CID inline-attachment supaya gambar muncul
+# langsung di email client tanpa perlu download manual.
+
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024  # 5MB per gambar
+ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+INLINE_IMAGE_URL_RE = re.compile(
+    r'<img\b[^>]*\bsrc=["\'](?:https?://[^"\']*?)?/api/inline-images/([0-9a-f-]{8,})(?:\.[a-zA-Z]+)?["\'][^>]*>',
+    re.IGNORECASE,
+)
+
+
+@api.post("/uploads/inline-image")
+async def upload_inline_image(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Upload gambar (≤5MB) untuk disisipkan ke body email. Return URL publik yang
+    bisa langsung dipakai sebagai <img src>."""
+    ctype = (file.content_type or "").lower()
+    if ctype not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(400, f"Tipe file tidak didukung. Hanya: {', '.join(sorted(ALLOWED_IMAGE_TYPES))}")
+    raw = await file.read()
+    if len(raw) == 0:
+        raise HTTPException(400, "File kosong")
+    if len(raw) > MAX_INLINE_IMAGE_BYTES:
+        raise HTTPException(400, f"Gambar terlalu besar (max {MAX_INLINE_IMAGE_BYTES // (1024*1024)} MB)")
+    img_id = str(uuid.uuid4())
+    ext = ctype.split("/", 1)[1].replace("jpeg", "jpg")
+    doc = {
+        "id": img_id,
+        "tenant_id": user["tenant_id"],
+        "user_id": user["id"],
+        "filename": file.filename or f"image.{ext}",
+        "content_type": ctype,
+        "size": len(raw),
+        "data_b64": base64.b64encode(raw).decode("ascii"),
+        "created_at": now_iso(),
+    }
+    await db.inline_images.insert_one(doc)
+    base_url = os.environ.get("PUBLIC_BASE_URL") or ""
+    url = f"{base_url}/api/inline-images/{img_id}.{ext}"
+    return {"id": img_id, "url": url, "size": len(raw), "content_type": ctype}
+
+
+@app.get("/api/inline-images/{img_id}")
+@app.get("/api/inline-images/{img_id}.{ext}")
+async def serve_inline_image(img_id: str, ext: str = ""):
+    """Serve gambar inline secara publik (tanpa auth) — supaya editor preview
+    dan email web client bisa load gambarnya langsung. URL berisi UUID yang sulit
+    di-tebak sebagai akses control sederhana."""
+    doc = await db.inline_images.find_one({"id": img_id})
+    if not doc:
+        raise HTTPException(404, "Image not found")
+    raw = base64.b64decode(doc["data_b64"])
+    return FastAPIResponse(
+        content=raw,
+        media_type=doc.get("content_type") or "image/png",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Content-Disposition": f'inline; filename="{doc.get("filename", "image")}"',
+        },
+    )
+
+
+async def _extract_inline_images_for_send(body_html: str, tenant_id: str) -> tuple[str, list[dict]]:
+    """Scan body_html for <img src="...api/inline-images/{id}..."> and:
+    1. Replace the src with `cid:img-{id}` (RFC2392 inline reference)
+    2. Return list of [{cid, filename, content_type, data_b64}] for MIME attachment.
+    Images not found in DB or from a different tenant are left as-is (will load
+    via the public URL when recipient has internet)."""
+    if not body_html:
+        return body_html, []
+    ids_in_body = INLINE_IMAGE_URL_RE.findall(body_html)
+    if not ids_in_body:
+        return body_html, []
+    docs = await db.inline_images.find(
+        {"id": {"$in": list(set(ids_in_body))}, "tenant_id": tenant_id}
+    ).to_list(50)
+    inline_list: list[dict] = []
+    new_body = body_html
+    for d in docs:
+        cid = f"img-{d['id']}"
+        inline_list.append({
+            "cid": cid,
+            "filename": d.get("filename", f"{d['id']}.png"),
+            "content_type": d.get("content_type", "image/png"),
+            "data_b64": d["data_b64"],
+        })
+        # Replace ANY src that references this image id (with or without ext, http or https or relative)
+        pat = re.compile(
+            r'src=["\'](?:https?://[^"\']*?)?/api/inline-images/' + re.escape(d["id"]) + r'(?:\.[a-zA-Z]+)?["\']',
+            re.IGNORECASE,
+        )
+        new_body = pat.sub(f'src="cid:{cid}"', new_body)
+    return new_body, inline_list
 
 
 # ─── Email Activity ───
@@ -4155,13 +4272,17 @@ async def _scheduler_loop():
                 else:
                     tracked = s["body_html"]
                 unsubscribe_url = f"{PUBLIC_BASE_URL}/api/track/unsubscribe/{s['id']}" if PUBLIC_BASE_URL else None
+                final_body, inline_imgs = await _extract_inline_images_for_send(tracked, s["tenant_id"])
                 result = await asyncio.to_thread(
                     send_smtp_email,
                     smtp_src["smtp_host"], int(smtp_src.get("smtp_port") or 587),
                     smtp_src.get("smtp_user") or "", smtp_src.get("smtp_password") or "",
                     bool(smtp_src.get("smtp_use_tls", True)),
-                    from_email, from_name, s["to_email"], s["subject"], tracked,
-                    body_type, atts, unsubscribe_url, from_email,
+                    from_email, from_name, s["to_email"], s["subject"], final_body,
+                    body_type, atts,
+                    inline_images=inline_imgs,
+                    list_unsubscribe_url=unsubscribe_url,
+                    reply_to=from_email,
                 )
                 if result["ok"]:
                     await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "delivered", "delivered": True, "sent_at": now_iso()}})

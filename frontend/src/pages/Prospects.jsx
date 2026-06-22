@@ -33,6 +33,52 @@ const ensureHtml = (body) => {
   return body.split(/\n{2,}/).map((p) => `<p>${p.replace(/\n/g, "<br/>")}</p>`).join("");
 };
 
+// Hook: build Quill modules with image-upload handler that uploads to backend
+// and inserts the returned URL as <img>. Recipients see the image inline because
+// the backend converts it to a CID attachment at send-time (see _extract_inline_images_for_send).
+function useQuillModulesWithImage(quillRef) {
+  return useMemo(() => ({
+    toolbar: {
+      container: [
+        [{ header: [1, 2, 3, false] }],
+        ["bold", "italic", "underline"],
+        [{ list: "ordered" }, { list: "bullet" }],
+        [{ align: ["", "center", "right", "justify"] }],
+        ["link", "image", "clean"],
+      ],
+      handlers: {
+        image: () => {
+          const input = document.createElement("input");
+          input.setAttribute("type", "file");
+          input.setAttribute("accept", "image/png,image/jpeg,image/jpg,image/gif,image/webp");
+          input.click();
+          input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            const fd = new FormData();
+            fd.append("file", file);
+            const t = toast.loading("Mengunggah gambar…");
+            try {
+              const { data } = await api.post("/uploads/inline-image", fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+              });
+              const editor = quillRef.current?.getEditor?.();
+              if (editor) {
+                const range = editor.getSelection(true) || { index: editor.getLength() };
+                editor.insertEmbed(range.index, "image", data.url, "user");
+                editor.setSelection(range.index + 1, 0);
+              }
+              toast.success("Gambar ditambahkan", { id: t });
+            } catch (err) {
+              toast.error("Gagal upload: " + (err?.response?.data?.detail || err.message), { id: t });
+            }
+          };
+        },
+      },
+    },
+  }), [quillRef]);
+}
+
 const STATUSES = ["New", "Contacted", "Interested", "Meeting Scheduled", "Customer", "Lost"];
 const STATUS_TONE = {
   "New": "neutral", "Contacted": "info", "Interested": "warning",
@@ -1067,6 +1113,8 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState(false);
   const [refreshingTpl, setRefreshingTpl] = useState(false);
+  const quillRef = useRef(null);
+  const quillModules = useQuillModulesWithImage(quillRef);
 
   const loadTemplates = async (showToast = false) => {
     setRefreshingTpl(true);
@@ -1213,11 +1261,12 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
                 <div className="quill-wrapper" data-testid="outreach-body">
                   <ReactQuill
                     key={`outreach-quill-${form.template_id || "blank"}`}
+                    ref={quillRef}
                     theme="snow"
                     value={form.body_html}
                     onChange={(v) => setForm({ ...form, body_html: v })}
-                    modules={QUILL_SIMPLE_MODULES}
-                    placeholder="Tulis email Anda di sini..."
+                    modules={quillModules}
+                    placeholder="Tulis email Anda di sini… (Klik ikon 🖼 di toolbar untuk tambah gambar signature)"
                   />
                 </div>
               </div>
@@ -1503,6 +1552,8 @@ function EmailStep({ task, onSubmitted }) {
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState(false);
   const [refreshingTpl, setRefreshingTpl] = useState(false);
+  const quillRefEmail = useRef(null);
+  const quillModulesEmail = useQuillModulesWithImage(quillRefEmail);
 
   const loadTemplates = async (showToast = false) => {
     setRefreshingTpl(true);
@@ -1665,11 +1716,12 @@ function EmailStep({ task, onSubmitted }) {
               <div className="quill-wrapper" data-testid="email-body">
                 <ReactQuill
                   key={`email-quill-${form.template_id || "blank"}`}
+                  ref={quillRefEmail}
                   theme="snow"
                   value={form.body_html}
                   onChange={(v) => setForm({ ...form, body_html: v })}
-                  modules={QUILL_SIMPLE_MODULES}
-                  placeholder="Tulis email Anda di sini..."
+                  modules={quillModulesEmail}
+                  placeholder="Tulis email Anda di sini… (Klik ikon 🖼 di toolbar untuk tambah gambar signature)"
                 />
               </div>
             </div>

@@ -12,6 +12,7 @@ import uuid
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
 from email.utils import make_msgid, formatdate, formataddr
 from email import encoders
 from typing import Dict, List, Optional
@@ -79,13 +80,14 @@ def send_smtp_email(
     html_body: str,
     body_type: str = "html",  # "html" | "plain"
     attachments: Optional[List[Dict]] = None,  # [{filename, content_type, data_b64}]
+    inline_images: Optional[List[Dict]] = None,  # [{cid, content_type, data_b64}] — embedded via Content-ID
     list_unsubscribe_url: Optional[str] = None,
     reply_to: Optional[str] = None,
 ) -> Dict:
-    """Synchronous SMTP send with attachments + anti-spam headers. Returns {ok, error}."""
+    """Synchronous SMTP send with attachments + inline images (CID) + anti-spam headers. Returns {ok, error}."""
     try:
-        # Top-level multipart/mixed when attachments present, else multipart/alternative.
         has_attachments = bool(attachments)
+        has_inline = bool(inline_images)
         alt = MIMEMultipart("alternative")
 
         # Auto-detect: if the "plain" body actually contains HTML tags (e.g. from a rich
@@ -100,9 +102,32 @@ def send_smtp_email(
             alt.attach(MIMEText(plain or " ", "plain", "utf-8"))
             alt.attach(MIMEText(wrapped, "html", "utf-8"))
 
+        # MIME tree: when we have inline images, wrap the alternative in multipart/related
+        # so each <img src="cid:..."> resolves to its attached part. Order matters: alternative
+        # part FIRST, then each inline image part.
+        if has_inline:
+            related = MIMEMultipart("related")
+            related.attach(alt)
+            for img in inline_images:
+                try:
+                    raw = base64.b64decode(img["data_b64"])
+                    ctype = img.get("content_type") or "image/png"
+                    subtype = ctype.split("/", 1)[1] if "/" in ctype else "png"
+                    img_part = MIMEImage(raw, _subtype=subtype)
+                    cid = img["cid"]
+                    # Content-ID must be wrapped in angle brackets per RFC2392
+                    img_part.add_header("Content-ID", f"<{cid}>")
+                    img_part.add_header("Content-Disposition", "inline", filename=img.get("filename", f"{cid}.{subtype}"))
+                    related.attach(img_part)
+                except Exception as e:
+                    logger.warning("Failed to embed inline image cid=%s: %s", img.get("cid"), e)
+            body_part = related
+        else:
+            body_part = alt
+
         if has_attachments:
             msg = MIMEMultipart("mixed")
-            msg.attach(alt)
+            msg.attach(body_part)
             for a in attachments:
                 try:
                     part = MIMEBase(*(a.get("content_type") or "application/octet-stream").split("/", 1)) \
@@ -117,7 +142,7 @@ def send_smtp_email(
                 except Exception as e:
                     logger.warning("Failed to attach %s: %s", a.get("filename"), e)
         else:
-            msg = alt
+            msg = body_part
 
         # Headers that improve deliverability / lower spam score
         msg["Subject"] = subject
