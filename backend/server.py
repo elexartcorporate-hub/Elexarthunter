@@ -4745,6 +4745,152 @@ async def system_clock():
     }
 
 
+# ────────────────────────────────────────────────────────────
+# WhatsApp (Baileys sidecar proxy)
+# ────────────────────────────────────────────────────────────
+import httpx
+
+WA_SERVICE_URL = os.environ.get("WA_SERVICE_URL", "http://localhost:3002")
+WA_SERVICE_SECRET = os.environ.get("WA_SERVICE_SECRET", "")
+WA_MAX_ACCOUNTS_PER_USER = 3
+
+
+def _wa_headers():
+    return {"X-WA-Secret": WA_SERVICE_SECRET, "Content-Type": "application/json"}
+
+
+async def _wa_call(method: str, path: str, *, json: Optional[dict] = None, params: Optional[dict] = None):
+    """Proxy helper to wa-service sidecar with timeout + error pass-through."""
+    url = f"{WA_SERVICE_URL}{path}"
+    async with httpx.AsyncClient(timeout=15.0) as cx:
+        try:
+            r = await cx.request(method, url, json=json, params=params, headers=_wa_headers())
+        except httpx.HTTPError as e:
+            raise HTTPException(503, f"WA service tidak tersedia: {e}")
+    if r.status_code >= 400:
+        try:
+            detail = r.json().get("error") or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(r.status_code, f"WA service: {detail}")
+    if r.headers.get("content-type", "").startswith("application/json"):
+        return r.json()
+    return {"raw": r.text}
+
+
+def _wa_scope_query(user: dict) -> dict:
+    """Owner sees ALL accounts in tenant (sales monitoring). Others: own only."""
+    q = {"tenant_id": user["tenant_id"]}
+    if user.get("role") != "Owner":
+        q["user_id"] = user["id"]
+    return q
+
+
+async def _wa_check_account_access(session_id: str, user: dict) -> dict:
+    """Return account doc if user has access, else 404/403."""
+    acc = await db.wa_accounts.find_one({"session_id": session_id, **_wa_scope_query(user)})
+    if not acc:
+        # Also check existence outside scope to disambiguate 403 vs 404
+        exists = await db.wa_accounts.find_one({"session_id": session_id}, {"_id": 0, "user_id": 1})
+        if exists:
+            raise HTTPException(403, "Anda tidak punya akses ke akun WA ini")
+        raise HTTPException(404, "Akun WA tidak ditemukan")
+    return acc
+
+
+class WAAccountCreate(BaseModel):
+    label: Optional[str] = None
+
+
+@api.get("/whatsapp/accounts")
+async def wa_list_accounts(user: dict = Depends(get_current_user)):
+    """List WA accounts. Owner sees all in tenant (sales monitoring), others see own."""
+    rows = await db.wa_accounts.find(_wa_scope_query(user), {"_id": 0}).sort("created_at", -1).to_list(50)
+    # Enrich with live status from sidecar (best-effort)
+    out = []
+    for r in rows:
+        live = None
+        try:
+            live = await _wa_call("GET", f"/sessions/{r['session_id']}")
+        except HTTPException:
+            live = None
+        out.append({**r, "live_status": (live or {}).get("status"), "qr": (live or {}).get("qr")})
+    return out
+
+
+@api.post("/whatsapp/accounts")
+async def wa_create_account(payload: WAAccountCreate, user: dict = Depends(get_current_user)):
+    """Create a new WA session for current user. Limit: WA_MAX_ACCOUNTS_PER_USER per user."""
+    count = await db.wa_accounts.count_documents({"tenant_id": user["tenant_id"], "user_id": user["id"]})
+    if count >= WA_MAX_ACCOUNTS_PER_USER:
+        raise HTTPException(400, f"Maks {WA_MAX_ACCOUNTS_PER_USER} akun WA per user")
+    session_id = uuid.uuid4().hex
+    res = await _wa_call(
+        "POST", "/sessions",
+        json={"session_id": session_id, "tenant_id": user["tenant_id"], "user_id": user["id"], "label": payload.label},
+    )
+    # Mirror to local DB (sidecar already upserted, but ensure tenant/user fields)
+    await db.wa_accounts.update_one(
+        {"session_id": session_id},
+        {"$set": {
+            "session_id": session_id,
+            "tenant_id": user["tenant_id"],
+            "user_id": user["id"],
+            "label": payload.label,
+        }},
+        upsert=True,
+    )
+    return {"session_id": session_id, **res}
+
+
+@api.get("/whatsapp/accounts/{sid}/status")
+async def wa_account_status(sid: str, user: dict = Depends(get_current_user)):
+    """Get live status (qr / connecting / connected / logged_out)."""
+    await _wa_check_account_access(sid, user)
+    return await _wa_call("GET", f"/sessions/{sid}")
+
+
+@api.delete("/whatsapp/accounts/{sid}")
+async def wa_delete_account(sid: str, user: dict = Depends(get_current_user)):
+    """Logout + delete WA account. Non-Owner only deletes own; Owner can delete any in tenant."""
+    await _wa_check_account_access(sid, user)
+    return await _wa_call("DELETE", f"/sessions/{sid}")
+
+
+@api.get("/whatsapp/accounts/{sid}/chats")
+async def wa_list_chats(sid: str, limit: int = 100, user: dict = Depends(get_current_user)):
+    await _wa_check_account_access(sid, user)
+    return await _wa_call("GET", f"/sessions/{sid}/chats", params={"limit": limit})
+
+
+@api.get("/whatsapp/accounts/{sid}/chats/{jid}/messages")
+async def wa_list_messages(sid: str, jid: str, limit: int = 50, user: dict = Depends(get_current_user)):
+    await _wa_check_account_access(sid, user)
+    return await _wa_call("GET", f"/sessions/{sid}/chats/{jid}/messages", params={"limit": limit})
+
+
+class WASendText(BaseModel):
+    text: str
+
+
+@api.post("/whatsapp/accounts/{sid}/chats/{jid}/messages")
+async def wa_send_text(sid: str, jid: str, payload: WASendText, user: dict = Depends(get_current_user)):
+    """Send text. Owner has read-only access for monitoring → only sender can send."""
+    acc = await _wa_check_account_access(sid, user)
+    if acc["user_id"] != user["id"]:
+        raise HTTPException(403, "Hanya pemilik akun WA yang bisa mengirim pesan")
+    return await _wa_call("POST", f"/sessions/{sid}/chats/{jid}/messages", json={"text": payload.text})
+
+
+@api.post("/whatsapp/accounts/{sid}/chats/{jid}/read")
+async def wa_mark_read(sid: str, jid: str, user: dict = Depends(get_current_user)):
+    acc = await _wa_check_account_access(sid, user)
+    if acc["user_id"] != user["id"]:
+        # Owner viewing — don't mark read on someone else's behalf
+        return {"ok": True, "skipped": "owner_view_only"}
+    return await _wa_call("POST", f"/sessions/{sid}/chats/{jid}/read")
+
+
 app.include_router(api)
 
 app.add_middleware(

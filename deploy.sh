@@ -17,6 +17,7 @@ set -euo pipefail
 # Ganti dengan domain Anda yang sesungguhnya:
 DOMAIN="${DOMAIN:-hunter.elexart.com}"
 SUPERVISOR_BACKEND="${SUPERVISOR_BACKEND:-hunter-backend}"
+SUPERVISOR_WA="${SUPERVISOR_WA:-hunter-wa-service}"
 REACT_APP_BACKEND_URL="${REACT_APP_BACKEND_URL:-https://$DOMAIN}"
 BRANCH="${BRANCH:-main}"
 # ───────────────────────────────────────────────────────────────────────────
@@ -49,6 +50,23 @@ cd ..
 log "Restart backend (supervisor: $SUPERVISOR_BACKEND) …"
 sudo supervisorctl restart "$SUPERVISOR_BACKEND"
 ok "Backend up"
+
+# ─── 2b. WA Service (Baileys Node.js sidecar): install deps + restart ──────
+if [[ -d wa-service ]]; then
+  log "WA Service: yarn install …"
+  cd wa-service
+  yarn install --frozen-lockfile --silent || yarn install --silent
+  cd ..
+  if sudo supervisorctl status "$SUPERVISOR_WA" >/dev/null 2>&1; then
+    log "Restart wa-service (supervisor: $SUPERVISOR_WA) …"
+    sudo supervisorctl restart "$SUPERVISOR_WA"
+    ok "WA Service up"
+  else
+    log "WA Service belum di supervisor — skip restart. Setup supervisor config dulu:"
+    log "  sudo cp etc/supervisor.wa-service.conf /etc/supervisor/conf.d/$SUPERVISOR_WA.conf"
+    log "  sudo supervisorctl reread && sudo supervisorctl update"
+  fi
+fi
 
 # ─── 3. Frontend: build production ─────────────────────────────────────────
 log "Frontend: yarn install + build (REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL) …"

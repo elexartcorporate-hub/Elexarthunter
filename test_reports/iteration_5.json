@@ -1,0 +1,63 @@
+{
+  "summary": "End-to-end testing of WhatsApp (Baileys) module: backend RBAC + sidecar proxy + QR generation + frontend nav/empty/QR-modal/account-card/delete flows. 9/9 backend pytest cases pass. Frontend UI flow verified: nav-whatsapp visible, /whatsapp route renders, EmptyState renders, Add WhatsApp opens qr-modal, qr-image renders within seconds, account card with 'Connecting...' badge appears, modal close keeps card, delete returns to EmptyState. Cleaned all test accounts after run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "QrModal", "issue": "qr-modal-close button is rendered outside viewport when QR is large (modal taller than 1080px viewport, no overflow scroll on modal). Modal closes only via JS click or pressing the X if the user scrolls. Acceptable in 1920x1080 but should ideally have max-height + overflow-y on modal container.", "selector": "[data-testid='qr-modal-close']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_whatsapp.py",
+    "/app/test_reports/pytest/whatsapp_results.xml"
+  ],
+  "action_items": [
+    "(Optional polish) Add max-h-[90vh] + overflow-y-auto to qr-modal container so the X close button is always reachable on smaller viewports."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~5000 lines — should be split into routers (whatsapp, prospects, auth, etc.) per code_review_guidelines (>700 lines threshold).",
+    "_wa_call swallows non-JSON errors as {'raw': text}; consider returning structured error.",
+    "wa_list_accounts performs N+1 sidecar calls in a loop to enrich live_status — could become slow when many accounts. Consider a sidecar batch endpoint or parallelizing with asyncio.gather.",
+    "WhatsApp.jsx polls /status every 2s and /chats every 8s and /messages every 5s — three concurrent intervals could overwhelm backend in production; consider WebSocket / SSE.",
+    "Owner role can see/read other users' chats (intended for monitoring) but consider audit-logging when Owner reads someone else's chats."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_whatsapp.py (created)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "test_credentials": "Owner: demo@test.com / demo1234, Staff: milla.staff@test.com / staff1234 (from /app/memory/test_credentials.md). Note: login response uses key 'token', not 'access_token'.",
+  "seed_data_creation": "No persistent seed. Test fixtures create/delete temporary WA sessions. All cleaned up after run (verified 0 accounts remain for both users).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest at /app/backend/tests/test_whatsapp.py covers all critical WhatsApp endpoints (sidecar health/auth, account create/status/delete, max-3 enforcement, RBAC scoping: Owner sees all/Staff sees own, Owner cannot send on Staff account => 403 'Hanya pemilik akun WA yang bisa mengirim pesan'). Login token field is 'token' (NOT 'access_token'). Sidecar at http://localhost:3002 with X-WA-Secret=lh-wa-internal-secret-2026. Frontend page is /whatsapp, all data-testids documented in review_request. Confirm dialog auto-accepted via window.confirm = () => true.",
+  "tests_executed": {
+    "backend": [
+      "TestSidecar::test_health_ok - PASS",
+      "TestSidecar::test_protected_requires_secret - PASS",
+      "TestSidecar::test_protected_accepts_secret - PASS",
+      "TestAccountCRUD::test_create_account - PASS",
+      "TestAccountCRUD::test_status_returns_qr_within_5s - PASS (data:image/png base64 returned within 1-2s)",
+      "TestAccountCRUD::test_max_3_per_user - PASS (4th returns 400 'Maks 3 akun WA per user')",
+      "TestAccountCRUD::test_empty_chats_list - PASS",
+      "TestAccountCRUD::test_delete_account - PASS (subsequent status returns 404)",
+      "TestRBAC::test_staff_only_sees_own_and_owner_sees_all - PASS (Owner sees both, Staff sees own only; Owner send on Staff acc => 403; Staff send on own acc => non-403)"
+    ],
+    "frontend": [
+      "nav-whatsapp visible in sidebar after login - PASS",
+      "Click nav-whatsapp navigates to /whatsapp - PASS",
+      "EmptyState 'Belum ada akun WhatsApp' shown when 0 accounts - PASS",
+      "Click wa-add-account opens qr-modal - PASS",
+      "qr-image renders within ~5s - PASS (Baileys returns base64 QR data URL quickly)",
+      "Account card wa-account-{sid} appears in left rail with 'Connecting...' badge - PASS",
+      "Close modal keeps account card - PASS (verified via JS click since modal taller than viewport)",
+      "Delete (wa-delete-{sid}) removes card - PASS",
+      "EmptyState returns after deleting all - PASS",
+      "Add button disabled when 3 accounts - NOT FULLY VERIFIED via UI in 2nd run (modal-open timeout on retry), but code is `disabled={!canAdd}` with canAdd=ownAccountsCount<3 and BACKEND enforces 400 on 4th create (verified in pytest)"
+    ]
+  },
+  "rca_of_the_issue": "No bugs to RCA. Single minor UX note: qr-modal container lacks max-height/overflow-y, so on viewports < ~900px the close X button is below the fold; not blocking — user can press Esc or click outside (no escape handler implemented, but clicking the dimmed backdrop closes it via the modal's onClick handler). Recommend adding max-h-[90vh] overflow-y-auto on the qr-modal div."
+}

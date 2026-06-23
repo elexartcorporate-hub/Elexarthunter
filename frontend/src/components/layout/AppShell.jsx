@@ -9,6 +9,7 @@ import {
   Buildings,
   Lightning,
   Tray,
+  WhatsappLogo,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -16,6 +17,7 @@ const NAV = [
   { to: "/",           label: "Dashboard",       icon: ChartLineUp,  perm: "dashboard",      testid: "nav-dashboard" },
   { to: "/prospects",  label: "Prospects",       icon: UsersFour,    perm: "prospects",      testid: "nav-prospects" },
   { to: "/inbox",      label: "Inbox",           icon: Tray,         perm: "inbox",          testid: "nav-inbox" },
+  { to: "/whatsapp",   label: "WhatsApp",        icon: WhatsappLogo, perm: "inbox",          testid: "nav-whatsapp" },
   { to: "/templates",  label: "Templates",       icon: ListChecks,   perm: "templates",      testid: "nav-templates" },
   { to: "/settings",   label: "Settings",        icon: Gear,         perm: "settings",       testid: "nav-settings" },
 ];
