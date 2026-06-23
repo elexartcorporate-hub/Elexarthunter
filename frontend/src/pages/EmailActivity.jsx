@@ -1,21 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
-import { PageHeader, Card, TermInput, TermSelect, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
-import { EnvelopeOpen, MagnifyingGlass, CalendarBlank, ArrowRight } from "@phosphor-icons/react";
+import { PageHeader, Card, PrimaryButton, Badge, EmptyState } from "@/components/term";
+import {
+  EnvelopeOpen, MagnifyingGlass, CalendarBlank, ArrowRight,
+  CaretRight, XCircle, Clock, Buildings,
+} from "@phosphor-icons/react";
 import { toast } from "sonner";
 
-const STATUSES = ["scheduled", "queued", "delivered", "opened", "clicked", "replied", "bounce", "unsubscribed"];
+const STATUSES = ["scheduled", "queued", "delivered", "opened", "clicked", "replied", "bounce", "unsubscribed", "cancelled"];
 const TONE = {
   scheduled: "purple", queued: "neutral", delivered: "success", opened: "info",
-  clicked: "purple", replied: "success", bounce: "error", unsubscribed: "warning",
+  clicked: "purple", replied: "success", bounce: "error", unsubscribed: "warning", cancelled: "neutral",
 };
 const RANGES = [
-  { key: "today",     label: "Today" },
-  { key: "week",      label: "This Week" },
-  { key: "month",     label: "This Month" },
-  { key: "custom",    label: "Custom" },
-  { key: "all",       label: "All Time" },
+  { key: "today",  label: "Today" },
+  { key: "week",   label: "This Week" },
+  { key: "month",  label: "This Month" },
+  { key: "custom", label: "Custom" },
+  { key: "all",    label: "All Time" },
 ];
 
 export default function EmailActivity() {
@@ -27,12 +30,13 @@ export default function EmailActivity() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [q, setQ] = useState("");
+  const [expanded, setExpanded] = useState(new Set());
+  const [cancellingId, setCancellingId] = useState(null);
 
   const computeRange = () => {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (range === "today")
-      return { date_from: today.toISOString() };
+    if (range === "today") return { date_from: today.toISOString() };
     if (range === "week") {
       const w = new Date(today); w.setDate(w.getDate() - 7);
       return { date_from: w.toISOString() };
@@ -69,36 +73,83 @@ export default function EmailActivity() {
     return rows.filter((r) => `${r.to_email} ${r.subject} ${r.prospect_name || ""}`.toLowerCase().includes(ql));
   }, [rows, q]);
 
+  // Group emails by prospect (prospect_id, falling back to prospect_name, falling back to "Unknown").
+  // Per group: collect emails, compute status breakdown, latest sent_at, top sender.
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const r of filtered) {
+      const key = r.prospect_id || r.prospect_name || "__unknown__";
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          prospect_id: r.prospect_id,
+          prospect_name: r.prospect_name || "—",
+          emails: [],
+          senders: new Set(),
+          latest: null,
+          counts: {},
+        });
+      }
+      const g = map.get(key);
+      g.emails.push(r);
+      if (r.sender_name) g.senders.add(r.sender_name);
+      const when = r.sent_at || r.scheduled_at || r.created_at;
+      if (when && (!g.latest || when > g.latest)) g.latest = when;
+      g.counts[r.status] = (g.counts[r.status] || 0) + 1;
+    }
+    // Sort: most-recent activity first
+    return Array.from(map.values()).sort((a, b) => (b.latest || "").localeCompare(a.latest || ""));
+  }, [filtered]);
+
   const stats = useMemo(() => {
     const s = { total: rows.length };
     STATUSES.forEach((k) => { s[k] = rows.filter((r) => r.status === k).length; });
     return s;
   }, [rows]);
 
+  const toggle = (key) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const cancelScheduled = async (sendId, toEmail) => {
+    if (!confirm(`Batalkan email terjadwal ke ${toEmail}?`)) return;
+    setCancellingId(sendId);
+    try {
+      await api.post(`/scheduled-emails/${sendId}/cancel`);
+      toast.success(`✓ Email ke ${toEmail} dibatalkan`);
+      // Update local state — change status to "cancelled"
+      setRows((prev) => prev.map((r) => (r.id === sendId ? { ...r, status: "cancelled", cancelled_at: new Date().toISOString() } : r)));
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
   return (
     <div className="p-6 md:p-8 fade-up max-w-[1600px] mx-auto">
-      <PageHeader title="Email Activity" subtitle="Track all outbound emails — delivery, opens, clicks, bounces" />
+      <PageHeader title="Email Activity" subtitle="Track all outbound emails — grouped per prospect, click to expand" />
 
-      {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-7 gap-2 mb-5">
-        <KpiPill label="Total"     value={stats.total}        tone="text-slate-900" active={status === ""} onClick={() => setStatus("")} testid="kpi-all" />
-        {STATUSES.map((s) => (
-          <KpiPill key={s} label={s} value={stats[s] || 0} tone={`text-${TONE[s] === "success" ? "emerald" : TONE[s] === "info" ? "cyan" : TONE[s] === "purple" ? "indigo" : TONE[s] === "error" ? "rose" : TONE[s] === "warning" ? "amber" : "slate"}-600`} active={status === s} onClick={() => setStatus(s)} testid={`kpi-${s}`} />
+        <KpiPill label="Total" value={stats.total} tone="text-slate-900" active={status === ""} onClick={() => setStatus("")} testid="kpi-all" />
+        {STATUSES.slice(0, 6).map((s) => (
+          <KpiPill key={s} label={s} value={stats[s] || 0}
+            tone={`text-${TONE[s] === "success" ? "emerald" : TONE[s] === "info" ? "cyan" : TONE[s] === "purple" ? "indigo" : TONE[s] === "error" ? "rose" : TONE[s] === "warning" ? "amber" : "slate"}-600`}
+            active={status === s} onClick={() => setStatus(s)} testid={`kpi-${s}`} />
         ))}
       </div>
 
-      {/* Range filter */}
       <Card className="p-4 mb-4">
         <div className="flex flex-wrap items-center gap-2">
           {RANGES.map((r) => (
-            <button
-              key={r.key}
-              onClick={() => setRange(r.key)}
-              data-testid={`range-${r.key}`}
+            <button key={r.key} onClick={() => setRange(r.key)} data-testid={`range-${r.key}`}
               className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
                 range === r.key ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
-              }`}
-            >
+              }`}>
               <CalendarBlank size={12} weight="bold" className="inline mr-1" />{r.label}
             </button>
           ))}
@@ -125,58 +176,127 @@ export default function EmailActivity() {
       <Card className="p-0 overflow-hidden">
         {loading ? (
           <div className="text-center py-10 text-slate-500">Loading...</div>
-        ) : filtered.length === 0 ? (
+        ) : groups.length === 0 ? (
           <EmptyState icon={EnvelopeOpen} title="No emails yet" description="Send your first email from a prospect's detail page." />
         ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
-              <tr>
-                <th className="text-left p-3">When</th>
-                <th className="text-left p-3">To</th>
-                <th className="text-left p-3">Subject</th>
-                <th className="text-left p-3">Prospect</th>
-                <th className="text-left p-3">Sender</th>
-                <th className="text-left p-3">Status</th>
-                <th className="text-left p-3">Opens</th>
-                <th className="text-left p-3">Clicks</th>
-                <th className="text-right p-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((s) => (
-                <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="p-3 text-xs text-slate-500">
-                    {s.status === "scheduled" && s.scheduled_at ? (
-                      <span className="text-purple-600 font-medium">⏱ {fmtTime(s.scheduled_at)}</span>
-                    ) : (
-                      fmtTime(s.sent_at || s.created_at)
-                    )}
-                  </td>
-                  <td className="p-3 font-mono text-xs text-slate-900">{s.to_email}</td>
-                  <td className="p-3 text-xs text-slate-700 max-w-xs truncate">{s.subject}</td>
-                  <td className="p-3 text-xs text-slate-700">{s.prospect_name || "—"}</td>
-                  <td className="p-3 text-xs text-slate-500">{s.sender_name || "—"}</td>
-                  <td className="p-3">
-                    <Badge tone={TONE[s.status] || "neutral"}>{s.status}</Badge>
-                    {s.status === "bounce" && s.error && (
-                      <div className="text-[10px] text-rose-600 mt-1 max-w-xs leading-tight" title={s.error}>
-                        ⚠ {String(s.error).slice(0, 80)}{s.error.length > 80 ? "..." : ""}
+          <div className="divide-y divide-slate-100">
+            {groups.map((g) => {
+              const isOpen = expanded.has(g.key);
+              const total = g.emails.length;
+              return (
+                <div key={g.key} data-testid={`group-${g.key}`}>
+                  {/* Group header (1 row per prospect) */}
+                  <button
+                    type="button"
+                    onClick={() => toggle(g.key)}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left transition"
+                    data-testid={`group-toggle-${g.key}`}
+                  >
+                    <CaretRight size={14} weight="bold" className={`text-slate-400 shrink-0 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                    <div className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-600 grid place-items-center shrink-0">
+                      <Buildings size={16} weight="bold" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm text-slate-900 truncate">{g.prospect_name}</div>
+                      <div className="text-[11px] text-slate-500 flex items-center gap-2 flex-wrap">
+                        <span>{total} email{total > 1 ? "s" : ""}</span>
+                        {g.latest && <><span>·</span><span>terakhir {fmtRelative(g.latest)}</span></>}
+                        {g.senders.size > 0 && <><span>·</span><span>oleh {Array.from(g.senders).join(", ")}</span></>}
                       </div>
-                    )}
-                  </td>
-                  <td className="p-3 text-xs">{s.opens > 0 ? <Badge tone="info">{s.opens}</Badge> : <span className="text-slate-400">0</span>}</td>
-                  <td className="p-3 text-xs">{s.clicks > 0 ? <Badge tone="purple">{s.clicks}</Badge> : <span className="text-slate-400">0</span>}</td>
-                  <td className="p-3 text-right">
-                    {s.prospect_id && (
-                      <button onClick={() => navigate(`/prospects/${s.prospect_id}`)} className="text-indigo-600 hover:text-indigo-800" data-testid={`open-prospect-${s.id}`}>
+                    </div>
+                    {/* Status pills (count per status) */}
+                    <div className="hidden sm:flex items-center gap-1 shrink-0">
+                      {STATUSES.map((s) => (g.counts[s] ? (
+                        <Badge key={s} tone={TONE[s] || "neutral"}>
+                          {g.counts[s]} {s}
+                        </Badge>
+                      ) : null))}
+                    </div>
+                    {g.prospect_id && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/prospects/${g.prospect_id}`); }}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); navigate(`/prospects/${g.prospect_id}`); } }}
+                        className="text-indigo-600 hover:text-indigo-800 p-1 shrink-0 cursor-pointer"
+                        data-testid={`goto-prospect-${g.prospect_id}`}
+                        title="Buka detail prospect"
+                      >
                         <ArrowRight size={14} weight="bold" />
-                      </button>
+                      </span>
                     )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </button>
+
+                  {/* Expanded detail: nested table of individual emails */}
+                  {isOpen && (
+                    <div className="bg-slate-50/50 px-4 pb-4 pt-1">
+                      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wide">
+                            <tr>
+                              <th className="text-left px-3 py-2 whitespace-nowrap">When</th>
+                              <th className="text-left px-3 py-2 whitespace-nowrap">To</th>
+                              <th className="text-left px-3 py-2 whitespace-nowrap">Subject</th>
+                              <th className="text-left px-3 py-2 whitespace-nowrap">Sender</th>
+                              <th className="text-left px-3 py-2 whitespace-nowrap">Status</th>
+                              <th className="text-center px-3 py-2 whitespace-nowrap">Opens</th>
+                              <th className="text-center px-3 py-2 whitespace-nowrap">Clicks</th>
+                              <th className="text-right px-3 py-2 whitespace-nowrap">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.emails.map((s) => {
+                              const isScheduled = s.status === "scheduled" || s.status === "queued";
+                              return (
+                                <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50">
+                                  <td className="px-3 py-2 whitespace-nowrap max-w-[140px] truncate" title={fmtTime(s.sent_at || s.scheduled_at || s.created_at)}>
+                                    {s.status === "scheduled" && s.scheduled_at ? (
+                                      <span className="text-purple-600 font-medium inline-flex items-center gap-1">
+                                        <Clock size={11} weight="bold" /> {fmtTime(s.scheduled_at)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-500">{fmtTime(s.sent_at || s.created_at)}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 font-mono text-[11px] text-slate-900 whitespace-nowrap max-w-[200px] truncate" title={s.to_email}>{s.to_email}</td>
+                                  <td className="px-3 py-2 text-slate-700 whitespace-nowrap max-w-[220px] truncate" title={s.subject}>{s.subject}</td>
+                                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[120px] truncate" title={s.sender_name || ""}>{s.sender_name || "—"}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap">
+                                    <Badge tone={TONE[s.status] || "neutral"}>{s.status}</Badge>
+                                    {s.status === "bounce" && s.error && (
+                                      <div className="text-[10px] text-rose-600 mt-1 max-w-[200px] leading-tight truncate" title={s.error}>⚠ {s.error}</div>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 text-center">{s.opens > 0 ? <Badge tone="info">{s.opens}</Badge> : <span className="text-slate-400">0</span>}</td>
+                                  <td className="px-3 py-2 text-center">{s.clicks > 0 ? <Badge tone="purple">{s.clicks}</Badge> : <span className="text-slate-400">0</span>}</td>
+                                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                                    {isScheduled ? (
+                                      <button
+                                        onClick={() => cancelScheduled(s.id, s.to_email)}
+                                        disabled={cancellingId === s.id}
+                                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 disabled:opacity-50"
+                                        data-testid={`cancel-${s.id}`}
+                                        title="Batalkan email ini"
+                                      >
+                                        <XCircle size={11} weight="bold" />
+                                        {cancellingId === s.id ? "…" : "Cancel"}
+                                      </button>
+                                    ) : (
+                                      <span className="text-slate-300 text-[10px]">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </Card>
     </div>
@@ -201,5 +321,23 @@ function KpiPill({ label, value, tone, active, onClick, testid }) {
 function fmtTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
-  return d.toLocaleString();
+  return d.toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtRelative(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 0) {
+    // Future (scheduled)
+    const f = Math.abs(diff);
+    if (f < 3600) return `dalam ${Math.round(f / 60)}m`;
+    if (f < 86400) return `dalam ${Math.round(f / 3600)}j`;
+    return `dalam ${Math.round(f / 86400)}h`;
+  }
+  if (diff < 60)   return "baru saja";
+  if (diff < 3600) return `${Math.round(diff / 60)}m lalu`;
+  if (diff < 86400) return `${Math.round(diff / 3600)}j lalu`;
+  if (diff < 86400 * 7) return `${Math.round(diff / 86400)}h lalu`;
+  return d.toLocaleDateString("id-ID");
 }
