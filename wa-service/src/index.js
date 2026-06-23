@@ -5,7 +5,9 @@ import {
   stopSession,
   getSessionState,
   sendText,
+  sendMedia,
   markChatRead,
+  listGroups,
 } from "./sessionManager.js";
 
 const PORT = parseInt(process.env.WA_SERVICE_PORT || "3002", 10);
@@ -107,12 +109,17 @@ app.delete("/sessions/:sid", async (req, res) => {
   }
 });
 
-// List chats for a session
+// List chats for a session — supports ?since_ts for delta polling
 app.get("/sessions/:sid/chats", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "100", 10), 500);
+  const q = { session_id: req.params.sid };
+  if (req.query.since_ts) {
+    const since = new Date(req.query.since_ts);
+    if (!isNaN(since.getTime())) q.updated_at = { $gt: since };
+  }
   const chats = await db
     .collection("wa_chats")
-    .find({ session_id: req.params.sid })
+    .find(q)
     .sort({ updated_at: -1 })
     .limit(limit)
     .toArray();
@@ -122,9 +129,14 @@ app.get("/sessions/:sid/chats", async (req, res) => {
 // Messages for a chat
 app.get("/sessions/:sid/chats/:jid/messages", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
+  const sinceTs = req.query.since_ts ? new Date(req.query.since_ts) : null;
+  const q = { session_id: req.params.sid, jid: req.params.jid };
+  if (sinceTs && !isNaN(sinceTs.getTime())) {
+    q.timestamp = { $gt: sinceTs };
+  }
   const msgs = await db
     .collection("wa_messages")
-    .find({ session_id: req.params.sid, jid: req.params.jid })
+    .find(q)
     .sort({ timestamp: -1 })
     .limit(limit)
     .toArray();
@@ -140,6 +152,34 @@ app.post("/sessions/:sid/chats/:jid/messages", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error("send error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Send media (image / video / document / audio) — body: { kind, base64, mimetype, fileName, caption }
+app.post("/sessions/:sid/chats/:jid/media", async (req, res) => {
+  try {
+    const { kind, base64, mimetype, fileName, caption } = req.body || {};
+    if (!kind || !base64) return res.status(400).json({ error: "kind & base64 required" });
+    const allowed = ["image", "video", "document", "audio"];
+    if (!allowed.includes(kind)) return res.status(400).json({ error: `kind must be ${allowed.join("|")}` });
+    const buffer = Buffer.from(base64, "base64");
+    if (buffer.length === 0) return res.status(400).json({ error: "empty buffer" });
+    if (buffer.length > 50 * 1024 * 1024) return res.status(400).json({ error: "file too large (max 50MB)" });
+    await sendMedia(req.params.sid, req.params.jid, { buffer, mimetype, fileName, caption, kind });
+    res.json({ ok: true, size: buffer.length });
+  } catch (e) {
+    console.error("send media error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List groups (fresh fetch from WA — useful when groups change)
+app.get("/sessions/:sid/groups", async (req, res) => {
+  try {
+    const groups = await listGroups(req.params.sid);
+    res.json(groups);
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

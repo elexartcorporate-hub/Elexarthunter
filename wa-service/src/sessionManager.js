@@ -38,19 +38,55 @@ export async function startSession(db, sessionId, onMessage) {
     return sessions.get(sessionId).state;
   }
 
-  const entry = { sock: null, state: getEmptySessionState(), lastQrAt: 0, onMessage };
+  const entry = {
+    sock: null,
+    state: getEmptySessionState(),
+    lastQrAt: 0,
+    onMessage,
+    retryCount: 0,
+    keepAliveTimer: null,
+  };
   sessions.set(sessionId, entry);
 
   await connectSession(db, sessionId);
   return entry.state;
 }
 
+// Exponential backoff with jitter — max 60s between retries
+function nextBackoff(retryCount) {
+  const base = Math.min(60_000, 3_000 * Math.pow(1.6, retryCount));
+  const jitter = Math.random() * 1500;
+  return Math.floor(base + jitter);
+}
+
 async function connectSession(db, sessionId) {
   const entry = sessions.get(sessionId);
   if (!entry) return;
 
-  const { state: authState, saveCreds } = await useMongoAuthState(db, sessionId);
-  const { version } = await fetchLatestBaileysVersion();
+  // Clear any prior keep-alive
+  if (entry.keepAliveTimer) {
+    clearInterval(entry.keepAliveTimer);
+    entry.keepAliveTimer = null;
+  }
+
+  let authBundle;
+  try {
+    authBundle = await useMongoAuthState(db, sessionId);
+  } catch (e) {
+    console.error(`[${sessionId}] auth state load failed:`, e.message);
+    entry.state.status = "reconnecting";
+    entry.retryCount += 1;
+    setTimeout(() => connectSession(db, sessionId).catch(console.error), nextBackoff(entry.retryCount));
+    return;
+  }
+  const { state: authState, saveCreds } = authBundle;
+
+  let version;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch {
+    version = undefined; // baileys will use default
+  }
 
   const sock = makeWASocket({
     version,
@@ -64,6 +100,9 @@ async function connectSession(db, sessionId) {
     syncFullHistory: false,
     markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
+    connectTimeoutMs: 60_000,
+    keepAliveIntervalMs: 25_000,
+    retryRequestDelayMs: 2_000,
   });
 
   entry.sock = sock;
@@ -87,6 +126,7 @@ async function connectSession(db, sessionId) {
       entry.state.status = "connected";
       entry.state.qr = null;
       entry.state.error = null;
+      entry.retryCount = 0; // reset on successful connect
       entry.state.phone = sock.user?.id?.split(":")[0]?.split("@")[0] || null;
       entry.state.name = sock.user?.name || sock.user?.verifiedName || null;
       // persist account info
@@ -98,12 +138,33 @@ async function connectSession(db, sessionId) {
             name: entry.state.name,
             status: "connected",
             connected_at: new Date(),
+            last_seen_at: new Date(),
           },
         }
       );
+      // Defensive keep-alive: every 60s, send presence + update last_seen_at
+      if (entry.keepAliveTimer) clearInterval(entry.keepAliveTimer);
+      entry.keepAliveTimer = setInterval(async () => {
+        try {
+          if (sock.user) {
+            await sock.sendPresenceUpdate("available").catch(() => {});
+            await db.collection("wa_accounts").updateOne(
+              { session_id: sessionId },
+              { $set: { last_seen_at: new Date() } }
+            );
+          }
+        } catch {}
+      }, 60_000);
     } else if (connection === "close") {
+      // Clear keep-alive immediately
+      if (entry.keepAliveTimer) {
+        clearInterval(entry.keepAliveTimer);
+        entry.keepAliveTimer = null;
+      }
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
+      const errMsg = lastDisconnect?.error?.message || String(code || "unknown");
+      console.log(`[${sessionId}] connection close code=${code} msg=${errMsg} loggedOut=${loggedOut}`);
       if (loggedOut) {
         entry.state.status = "logged_out";
         entry.state.error = "Logged out from phone";
@@ -114,9 +175,13 @@ async function connectSession(db, sessionId) {
         );
         sessions.delete(sessionId);
       } else {
+        // Resilient reconnect with exponential backoff (3s → 5s → 8s → 13s → 21s → ... → cap 60s)
         entry.state.status = "reconnecting";
-        // auto-reconnect after delay
-        setTimeout(() => connectSession(db, sessionId).catch(console.error), 3000);
+        entry.state.error = `Reconnecting (${errMsg})`;
+        entry.retryCount += 1;
+        const delay = nextBackoff(entry.retryCount);
+        console.log(`[${sessionId}] reconnect attempt ${entry.retryCount} in ${delay}ms`);
+        setTimeout(() => connectSession(db, sessionId).catch(console.error), delay);
       }
     }
   });
@@ -134,6 +199,7 @@ async function connectSession(db, sessionId) {
 
   sock.ev.on("chats.upsert", async (chats) => {
     for (const c of chats) {
+      const isGroup = c.id?.endsWith("@g.us");
       await db.collection("wa_chats").updateOne(
         { session_id: sessionId, jid: c.id },
         {
@@ -141,7 +207,44 @@ async function connectSession(db, sessionId) {
             session_id: sessionId,
             jid: c.id,
             name: c.name || c.subject || null,
+            is_group: isGroup,
             unread_count: c.unreadCount || 0,
+            updated_at: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+      // For groups, fetch metadata async (don't block)
+      if (isGroup) {
+        fetchGroupMetadata(db, sessionId, sock, c.id).catch(() => {});
+      }
+    }
+  });
+
+  sock.ev.on("chats.update", async (updates) => {
+    for (const u of updates) {
+      if (!u.id) continue;
+      const set = { updated_at: new Date() };
+      if (u.name !== undefined) set.name = u.name;
+      if (u.unreadCount !== undefined) set.unread_count = u.unreadCount;
+      await db.collection("wa_chats").updateOne(
+        { session_id: sessionId, jid: u.id },
+        { $set: set, $setOnInsert: { session_id: sessionId, jid: u.id } },
+        { upsert: true }
+      );
+    }
+  });
+
+  sock.ev.on("contacts.upsert", async (contacts) => {
+    for (const c of contacts) {
+      if (!c.id) continue;
+      await db.collection("wa_contacts").updateOne(
+        { session_id: sessionId, jid: c.id },
+        {
+          $set: {
+            session_id: sessionId,
+            jid: c.id,
+            name: c.notify || c.name || c.verifiedName || null,
             updated_at: new Date(),
           },
         },
@@ -149,6 +252,25 @@ async function connectSession(db, sessionId) {
       );
     }
   });
+}
+
+async function fetchGroupMetadata(db, sessionId, sock, jid) {
+  try {
+    const meta = await sock.groupMetadata(jid);
+    await db.collection("wa_chats").updateOne(
+      { session_id: sessionId, jid },
+      {
+        $set: {
+          name: meta.subject || null,
+          group_subject: meta.subject || null,
+          group_owner: meta.owner || null,
+          group_size: (meta.participants || []).length,
+          group_desc: meta.desc || null,
+          group_meta_fetched_at: new Date(),
+        },
+      }
+    );
+  } catch {}
 }
 
 function getMsgText(message) {
@@ -168,6 +290,56 @@ function getMsgText(message) {
   );
 }
 
+function getMediaInfo(message) {
+  if (!message) return null;
+  if (message.imageMessage) {
+    return {
+      media_type: "image",
+      mimetype: message.imageMessage.mimetype || "image/jpeg",
+      caption: message.imageMessage.caption || "",
+      file_name: null,
+      file_length: Number(message.imageMessage.fileLength || 0),
+    };
+  }
+  if (message.videoMessage) {
+    return {
+      media_type: "video",
+      mimetype: message.videoMessage.mimetype || "video/mp4",
+      caption: message.videoMessage.caption || "",
+      file_name: null,
+      file_length: Number(message.videoMessage.fileLength || 0),
+    };
+  }
+  if (message.documentMessage) {
+    return {
+      media_type: "document",
+      mimetype: message.documentMessage.mimetype || "application/octet-stream",
+      caption: message.documentMessage.caption || "",
+      file_name: message.documentMessage.fileName || "document",
+      file_length: Number(message.documentMessage.fileLength || 0),
+    };
+  }
+  if (message.audioMessage) {
+    return {
+      media_type: "audio",
+      mimetype: message.audioMessage.mimetype || "audio/ogg",
+      caption: "",
+      file_name: null,
+      file_length: Number(message.audioMessage.fileLength || 0),
+    };
+  }
+  if (message.stickerMessage) {
+    return {
+      media_type: "sticker",
+      mimetype: message.stickerMessage.mimetype || "image/webp",
+      caption: "",
+      file_name: null,
+      file_length: Number(message.stickerMessage.fileLength || 0),
+    };
+  }
+  return null;
+}
+
 async function persistMessage(db, sessionId, sock, msg) {
   if (!msg.message) return;
   const jid = msg.key.remoteJid;
@@ -177,6 +349,7 @@ async function persistMessage(db, sessionId, sock, msg) {
   const ts = msg.messageTimestamp
     ? new Date(Number(msg.messageTimestamp) * 1000)
     : new Date();
+  const media = getMediaInfo(msg.message);
   await db.collection("wa_messages").updateOne(
     { session_id: sessionId, message_id: msg.key.id, jid },
     {
@@ -188,6 +361,7 @@ async function persistMessage(db, sessionId, sock, msg) {
         text,
         push_name: msg.pushName || null,
         timestamp: ts,
+        ...(media ? { media } : {}),
       },
     },
     { upsert: true }
@@ -212,6 +386,10 @@ async function persistMessage(db, sessionId, sock, msg) {
 
 export async function stopSession(db, sessionId, deleteAuth = true) {
   const entry = sessions.get(sessionId);
+  if (entry?.keepAliveTimer) {
+    clearInterval(entry.keepAliveTimer);
+    entry.keepAliveTimer = null;
+  }
   if (entry?.sock) {
     try { await entry.sock.logout(); } catch {}
     try { entry.sock.end(); } catch {}
@@ -228,9 +406,51 @@ export async function stopSession(db, sessionId, deleteAuth = true) {
 
 export async function sendText(sessionId, jid, text) {
   const sock = getSock(sessionId);
-  if (!sock) throw new Error("Session not connected");
+  if (!sock) throw new Error("Session not started");
+  if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
   const res = await sock.sendMessage(jid, { text });
   return res;
+}
+
+export async function sendMedia(sessionId, jid, { buffer, mimetype, fileName, caption, kind }) {
+  const sock = getSock(sessionId);
+  if (!sock) throw new Error("Session not started");
+  if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
+  let payload;
+  if (kind === "image") {
+    payload = { image: buffer, caption: caption || "", mimetype };
+  } else if (kind === "video") {
+    payload = { video: buffer, caption: caption || "", mimetype };
+  } else if (kind === "audio") {
+    payload = { audio: buffer, mimetype, ptt: false };
+  } else {
+    payload = {
+      document: buffer,
+      mimetype: mimetype || "application/octet-stream",
+      fileName: fileName || "file",
+      caption: caption || undefined,
+    };
+  }
+  const res = await sock.sendMessage(jid, payload);
+  return res;
+}
+
+export async function listGroups(sessionId) {
+  const sock = getSock(sessionId);
+  if (!sock) throw new Error("Session not started");
+  if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
+  try {
+    const all = await sock.groupFetchAllParticipating();
+    return Object.values(all).map((g) => ({
+      jid: g.id,
+      subject: g.subject,
+      size: (g.participants || []).length,
+      owner: g.owner || null,
+      desc: g.desc || null,
+    }));
+  } catch (e) {
+    return [];
+  }
 }
 
 export async function markChatRead(db, sessionId, jid) {

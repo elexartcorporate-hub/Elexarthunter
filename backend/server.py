@@ -4858,15 +4858,21 @@ async def wa_delete_account(sid: str, user: dict = Depends(get_current_user)):
 
 
 @api.get("/whatsapp/accounts/{sid}/chats")
-async def wa_list_chats(sid: str, limit: int = 100, user: dict = Depends(get_current_user)):
+async def wa_list_chats(sid: str, limit: int = 100, since_ts: Optional[str] = None, user: dict = Depends(get_current_user)):
     await _wa_check_account_access(sid, user)
-    return await _wa_call("GET", f"/sessions/{sid}/chats", params={"limit": limit})
+    params = {"limit": limit}
+    if since_ts:
+        params["since_ts"] = since_ts
+    return await _wa_call("GET", f"/sessions/{sid}/chats", params=params)
 
 
 @api.get("/whatsapp/accounts/{sid}/chats/{jid}/messages")
-async def wa_list_messages(sid: str, jid: str, limit: int = 50, user: dict = Depends(get_current_user)):
+async def wa_list_messages(sid: str, jid: str, limit: int = 50, since_ts: Optional[str] = None, user: dict = Depends(get_current_user)):
     await _wa_check_account_access(sid, user)
-    return await _wa_call("GET", f"/sessions/{sid}/chats/{jid}/messages", params={"limit": limit})
+    params = {"limit": limit}
+    if since_ts:
+        params["since_ts"] = since_ts
+    return await _wa_call("GET", f"/sessions/{sid}/chats/{jid}/messages", params=params)
 
 
 class WASendText(BaseModel):
@@ -4880,6 +4886,42 @@ async def wa_send_text(sid: str, jid: str, payload: WASendText, user: dict = Dep
     if acc["user_id"] != user["id"]:
         raise HTTPException(403, "Hanya pemilik akun WA yang bisa mengirim pesan")
     return await _wa_call("POST", f"/sessions/{sid}/chats/{jid}/messages", json={"text": payload.text})
+
+
+class WASendMedia(BaseModel):
+    kind: Literal["image", "video", "document", "audio"]
+    base64: str
+    mimetype: Optional[str] = None
+    file_name: Optional[str] = None
+    caption: Optional[str] = None
+
+
+@api.post("/whatsapp/accounts/{sid}/chats/{jid}/media")
+async def wa_send_media(sid: str, jid: str, payload: WASendMedia, user: dict = Depends(get_current_user)):
+    """Send image/video/document/audio. Max 50MB."""
+    acc = await _wa_check_account_access(sid, user)
+    if acc["user_id"] != user["id"]:
+        raise HTTPException(403, "Hanya pemilik akun WA yang bisa mengirim media")
+    # Sanity check base64 length (~ 1.37x raw size)
+    if len(payload.base64) > 70 * 1024 * 1024:
+        raise HTTPException(400, "File terlalu besar (max ~50MB)")
+    return await _wa_call(
+        "POST", f"/sessions/{sid}/chats/{jid}/media",
+        json={
+            "kind": payload.kind,
+            "base64": payload.base64,
+            "mimetype": payload.mimetype,
+            "fileName": payload.file_name,
+            "caption": payload.caption,
+        },
+    )
+
+
+@api.get("/whatsapp/accounts/{sid}/groups")
+async def wa_list_groups(sid: str, user: dict = Depends(get_current_user)):
+    """Fetch all WhatsApp groups for this account (fresh from WA)."""
+    await _wa_check_account_access(sid, user)
+    return await _wa_call("GET", f"/sessions/{sid}/groups")
 
 
 @api.post("/whatsapp/accounts/{sid}/chats/{jid}/read")

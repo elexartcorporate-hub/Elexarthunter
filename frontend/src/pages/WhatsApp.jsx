@@ -4,7 +4,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { PageHeader, Card, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
 import {
   WhatsappLogo, Plus, Trash, Eye, ArrowsClockwise, X, PaperPlaneRight,
-  ChatCircleDots, Phone, User, ShieldCheck, Warning, CheckCircle, DotsThreeVertical,
+  ChatCircleDots, Phone, User, ShieldCheck, Warning, CheckCircle,
+  Paperclip, UsersThree,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -134,7 +135,11 @@ export default function WhatsAppPage() {
   const [draft, setDraft] = useState("");
   const [qrOpen, setQrOpen] = useState(false);
   const [qrAccount, setQrAccount] = useState(null);
+  const [mediaUploading, setMediaUploading] = useState(false);
   const messagesEnd = useRef(null);
+  const lastChatSyncRef = useRef(null);
+  const lastMsgSyncRef = useRef({});
+  const fileInputRef = useRef(null);
 
   const activeAccount = useMemo(() => accounts.find((a) => a.session_id === activeSid), [accounts, activeSid]);
   const isOwnerView = activeAccount && activeAccount.user_id !== user?.id;
@@ -151,42 +156,87 @@ export default function WhatsAppPage() {
     finally { setLoading(false); }
   };
 
-  const loadChats = async (sid) => {
+  const loadChats = async (sid, opts = {}) => {
     if (!sid) return;
-    setChatsLoading(true);
+    const { delta = false } = opts;
+    if (!delta) setChatsLoading(true);
     try {
-      const { data } = await api.get(`/whatsapp/accounts/${sid}/chats`, { params: { limit: 100 } });
-      setChats(data);
-    } catch (err) { toast.error(formatApiError(err)); }
-    finally { setChatsLoading(false); }
+      const params = { limit: 100 };
+      if (delta && lastChatSyncRef.current) params.since_ts = lastChatSyncRef.current;
+      const { data } = await api.get(`/whatsapp/accounts/${sid}/chats`, { params });
+      if (delta && Array.isArray(data) && data.length === 0) {
+        // no new chats — keep existing list
+      } else if (delta && Array.isArray(data)) {
+        // merge new/updated chats into existing list
+        setChats((prev) => {
+          const map = new Map(prev.map((c) => [c.jid, c]));
+          for (const c of data) map.set(c.jid, c);
+          return [...map.values()].sort((a, b) =>
+            new Date(b.last_message_ts || b.updated_at || 0) -
+            new Date(a.last_message_ts || a.updated_at || 0)
+          );
+        });
+      } else {
+        setChats(data);
+      }
+      lastChatSyncRef.current = new Date().toISOString();
+    } catch (err) { if (!delta) toast.error(formatApiError(err)); }
+    finally { if (!delta) setChatsLoading(false); }
   };
 
-  const loadMessages = async (sid, jid) => {
+  const loadMessages = async (sid, jid, opts = {}) => {
     if (!sid || !jid) return;
-    setMessagesLoading(true);
+    const { delta = false } = opts;
+    if (!delta) setMessagesLoading(true);
     try {
-      const { data } = await api.get(`/whatsapp/accounts/${sid}/chats/${encodeURIComponent(jid)}/messages`, { params: { limit: 100 } });
-      setMessages(data);
-      // mark as read (best-effort)
-      try { await api.post(`/whatsapp/accounts/${sid}/chats/${encodeURIComponent(jid)}/read`); } catch (_) { /* ignore */ }
-    } catch (err) { toast.error(formatApiError(err)); }
-    finally { setMessagesLoading(false); }
+      const params = { limit: 100 };
+      if (delta && lastMsgSyncRef.current[jid]) params.since_ts = lastMsgSyncRef.current[jid];
+      const { data } = await api.get(`/whatsapp/accounts/${sid}/chats/${encodeURIComponent(jid)}/messages`, { params });
+      if (delta && Array.isArray(data)) {
+        if (data.length > 0) {
+          setMessages((prev) => {
+            const seen = new Set(prev.map((m) => m.message_id));
+            const newOnes = data.filter((m) => !seen.has(m.message_id));
+            return [...prev, ...newOnes];
+          });
+        }
+      } else {
+        setMessages(data || []);
+      }
+      // Update last sync timestamp from the latest message we've seen
+      const latestTs = (data && data.length > 0)
+        ? data[data.length - 1].timestamp
+        : null;
+      if (latestTs) lastMsgSyncRef.current[jid] = latestTs;
+      else if (!delta) lastMsgSyncRef.current[jid] = new Date().toISOString();
+      // mark as read (best-effort, only on full load)
+      if (!delta) {
+        try { await api.post(`/whatsapp/accounts/${sid}/chats/${encodeURIComponent(jid)}/read`); } catch (_) { /* ignore */ }
+      }
+    } catch (err) { if (!delta) toast.error(formatApiError(err)); }
+    finally { if (!delta) setMessagesLoading(false); }
   };
 
   useEffect(() => { loadAccounts(); }, []); // eslint-disable-line
-  useEffect(() => { if (activeSid) loadChats(activeSid); }, [activeSid]); // eslint-disable-line
+  useEffect(() => {
+    if (activeSid) {
+      lastChatSyncRef.current = null;
+      lastMsgSyncRef.current = {};
+      loadChats(activeSid);
+    }
+  }, [activeSid]); // eslint-disable-line
   useEffect(() => { if (activeSid && activeJid) loadMessages(activeSid, activeJid); }, [activeSid, activeJid]); // eslint-disable-line
 
-  // Auto-poll chats every 8s + messages every 5s (lightweight refresh)
+  // Realtime feel via delta polling — incremental fetch by since_ts (tiny payloads).
   useEffect(() => {
     if (!activeSid) return;
-    const t = setInterval(() => loadChats(activeSid), 8000);
+    const t = setInterval(() => loadChats(activeSid, { delta: true }), 4000);
     return () => clearInterval(t);
   }, [activeSid]); // eslint-disable-line
 
   useEffect(() => {
     if (!activeSid || !activeJid) return;
-    const t = setInterval(() => loadMessages(activeSid, activeJid), 5000);
+    const t = setInterval(() => loadMessages(activeSid, activeJid, { delta: true }), 2500);
     return () => clearInterval(t);
   }, [activeSid, activeJid]); // eslint-disable-line
 
@@ -234,9 +284,57 @@ export default function WhatsAppPage() {
       );
       setDraft("");
       // optimistic refresh
-      setTimeout(() => loadMessages(activeSid, activeJid), 500);
+      setTimeout(() => loadMessages(activeSid, activeJid, { delta: true }), 500);
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setSending(false); }
+  };
+
+  const handleFilePick = () => fileInputRef.current?.click();
+
+  const handleFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting same file
+    if (!file || !activeSid || !activeJid) return;
+    if (file.size > 50 * 1024 * 1024) {
+      toast.error("File terlalu besar (max 50MB)");
+      return;
+    }
+    setMediaUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      // base64 encode (chunked to avoid stack overflow on large files)
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      const chunk = 32768;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      }
+      const base64 = btoa(binary);
+      const kind = file.type.startsWith("image/")
+        ? "image"
+        : file.type.startsWith("video/")
+        ? "video"
+        : file.type.startsWith("audio/")
+        ? "audio"
+        : "document";
+      await api.post(
+        `/whatsapp/accounts/${activeSid}/chats/${encodeURIComponent(activeJid)}/media`,
+        {
+          kind,
+          base64,
+          mimetype: file.type || null,
+          file_name: file.name,
+          caption: draft.trim() || null,
+        }
+      );
+      setDraft("");
+      toast.success(`📎 ${kind} terkirim: ${file.name}`);
+      setTimeout(() => loadMessages(activeSid, activeJid, { delta: true }), 800);
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setMediaUploading(false);
+    }
   };
 
   const ownAccountsCount = accounts.filter((a) => a.user_id === user?.id).length;
@@ -354,12 +452,19 @@ export default function WhatsAppPage() {
                       activeJid === c.jid ? "bg-emerald-50" : (c.unread_count > 0 ? "bg-emerald-50/30" : "")
                     }`}
                   >
-                    <div className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center shrink-0">
-                      {c.jid?.includes("@g.us") ? <ChatCircleDots size={16} weight="bold" /> : <User size={16} weight="bold" />}
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+                      c.is_group || c.jid?.includes("@g.us") ? "bg-emerald-100 text-emerald-700" : "bg-slate-200"
+                    }`}>
+                      {c.is_group || c.jid?.includes("@g.us") ? <UsersThree size={16} weight="bold" /> : <User size={16} weight="bold" />}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline gap-2">
-                        <div className="text-sm font-semibold text-slate-900 truncate flex-1">{jidName(c.jid, c.name)}</div>
+                        <div className="text-sm font-semibold text-slate-900 truncate flex-1">
+                          {jidName(c.jid, c.name)}
+                          {(c.is_group || c.jid?.includes("@g.us")) && c.group_size > 0 && (
+                            <span className="ml-1 text-[10px] text-emerald-600 font-normal">({c.group_size})</span>
+                          )}
+                        </div>
                         <span className="text-[10px] text-slate-500 shrink-0">{fmtTime(c.last_message_ts)}</span>
                       </div>
                       <div className="flex items-center gap-2">
@@ -404,28 +509,70 @@ export default function WhatsAppPage() {
                   ) : messages.length === 0 ? (
                     <div className="text-center text-sm text-slate-500 py-8">Belum ada pesan</div>
                   ) : (
-                    messages.map((m) => (
-                      <div key={m.message_id} className={`flex ${m.from_me ? "justify-end" : "justify-start"}`} data-testid={`wa-msg-${m.message_id}`}>
-                        <div className={`max-w-[75%] rounded-lg px-3 py-2 text-sm shadow-sm ${
-                          m.from_me ? "bg-emerald-500 text-white" : "bg-white text-slate-900 border border-slate-200"
-                        }`}>
-                          {!m.from_me && m.push_name && (
-                            <div className={`text-[10px] font-bold mb-0.5 ${m.from_me ? "text-emerald-100" : "text-emerald-600"}`}>
-                              {m.push_name}
+                    messages.map((m) => {
+                      const mt = m.media?.media_type;
+                      const mediaLabel = mt === "image" ? "🖼️ Gambar"
+                        : mt === "video" ? "🎬 Video"
+                        : mt === "audio" ? "🎵 Audio"
+                        : mt === "document" ? `📎 ${m.media?.file_name || "Dokumen"}`
+                        : mt === "sticker" ? "🎟️ Sticker"
+                        : null;
+                      return (
+                        <div key={m.message_id} className={`flex ${m.from_me ? "justify-end" : "justify-start"}`} data-testid={`wa-msg-${m.message_id}`}>
+                          <div className={`max-w-[75%] rounded-lg px-3 py-2 text-sm shadow-sm ${
+                            m.from_me ? "bg-emerald-500 text-white" : "bg-white text-slate-900 border border-slate-200"
+                          }`}>
+                            {!m.from_me && m.push_name && (
+                              <div className={`text-[10px] font-bold mb-0.5 ${m.from_me ? "text-emerald-100" : "text-emerald-600"}`}>
+                                {m.push_name}
+                              </div>
+                            )}
+                            {mediaLabel && (
+                              <div className={`text-xs font-semibold mb-1 px-2 py-1 rounded ${
+                                m.from_me ? "bg-emerald-600/30" : "bg-slate-100"
+                              }`}>
+                                {mediaLabel}
+                                {m.media?.file_length > 0 && (
+                                  <span className={`ml-2 text-[10px] ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
+                                    {(m.media.file_length / 1024).toFixed(1)} KB
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {(m.text || (m.media && m.media.caption)) && (
+                              <div className="whitespace-pre-wrap break-words">
+                                {m.text || m.media?.caption}
+                              </div>
+                            )}
+                            <div className={`text-[9px] mt-0.5 text-right ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
+                              {fmtTime(m.timestamp)}
                             </div>
-                          )}
-                          <div className="whitespace-pre-wrap break-words">{m.text || "(media/attachment)"}</div>
-                          <div className={`text-[9px] mt-0.5 text-right ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
-                            {fmtTime(m.timestamp)}
                           </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                   <div ref={messagesEnd} />
                 </div>
                 {!isOwnerView ? (
                   <div className="border-t border-slate-200 p-2 flex items-end gap-2 bg-white">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      onChange={handleFileSelected}
+                      accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar"
+                      data-testid="wa-file-input"
+                    />
+                    <button
+                      onClick={handleFilePick}
+                      disabled={mediaUploading || sending}
+                      className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-50 transition"
+                      title="Lampirkan media (gambar/dokumen/video, max 50MB)"
+                      data-testid="wa-attach-btn"
+                    >
+                      <Paperclip size={18} weight="bold" className={mediaUploading ? "animate-pulse" : ""} />
+                    </button>
                     <textarea
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
@@ -433,13 +580,14 @@ export default function WhatsAppPage() {
                         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
                       }}
                       rows={1}
-                      placeholder="Tulis pesan… (Enter untuk kirim, Shift+Enter untuk newline)"
+                      placeholder={mediaUploading ? "Uploading…" : "Tulis pesan… (Enter untuk kirim, klip untuk attach file)"}
                       className="flex-1 resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-emerald-400"
                       data-testid="wa-message-input"
+                      disabled={mediaUploading}
                     />
                     <button
                       onClick={handleSend}
-                      disabled={sending || !draft.trim()}
+                      disabled={sending || mediaUploading || !draft.trim()}
                       className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white p-2 rounded-lg transition"
                       data-testid="wa-send-btn"
                     >
