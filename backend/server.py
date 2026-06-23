@@ -2294,6 +2294,27 @@ async def cancel_scheduled_email(send_id: str, user: dict = Depends(get_current_
     return {"ok": True}
 
 
+@api.post("/scheduled-emails/cancel-task/{tid}")
+async def cancel_task_scheduled_emails(tid: str, user: dict = Depends(get_current_user)):
+    """Batalkan SEMUA email scheduled/queued yang masih pending di sebuah task (project).
+    Email yang sudah delivered/bounced/cancelled tidak terpengaruh."""
+    res = await db.email_sends.update_many(
+        {"task_id": tid, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}},
+        {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
+    )
+    return {"ok": True, "cancelled": res.modified_count}
+
+
+@api.post("/scheduled-emails/cancel-prospect/{pid}")
+async def cancel_prospect_scheduled_emails(pid: str, user: dict = Depends(get_current_user)):
+    """Batalkan SEMUA email scheduled/queued ke 1 prospect tertentu."""
+    res = await db.email_sends.update_many(
+        {"prospect_id": pid, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}},
+        {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
+    )
+    return {"ok": True, "cancelled": res.modified_count}
+
+
 # ─── Outreach Tasks (workflow) ───
 async def _task_view(t: dict) -> dict:
     t.pop("_id", None)
@@ -4062,9 +4083,16 @@ async def list_email_sends(
     pmap = {p["id"]: p async for p in db.prospects.find({"id": {"$in": pids}}, {"_id": 0, "id": 1, "company_name": 1})}
     uids = list({s["sender_user_id"] for s in sends if s.get("sender_user_id")})
     umap = {u["id"]: u async for u in db.users.find({"id": {"$in": uids}}, {"_id": 0, "id": 1, "name": 1})}
+    # Enrich with task (project) info — used by Email Activity untuk grouping per project day
+    tids = list({s["task_id"] for s in sends if s.get("task_id")})
+    tmap = {t["id"]: t async for t in db.outreach_tasks.find({"id": {"$in": tids}}, {"_id": 0, "id": 1, "name": 1, "date": 1, "status": 1})}
     for s in sends:
         s["prospect_name"] = pmap.get(s.get("prospect_id"), {}).get("company_name")
         s["sender_name"] = umap.get(s.get("sender_user_id"), {}).get("name")
+        t = tmap.get(s.get("task_id")) if s.get("task_id") else None
+        s["task_name"] = (t or {}).get("name")
+        s["task_date"] = (t or {}).get("date")
+        s["task_status"] = (t or {}).get("status")
     return sends
 
 
