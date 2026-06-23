@@ -127,9 +127,13 @@ export default function Prospects() {
 
   // Tab "3 · Email" hanya terbuka kalau task masih actionable (draft/ready) DAN sudah hit target.
   // Task yang sudah scheduled/sending/completed dianggap selesai — user lihat status di Analitik.
+  // Jika target = 0 (daily-quest mode OFF), email tab terbuka selama ada minimal 1 prospect.
+  const taskTarget = activeTask?.target || 0;
+  const taskCount = activeTask?.prospect_count || 0;
+  const targetReached = taskTarget > 0 ? taskCount >= taskTarget : taskCount > 0;
   const emailTabUnlocked = !!activeTask
     && (activeTask.status === "draft" || activeTask.status === "ready")
-    && (activeTask.prospect_count >= activeTask.target);
+    && targetReached;
 
   return (
     <div className="p-6 md:p-8 fade-up max-w-[1600px] mx-auto">
@@ -137,7 +141,7 @@ export default function Prospects() {
 
       <div className="flex flex-wrap border border-slate-200 rounded-lg overflow-hidden w-fit bg-white mb-6 shadow-sm">
         <TabBtn active={tab === "jadwal"}    onClick={() => setTab("jadwal")}    icon={CalendarCheck} label="1 · Jadwal"       testid="tab-jadwal" />
-        <TabBtn active={tab === "add"}       onClick={() => setTab("add")}       icon={Crosshair}     label={`2 · Add Prospect${activeTask ? ` (${activeTask.prospect_count}/${activeTask.target})` : ""}`}  testid="tab-add" />
+        <TabBtn active={tab === "add"}       onClick={() => setTab("add")}       icon={Crosshair}     label={`2 · Add Prospect${activeTask ? (taskTarget > 0 ? ` (${taskCount}/${taskTarget})` : ` (${taskCount})`) : ""}`}  testid="tab-add" />
         <TabBtn
           active={tab === "email"}
           onClick={() => emailTabUnlocked ? setTab("email") : toast.error("Selesaikan target dulu di tab Add Prospect")}
@@ -151,7 +155,7 @@ export default function Prospects() {
         <TabBtn active={tab === "list"}      onClick={() => setTab("list")}      icon={UsersFour}     label="Prospect List"    testid="tab-list" />
       </div>
 
-      {tab === "jadwal"    && <Calendar quota={quota} onChanged={() => { setRefreshKey((k) => k + 1); setTasksRefresh((k) => k + 1); }} onTaskCreated={(t) => { setActiveTask(t); setTab("add"); setTasksRefresh((k) => k + 1); }} onTaskContinue={(t) => { setActiveTask(t); setTab(t.prospect_count >= t.target ? "email" : "add"); setTasksRefresh((k) => k + 1); }} />}
+      {tab === "jadwal"    && <Calendar quota={quota} onChanged={() => { setRefreshKey((k) => k + 1); setTasksRefresh((k) => k + 1); }} onTaskCreated={(t) => { setActiveTask(t); setTab("add"); setTasksRefresh((k) => k + 1); }} onTaskContinue={(t) => { setActiveTask(t); const tgt = t.target || 0; const cnt = t.prospect_count || 0; const reached = tgt > 0 ? cnt >= tgt : cnt > 0; setTab(reached ? "email" : "add"); setTasksRefresh((k) => k + 1); }} />}
       {tab === "add"       && <AddProspect quota={quota} activeTask={activeTask} refreshTask={refreshTask} onProspectSaved={() => setRefreshKey((k) => k + 1)} onGoEmail={() => setTab("email")} />}
       {tab === "email"     && emailTabUnlocked && <EmailStep task={activeTask} onSubmitted={() => { setTab("tersimpan"); setActiveTask(null); setTasksRefresh((k) => k + 1); setRefreshKey((k) => k + 1); }} />}
       {tab === "analitik"  && <EmailActivity />}
@@ -409,16 +413,18 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
   // Email Outreach is gated by the ACTIVE TASK's domain target (1 prospect = 1 domain),
   // NOT the global daily quota — emails per domain are unlimited.
   // Fallback to daily quota only when no active task is set.
-  const isUnlocked = activeTask
-    ? (activeTask.prospect_count >= activeTask.target)
-    : !quota?.locked;
+  // When target = 0 → daily-quest mode OFF: any prospect count >0 unlocks the email tab.
+  const _tgt = activeTask?.target || 0;
+  const _cnt = activeTask?.prospect_count || 0;
+  const _reached = _tgt > 0 ? _cnt >= _tgt : _cnt > 0;
+  const isUnlocked = activeTask ? _reached : !quota?.locked;
 
   // A task is "in progress" only while user is still hunting prospects. Once the target
   // is hit, the task is "ready to ship" — UI on Add Prospect tab should be CLEAN so user
   // is nudged to the Email tab. After submit, the task disappears entirely (handled by
   // /tasks auto-heal + setActiveTask(null)).
-  const taskInProgress = !!activeTask && activeTask.prospect_count < activeTask.target;
-  const taskReady = !!activeTask && activeTask.prospect_count >= activeTask.target;
+  const taskInProgress = !!activeTask && !_reached;
+  const taskReady = !!activeTask && _reached;
 
   return (
     <div className="space-y-5">
@@ -430,24 +436,33 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
               <div>
                 <div className="text-[10px] uppercase tracking-widest text-indigo-600 font-semibold">Tugas Aktif</div>
                 <div className="font-display text-base font-semibold text-slate-900">{activeTask.name}</div>
-                <div className="text-xs text-slate-500">{activeTask.date} · target {activeTask.target} prospect</div>
+                <div className="text-xs text-slate-500">{activeTask.date}{_tgt > 0 ? ` · target ${_tgt} prospect` : " · tanpa target (mode bebas)"}</div>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <div className="text-right">
-                <div className="text-2xl font-bold text-indigo-600">{activeTask.prospect_count}<span className="text-slate-400 text-base"> / {activeTask.target}</span></div>
-                <div className="text-[10px] text-slate-500">{activeTask.prospect_count >= activeTask.target ? "✓ Target tercapai" : `${activeTask.target - activeTask.prospect_count} lagi`}</div>
+                {_tgt > 0 ? (
+                  <>
+                    <div className="text-2xl font-bold text-indigo-600">{_cnt}<span className="text-slate-400 text-base"> / {_tgt}</span></div>
+                    <div className="text-[10px] text-slate-500">{_reached ? "✓ Target tercapai" : `${_tgt - _cnt} lagi`}</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-2xl font-bold text-indigo-600">{_cnt}</div>
+                    <div className="text-[10px] text-slate-500">prospect terkumpul</div>
+                  </>
+                )}
               </div>
-              {activeTask.prospect_count >= activeTask.target && (
+              {_reached && (
                 <PrimaryButton onClick={onGoEmail} data-testid="goto-email-btn">
                   <PaperPlaneTilt size={14} weight="bold" /> Ke Tab Email →
                 </PrimaryButton>
               )}
             </div>
           </div>
-          {activeTask.target > 0 && (
+          {_tgt > 0 && (
             <div className="mt-3 h-2 bg-white rounded-full overflow-hidden border border-indigo-100">
-              <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all" style={{ width: `${Math.min(100, Math.round((activeTask.prospect_count / activeTask.target) * 100))}%` }} />
+              <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all" style={{ width: `${Math.min(100, Math.round((_cnt / _tgt) * 100))}%` }} />
             </div>
           )}
         </Card>

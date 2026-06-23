@@ -2336,8 +2336,14 @@ async def list_tasks(
     if status: q["status"] = status
     if date: q["date"] = date
     rows = await db.outreach_tasks.find(q, {"_id": 0}).sort("date", -1).to_list(500)
+    # Dynamic target: untuk task yang BELUM submitted (draft/ready), selalu pakai
+    # daily_target user yang TERBARU. Ini jamin perubahan target di Settings langsung
+    # tampil di Prospects tanpa perlu reload/migrasi data lama.
+    current_target = (await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1}) or {}).get("daily_target") or 0
     for r in rows:
         r["prospect_count"] = len(r.get("prospect_ids") or [])
+        if r.get("status") in ("draft", "ready"):
+            r["target"] = current_target
     return rows
 
 
@@ -2347,13 +2353,14 @@ async def create_task(payload: OutreachTaskCreate, user: dict = Depends(get_curr
         datetime.strptime(payload.date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(400, "Invalid date, use YYYY-MM-DD")
-    # Resolve target from user's daily_target if not provided
+    # Resolve target from user's daily_target if not provided.
+    # target = 0 → daily-quest mode OFF (mode bebas) — diizinkan.
     target = payload.target
-    if not target:
+    if target is None:
         u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1}) or {}
         target = u.get("daily_target") or 0
-    if not target or target < 1:
-        raise HTTPException(400, "Target harian belum di-set. Atur di Settings → Target Harian dulu.")
+    if target < 0:
+        raise HTTPException(400, "Target tidak boleh negatif")
     tid = str(uuid.uuid4())
     doc = {
         "id": tid,
@@ -2386,6 +2393,10 @@ async def get_task(tid: str, user: dict = Depends(get_current_user)):
     prospects = await db.prospects.find({"id": {"$in": pids}, "tenant_id": user["tenant_id"]}, {"_id": 0}).to_list(500)
     t["prospects"] = prospects
     t["prospect_count"] = len(pids)
+    # Sync target dynamically for open tasks (see list_tasks comment).
+    if t.get("status") in ("draft", "ready"):
+        current_target = (await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1}) or {}).get("daily_target") or 0
+        t["target"] = current_target
     return t
 
 
@@ -4085,10 +4096,26 @@ async def track_click_v2(send_id: str, u: str = Query(...)):
 
 
 # ─── Daily target per user ───
+async def _sync_user_open_task_targets(tenant_id: str, user_id: str, new_target: int) -> int:
+    """Saat user mengubah daily_target, propagate ke semua task draft/ready milik user
+    sehingga UI Prospects langsung sinkron (target lama tidak nyangkut).
+    Task yang sudah submitted/scheduled/completed TIDAK diubah — history preserved."""
+    res = await db.outreach_tasks.update_many(
+        {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "status": {"$in": ["draft", "ready"]},
+        },
+        {"$set": {"target": new_target, "updated_at": now_iso()}},
+    )
+    return res.modified_count
+
+
 @api.patch("/me/target")
 async def set_my_daily_target(payload: DailyTargetUpdate, user: dict = Depends(get_current_user)):
     await db.users.update_one({"id": user["id"]}, {"$set": {"daily_target": payload.daily_target, "updated_at": now_iso()}})
-    return {"daily_target": payload.daily_target}
+    synced = await _sync_user_open_task_targets(user["tenant_id"], user["id"], payload.daily_target)
+    return {"daily_target": payload.daily_target, "tasks_synced": synced}
 
 
 @api.patch("/team/{uid}/target")
@@ -4099,7 +4126,8 @@ async def set_team_member_target(uid: str, payload: DailyTargetUpdate, user: dic
     res = await db.users.update_one({"id": uid, "tenant_id": user["tenant_id"]}, {"$set": {"daily_target": payload.daily_target, "updated_at": now_iso()}})
     if not res.matched_count:
         raise HTTPException(404, "User not found")
-    return {"daily_target": payload.daily_target}
+    synced = await _sync_user_open_task_targets(user["tenant_id"], uid, payload.daily_target)
+    return {"daily_target": payload.daily_target, "tasks_synced": synced}
 
 
 # ─── New CRM Dashboard ───
