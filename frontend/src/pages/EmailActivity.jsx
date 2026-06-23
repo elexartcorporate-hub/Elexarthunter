@@ -154,16 +154,44 @@ export default function EmailActivity() {
 
   const cancelGroup = async (group) => {
     // Cancel all pending emails on this DAY (across all prospects in this day-group).
+    // If there's a backing task_id (from any email in the group), call the task-level cancel
+    // endpoint with reset_to_draft so the task goes back to draft (user can fix & re-send).
     const pendingIds = group.emails.filter((e) => PENDING_STATUSES.has(e.status)).map((e) => e.id);
     if (pendingIds.length === 0) return;
-    if (!confirm(`Batalkan SEMUA ${pendingIds.length} email scheduled di tanggal ${group.day}?`)) return;
+    if (!confirm(
+      `Batalkan SEMUA ${pendingIds.length} email scheduled di tanggal ${group.day}?\n\n` +
+      `Task yang masih dalam proses akan otomatis kembali ke status DRAFT, ` +
+      `sehingga Anda bisa edit/perbaiki sebelum kirim ulang.`
+    )) return;
     setBusyId(`group-${group.key}`);
     try {
-      const results = await Promise.allSettled(
-        pendingIds.map((id) => api.post(`/scheduled-emails/${id}/cancel`))
+      // Collect distinct task_ids present in this day-group
+      const taskIds = Array.from(new Set(group.emails.map((e) => e.task_id).filter(Boolean)));
+      let totalCancelled = 0;
+      let totalReset = 0;
+      if (taskIds.length > 0) {
+        // Per task: call cancel-task with reset_to_draft=true (batches scheduled+sending+queued)
+        const results = await Promise.allSettled(
+          taskIds.map((tid) => api.post(`/scheduled-emails/cancel-task/${tid}`, null, { params: { reset_to_draft: true } }))
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled") {
+            totalCancelled += r.value.data.cancelled || 0;
+            if (r.value.data.task_reset_to_draft) totalReset += 1;
+          }
+        }
+      }
+      // Also cancel any pending emails NOT tied to a task (manual sends, etc.)
+      const orphanIds = group.emails.filter((e) => PENDING_STATUSES.has(e.status) && !e.task_id).map((e) => e.id);
+      if (orphanIds.length > 0) {
+        const orphanResults = await Promise.allSettled(
+          orphanIds.map((id) => api.post(`/scheduled-emails/${id}/cancel`))
+        );
+        totalCancelled += orphanResults.filter((r) => r.status === "fulfilled").length;
+      }
+      toast.success(
+        `✓ ${totalCancelled} email dibatalkan${totalReset > 0 ? ` · ${totalReset} task kembali ke DRAFT` : ""}`
       );
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      toast.success(`✓ ${ok} email pada ${group.day} dibatalkan`);
       setRows((prev) => prev.map((r) => (pendingIds.includes(r.id)
         ? { ...r, status: "cancelled", cancelled_at: new Date().toISOString() }
         : r)));

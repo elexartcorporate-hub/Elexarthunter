@@ -2295,14 +2295,36 @@ async def cancel_scheduled_email(send_id: str, user: dict = Depends(get_current_
 
 
 @api.post("/scheduled-emails/cancel-task/{tid}")
-async def cancel_task_scheduled_emails(tid: str, user: dict = Depends(get_current_user)):
+async def cancel_task_scheduled_emails(
+    tid: str,
+    reset_to_draft: bool = False,
+    user: dict = Depends(get_current_user),
+):
     """Batalkan SEMUA email scheduled/queued yang masih pending di sebuah task (project).
-    Email yang sudah delivered/bounced/cancelled tidak terpengaruh."""
+    Email yang sudah delivered/bounced/cancelled tidak terpengaruh.
+
+    Jika `reset_to_draft=true` dan SEMUA email di task ini sudah tidak ada lagi yang
+    pending/delivered (semua jadi cancelled / belum pernah kirim), task akan dikembalikan
+    ke status `draft` supaya user bisa edit ulang prospect/templat sebelum kirim ulang.
+    """
     res = await db.email_sends.update_many(
         {"task_id": tid, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}},
         {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
     )
-    return {"ok": True, "cancelled": res.modified_count}
+    task_reset = False
+    if reset_to_draft and res.modified_count > 0:
+        # Reset hanya kalau tidak ada email yang ter-deliver berhasil (artinya batch belum benar-benar terkirim).
+        delivered_count = await db.email_sends.count_documents({
+            "task_id": tid, "tenant_id": user["tenant_id"],
+            "status": {"$in": ["delivered", "opened", "clicked", "replied"]},
+        })
+        if delivered_count == 0:
+            await db.outreach_tasks.update_one(
+                {"id": tid, "tenant_id": user["tenant_id"]},
+                {"$set": {"status": "draft", "updated_at": now_iso()}},
+            )
+            task_reset = True
+    return {"ok": True, "cancelled": res.modified_count, "task_reset_to_draft": task_reset}
 
 
 @api.post("/scheduled-emails/cancel-prospect/{pid}")
