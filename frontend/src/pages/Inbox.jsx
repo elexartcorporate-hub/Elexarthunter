@@ -3,7 +3,7 @@ import { api, formatApiError } from "@/lib/api";
 import { PageHeader, Card, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
 import {
   Tray, ArrowsClockwise, Buildings, EnvelopeSimple, EnvelopeOpen, Funnel, Warning,
-  PaperPlaneTilt, ArrowBendUpLeft, X, PaperPlaneRight, CaretLeft,
+  PaperPlaneTilt, ArrowBendUpLeft, X, PaperPlaneRight, CaretLeft, Broom,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -66,6 +66,32 @@ export default function Inbox() {
   const [replySubject, setReplySubject] = useState("");
   const [replyBody, setReplyBody] = useState("");
   const [sending, setSending] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
+
+  // Rescan EXISTING Mailer-Daemon emails in the inbox cache for auto-bounce
+  const rescanBounces = async () => {
+    if (!activeId || rescanning) return;
+    setRescanning(true);
+    try {
+      const { data } = await api.post(`/inbox/${activeId}/rescan-bounces`, null, {
+        params: { folder: "INBOX", limit: 500 },
+      });
+      const matched = data?.bounce_matched || 0;
+      const processed = data?.bounce_processed || 0;
+      if (processed === 0) {
+        toast.message(data?.message || "Tidak ada Mailer-Daemon yang perlu di-scan");
+      } else {
+        toast.success(
+          `🧹 Rescan: ${processed} bounce diproses${matched > 0 ? `, ${matched} match prospect → dihapus dari DB` : ""}`,
+          { duration: 7000 }
+        );
+      }
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setRescanning(false);
+    }
+  };
 
   const loadCompanies = async () => {
     try {
@@ -121,6 +147,15 @@ export default function Inbox() {
       const { data } = await api.get(`/inbox/${activeId}`, {
         params: { folder, limit: 50, unread_only: unreadOnly, sync: force ? "true" : "false" },
       });
+      // Auto-bounce notification (Mailer-Daemon)
+      if (force && data && data.bounce_processed > 0) {
+        toast.success(
+          `🧹 Auto-bounce: ${data.bounce_processed} email ditandai bounce${
+            data.bounce_matched > 0 ? ` (${data.bounce_matched} match prospect → dihapus dari DB)` : ""
+          }`,
+          { duration: 6000 }
+        );
+      }
       // Merge in any UIDs we already opened locally — protects against IMAP servers
       // that don't persist \Seen reliably and prevents the "comes back as unread" issue.
       const merged = { ...data, messages: applyLocalRead(activeId, folder, data.messages) };
@@ -233,6 +268,15 @@ export default function Inbox() {
                 Updated {fmtRelative(lastFetchedAt)}
               </span>
             )}
+            <GhostButton
+              onClick={rescanBounces}
+              disabled={rescanning || !activeId || loading}
+              data-testid="rescan-bounces"
+              title="Scan Mailer-Daemon yang sudah ada di inbox & hapus prospect-nya"
+            >
+              <Broom size={14} weight="bold" className={rescanning ? "animate-pulse" : ""} />
+              {rescanning ? "Scanning..." : "Rescan Bounces"}
+            </GhostButton>
             <PrimaryButton onClick={() => loadInbox(true)} disabled={loading || !activeId} data-testid="refresh-inbox">
               <ArrowsClockwise size={14} weight="bold" className={loading ? "animate-spin" : ""} /> Refresh
             </PrimaryButton>

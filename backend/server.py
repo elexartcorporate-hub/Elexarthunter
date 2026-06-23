@@ -2392,6 +2392,61 @@ async def _mark_bounced(send_id: str, error: str, tenant_id: str, prospect_id: O
     )
 
 
+async def _mark_bounced_by_email(tenant_id: str, to_email: str, error: str, source: str = "mailer-daemon") -> dict:
+    """Auto-bounce dari Mailer-Daemon: cari prospect by email, mark bounce, hapus email,
+    dan log ke bounced_emails. Aman dipanggil walau prospect tidak ada (tetap dicatat)."""
+    email_lower = (to_email or "").strip().lower()
+    if "@" not in email_lower:
+        return {"matched": False}
+    pros = await db.prospects.find_one(
+        {"tenant_id": tenant_id, "emails.email": email_lower},
+        {"_id": 0, "id": 1, "company_name": 1, "website": 1, "industry": 1,
+         "city": 1, "country": 1, "domain": 1},
+    )
+    pid = (pros or {}).get("id")
+    # Cari email_send terakhir untuk recipient ini (untuk dapat sender_user_id + send_id)
+    send_q = {"tenant_id": tenant_id, "to_email": email_lower}
+    if pid:
+        send_q["prospect_id"] = pid
+    send = await db.email_sends.find_one(
+        send_q, sort=[("sent_at", -1)],
+        projection={"_id": 0, "id": 1, "sender_user_id": 1},
+    )
+    send_id = (send or {}).get("id")
+    sender_user_id = (send or {}).get("sender_user_id")
+    if send_id:
+        await db.email_sends.update_one(
+            {"id": send_id},
+            {"$set": {"status": "bounce", "bounced": True, "error": error,
+                      "bounced_at": now_iso()}},
+        )
+    if pid:
+        await db.prospects.update_one(
+            {"id": pid, "tenant_id": tenant_id},
+            {"$pull": {"emails": {"email": email_lower}}},
+        )
+    await db.bounced_emails.update_one(
+        {"tenant_id": tenant_id, "email": email_lower, "prospect_id": pid},
+        {"$set": {
+            "tenant_id": tenant_id,
+            "prospect_id": pid,
+            "company_name": (pros or {}).get("company_name"),
+            "website": (pros or {}).get("website") or (pros or {}).get("domain"),
+            "industry": (pros or {}).get("industry"),
+            "city": (pros or {}).get("city"),
+            "country": (pros or {}).get("country"),
+            "email": email_lower,
+            "error": error,
+            "sender_user_id": sender_user_id,
+            "send_id": send_id,
+            "source": source,
+            "bounced_at": now_iso(),
+        }},
+        upsert=True,
+    )
+    return {"matched": bool(pid), "prospect_id": pid, "send_id": send_id}
+
+
 @api.get("/bounced-emails")
 async def list_bounced_emails(user: dict = Depends(get_current_user), q: Optional[str] = None):
     """List email bounce. Non-Owner hanya lihat yang mereka kirim sendiri."""
@@ -2805,6 +2860,79 @@ async def inbox_companies(user: dict = Depends(get_current_user)):
 FOLDER_KEYS = ("INBOX", "Sent", "Trash")
 
 
+# ─── Mailer-Daemon bounce parsing ───
+_BOUNCE_FROM_RE = re.compile(r"(mailer[\-\s]?daemon|postmaster|mail[\-\s]?delivery[\-\s]?system|mail[\-\s]?daemon)", re.I)
+_BOUNCE_SUBJ_RE = re.compile(r"(undelivered|delivery (status notification|failed|failure)|returned to sender|mail delivery failed|failure notice|bounced|could not be delivered)", re.I)
+_FINAL_RECIPIENT_RE = re.compile(r"(?:Final|Original)-Recipient:\s*[^;]+;\s*<?([^\s>,]+@[^\s>,]+)", re.I)
+_STATUS_RE = re.compile(r"Status:\s*([245]\.\d+\.\d+)", re.I)
+_DIAGNOSTIC_RE = re.compile(r"Diagnostic-Code:\s*[^;]*;\s*(.+)", re.I)
+_EMAIL_ANGLE_RE = re.compile(r"<([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})>")
+
+
+def _is_bounce_email(from_str: str, subject: str) -> bool:
+    """Heuristic untuk mendeteksi email Mailer-Daemon dari header From/Subject."""
+    if from_str and _BOUNCE_FROM_RE.search(from_str):
+        return True
+    if subject and _BOUNCE_SUBJ_RE.search(subject):
+        return True
+    return False
+
+
+def _parse_bounce_body(raw_bytes: bytes) -> list:
+    """Parse DSN / plain-text bounce body. Return list of (failed_email, diagnostic).
+    Hanya hard bounce (5.x.x) yang dianggap; soft bounce (4.x.x) di-skip."""
+    import email as email_lib
+    try:
+        msg = email_lib.message_from_bytes(raw_bytes)
+    except Exception:
+        return []
+    text_parts = []
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if ctype == "message/delivery-status":
+            # DSN: sub-parts are header-only Message objects per recipient.
+            try:
+                subs = part.get_payload()
+                if isinstance(subs, list):
+                    for sub in subs:
+                        if hasattr(sub, "items"):
+                            text_parts.append("\n".join(f"{k}: {v}" for k, v in sub.items()))
+            except Exception:
+                pass
+            continue
+        if ctype in ("text/plain", "text/rfc822-headers", "message/rfc822",
+                     "message/global-delivery-status"):
+            try:
+                payload = part.get_payload(decode=True) or b""
+                text_parts.append(payload.decode(errors="ignore"))
+            except Exception:
+                pass
+    full_text = "\n".join(text_parts)
+    if not full_text:
+        try:
+            full_text = (msg.get_payload(decode=True) or b"").decode(errors="ignore")
+        except Exception:
+            full_text = ""
+
+    emails_found = set()
+    for m in _FINAL_RECIPIENT_RE.finditer(full_text):
+        emails_found.add(m.group(1).strip().lower())
+    status_m = _STATUS_RE.search(full_text)
+    status = status_m.group(1) if status_m else None
+    diag_m = _DIAGNOSTIC_RE.search(full_text)
+    diag = (diag_m.group(1).strip()[:300] if diag_m else None) or (status or "Mailer-Daemon bounce")
+    # Skip soft bounce (4.x.x)
+    if status and status.startswith("4."):
+        return []
+    if not emails_found:
+        for m in _EMAIL_ANGLE_RE.finditer(full_text[:6000]):
+            e = m.group(1).strip().lower()
+            if any(b in e for b in ("mailer-daemon", "postmaster", "mail-daemon")):
+                continue
+            emails_found.add(e)
+    return [(e, diag) for e in emails_found if e]
+
+
 def _resolve_folder(imap_conn, folder_key: str) -> str:
     """Resolve a logical folder name (INBOX/Sent/Trash) to a real IMAP mailbox.
     Uses SPECIAL-USE flags first, falls back to common names per provider.
@@ -2937,16 +3065,34 @@ async def inbox_list(
                             elif isinstance(part, bytes):
                                 flags_str = part.decode(errors="ignore")
                         msg = email.message_from_bytes(raw)
-                        items.append({
+                        from_s = _decode_hdr(msg.get("From", ""))
+                        subject_s = _decode_hdr(msg.get("Subject", "")) or "(no subject)"
+                        item = {
                             "uid": uid.decode(),
                             "uid_int": int(uid.decode()),
-                            "from": _decode_hdr(msg.get("From", "")),
+                            "from": from_s,
                             "to": _decode_hdr(msg.get("To", "")),
-                            "subject": _decode_hdr(msg.get("Subject", "")) or "(no subject)",
+                            "subject": subject_s,
                             "date": msg.get("Date", ""),
                             "message_id": msg.get("Message-ID", ""),
                             "unread": "\\Seen" not in flags_str,
-                        })
+                        }
+                        # Detect Mailer-Daemon bounce & fetch full body to parse failed recipients
+                        if folder == "INBOX" and _is_bounce_email(from_s, subject_s):
+                            try:
+                                typ2, body_data = m.uid("fetch", uid, "(BODY.PEEK[])")
+                                if typ2 == "OK" and body_data:
+                                    raw_full = b""
+                                    for p in body_data:
+                                        if isinstance(p, tuple):
+                                            raw_full = p[1]
+                                            break
+                                    if raw_full:
+                                        item["_bounce_parsed"] = _parse_bounce_body(raw_full)
+                                        item["is_bounce"] = True
+                            except Exception:
+                                pass
+                        items.append(item)
                     return {"mailbox": mailbox, "new": items}
             except Exception as e:
                 return {"_error": _format_imap_error(e)}
@@ -2957,8 +3103,24 @@ async def inbox_list(
             if cached_count == 0:
                 raise HTTPException(400, f"IMAP error: {result['_error']}")
         else:
-            # Bulk upsert ke cache (email lama tidak ditarik ulang)
+            # Process Mailer-Daemon auto-bounce + upsert ke cache
+            bounce_processed = 0
+            bounce_matched = 0
             for it in result.get("new", []):
+                parsed = it.pop("_bounce_parsed", None) if isinstance(it, dict) else None
+                if parsed:
+                    for failed_email, diag in parsed:
+                        try:
+                            res = await _mark_bounced_by_email(
+                                user["tenant_id"], failed_email,
+                                f"Mailer-Daemon: {diag}",
+                                source="inbox-auto",
+                            )
+                            bounce_processed += 1
+                            if res.get("matched"):
+                                bounce_matched += 1
+                        except Exception:
+                            pass
                 await db.inbox_cache.update_one(
                     {"tenant_id": user["tenant_id"], "sub_company_id": sc_id, "folder": folder, "uid": it["uid"]},
                     {"$set": {**it, "tenant_id": user["tenant_id"], "sub_company_id": sc_id,
@@ -2976,6 +3138,99 @@ async def inbox_list(
         "count": len(messages),
         "messages": messages,
         "synced": do_sync,
+        "bounce_processed": locals().get("bounce_processed", 0),
+        "bounce_matched": locals().get("bounce_matched", 0),
+    }
+
+
+@api.post("/inbox/{sc_id}/rescan-bounces")
+async def inbox_rescan_bounces(
+    sc_id: str,
+    folder: str = "INBOX",
+    limit: int = 500,
+    user: dict = Depends(get_current_user),
+):
+    """Rescan inbox utk Mailer-Daemon yang sudah ada (sebelum auto-detect aktif).
+    Fetch FULL body untuk tiap email yang From/Subject-nya match bounce pattern,
+    parse failed recipients, dan mark bounce di DB.
+    """
+    if folder not in FOLDER_KEYS:
+        raise HTTPException(400, "folder harus salah satu: INBOX, Sent, Trash")
+    sc = await _check_inbox_access(sc_id, user)
+
+    # Ambil kandidat dari cache (lebih cepat) — pre-filter by From/Subject regex
+    cached = await db.inbox_cache.find(
+        {"tenant_id": user["tenant_id"], "sub_company_id": sc_id, "folder": folder},
+        {"_id": 0, "uid": 1, "from": 1, "subject": 1},
+    ).sort("uid_int", -1).limit(limit).to_list(limit)
+    candidates = [c for c in cached if _is_bounce_email(c.get("from", ""), c.get("subject", ""))]
+    if not candidates:
+        return {"scanned": 0, "bounce_processed": 0, "bounce_matched": 0, "message": "Tidak ada email Mailer-Daemon di cache. Coba sync inbox dulu (?sync=true)."}
+
+    def _fetch_bodies():
+        import email as email_lib
+        out = []
+        try:
+            with _imap_connect(sc) as m:
+                mailbox = _resolve_folder(m, folder)
+                typ, _ = m.select(mailbox, readonly=True)
+                if typ != "OK":
+                    return {"_error": f"Folder tidak ditemukan: {mailbox}"}
+                for c in candidates:
+                    uid = c.get("uid")
+                    if not uid:
+                        continue
+                    try:
+                        typ2, body_data = m.uid("fetch", uid, "(BODY.PEEK[])")
+                        if typ2 != "OK" or not body_data:
+                            continue
+                        raw_full = b""
+                        for p in body_data:
+                            if isinstance(p, tuple):
+                                raw_full = p[1]
+                                break
+                        if raw_full:
+                            parsed = _parse_bounce_body(raw_full)
+                            if parsed:
+                                out.append({"uid": uid, "parsed": parsed})
+                    except Exception:
+                        continue
+                return {"bodies": out}
+        except Exception as e:
+            return {"_error": _format_imap_error(e)}
+
+    res = await asyncio.to_thread(_fetch_bodies)
+    if "_error" in res:
+        raise HTTPException(400, f"IMAP error: {res['_error']}")
+
+    bounce_processed = 0
+    bounce_matched = 0
+    failed_emails: list = []
+    for entry in res.get("bodies", []):
+        for failed_email, diag in entry["parsed"]:
+            try:
+                r = await _mark_bounced_by_email(
+                    user["tenant_id"], failed_email,
+                    f"Mailer-Daemon: {diag}", source="inbox-rescan",
+                )
+                bounce_processed += 1
+                if r.get("matched"):
+                    bounce_matched += 1
+                failed_emails.append({"email": failed_email, "matched": r.get("matched", False)})
+            except Exception:
+                pass
+        # Tandai cached entry sbg sudah diproses
+        await db.inbox_cache.update_one(
+            {"tenant_id": user["tenant_id"], "sub_company_id": sc_id, "folder": folder, "uid": entry["uid"]},
+            {"$set": {"is_bounce": True, "bounce_rescanned_at": now_iso()}},
+        )
+
+    return {
+        "scanned": len(candidates),
+        "bodies_parsed": len(res.get("bodies", [])),
+        "bounce_processed": bounce_processed,
+        "bounce_matched": bounce_matched,
+        "failed_emails": failed_emails[:100],
     }
 
 
