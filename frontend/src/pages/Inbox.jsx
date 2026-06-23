@@ -51,6 +51,7 @@ export default function Inbox() {
   const [data, setData] = useState(null);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
   const [lastFetchedAt, setLastFetchedAt] = useState(null);
 
@@ -102,9 +103,13 @@ export default function Inbox() {
   };
   useEffect(() => { loadCompanies(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
-  // Fetch inbox: by default uses cache if available. Force=true bypasses cache (Refresh button).
-  const loadInbox = async (force = false) => {
+  // Fetch inbox.
+  // - force=false: tampilkan cached MongoDB instan (tanpa IMAP call).
+  // - force=true:  trigger IMAP delta-sync (fetch UID baru saja, email lama TIDAK ditarik ulang).
+  // - silent=true: jangan set loading spinner (untuk background sync).
+  const loadInbox = async (force = false, opts = {}) => {
     if (!activeId) return;
+    const { silent = false } = opts;
     const key = cacheKey(activeId, folder, unreadOnly);
     // Try to restore selection that belongs to the (company, folder) we're switching to.
     const restoreSelection = () => {
@@ -133,17 +138,18 @@ export default function Inbox() {
         return;
       }
     }
-    setLoading(true); setError(null);
-    if (force) {
+    // Hanya tampilkan loading spinner kalau benar-benar kosong (no in-mem cache, no silent).
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
+    if (force && !silent) {
       setSelected(null); setDetail(null);
-    } else {
+    } else if (!silent) {
       restoreSelection();
     }
+    if (silent) setSyncing(true);
     try {
-      // Backend cache-first delta sync:
-      // - Default (force=false): kembalikan cached messages instan (no IMAP call).
-      // - Force refresh (force=true): trigger IMAP fetch UID > last cached UID (delta only,
-      //   email lama tidak ditarik ulang sehingga sangat cepat).
       const { data } = await api.get(`/inbox/${activeId}`, {
         params: { folder, limit: 50, unread_only: unreadOnly, sync: force ? "true" : "false" },
       });
@@ -164,12 +170,23 @@ export default function Inbox() {
       listCache.set(key, { data: merged, fetchedAt });
       setLastFetchedAt(fetchedAt);
     } catch (err) {
-      setError(formatApiError(err));
-      setData(null);
-    } finally { setLoading(false); }
+      if (!silent) {
+        setError(formatApiError(err));
+        setData(null);
+      }
+    } finally {
+      if (!silent) setLoading(false);
+      if (silent) setSyncing(false);
+    }
   };
   useEffect(() => {
-    if (activeId) loadInbox(false);
+    if (!activeId) return;
+    // Step 1: tampilkan cache MongoDB instan (fast, no IMAP).
+    loadInbox(false).then(() => {
+      // Step 2: setelah cache tampil, trigger IMAP delta-sync di BACKGROUND (silent — no spinner).
+      // Email lama langsung kelihatan; email baru auto-merge masuk saat sync selesai.
+      loadInbox(true, { silent: true });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, folder, unreadOnly]);
 
@@ -265,7 +282,14 @@ export default function Inbox() {
           <div className="flex items-center gap-2">
             {lastFetchedAt && !loading && (
               <span className="text-[11px] text-slate-500 hidden sm:inline" data-testid="last-fetched">
-                Updated {fmtRelative(lastFetchedAt)}
+                {syncing ? (
+                  <span className="inline-flex items-center gap-1 text-indigo-600">
+                    <ArrowsClockwise size={11} weight="bold" className="animate-spin" />
+                    Syncing…
+                  </span>
+                ) : (
+                  <>Updated {fmtRelative(lastFetchedAt)}</>
+                )}
               </span>
             )}
             <GhostButton
@@ -358,7 +382,16 @@ export default function Inbox() {
                 <div className="p-12 text-center">
                   <Tray size={40} weight="duotone" className="text-slate-300 mx-auto mb-2" />
                   <div className="text-sm text-slate-500">
-                    {unreadOnly ? "Tidak ada email belum dibaca" : `${FOLDERS.find(f=>f.key===folder)?.label} kosong`}
+                    {syncing ? (
+                      <span className="inline-flex items-center gap-2 text-indigo-600">
+                        <ArrowsClockwise size={14} weight="bold" className="animate-spin" />
+                        Mengambil email pertama kali dari IMAP… (5-30 detik)
+                      </span>
+                    ) : unreadOnly ? (
+                      "Tidak ada email belum dibaca"
+                    ) : (
+                      `${FOLDERS.find(f=>f.key===folder)?.label} kosong`
+                    )}
                   </div>
                 </div>
               ) : (

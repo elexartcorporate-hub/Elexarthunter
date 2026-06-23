@@ -3022,9 +3022,10 @@ async def inbox_list(
     if unread_only:
         cache_q["unread"] = True
 
-    # Trigger sync (only if requested OR cache is empty)
-    cached_count = await db.inbox_cache.count_documents(cache_q)
-    do_sync = sync or cached_count == 0
+    # Trigger IMAP sync ONLY when client explicitly requests (sync=true).
+    # Initial cached-load (sync=false) selalu return instant dari MongoDB cache,
+    # walau kosong → frontend trigger background sync setelah render cache.
+    do_sync = bool(sync)
 
     if do_sync:
         # Find current max UID in cache for delta-sync
@@ -3099,7 +3100,8 @@ async def inbox_list(
 
         result = await asyncio.to_thread(_fetch_new)
         if isinstance(result, dict) and "_error" in result:
-            # Kalau ada cache, tetap return cached + warning soft
+            # IMAP error: kalau cache benar2 kosong, throw; kalau ada cache, soft-fail.
+            cached_count = await db.inbox_cache.count_documents(cache_q)
             if cached_count == 0:
                 raise HTTPException(400, f"IMAP error: {result['_error']}")
         else:
