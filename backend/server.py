@@ -4092,9 +4092,15 @@ async def list_email_sends(
     sender_user_id: Optional[str] = None,
 ):
     q = {"tenant_id": user["tenant_id"]}
+    # RBAC scope: Owner & Admin lihat SEMUA email di tenant; user lain hanya lihat email
+    # YANG MEREKA KIRIM SENDIRI. Sender_user_id explicit param tetap dihormati (Owner bisa
+    # filter "Show me emails by user X").
+    if user.get("role") not in ("Owner", "Admin"):
+        q["sender_user_id"] = user["id"]
+    elif sender_user_id:
+        q["sender_user_id"] = sender_user_id
     if status: q["status"] = status
     if prospect_id: q["prospect_id"] = prospect_id
-    if sender_user_id: q["sender_user_id"] = sender_user_id
     if date_from or date_to:
         q["created_at"] = {}
         if date_from: q["created_at"]["$gte"] = date_from
