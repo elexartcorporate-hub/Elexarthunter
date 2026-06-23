@@ -760,74 +760,84 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                 <div className="text-sm text-slate-400 py-6 text-center border border-dashed border-slate-200 rounded-lg">No emails discovered</div>
               ) : (
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
-                      <tr>
-                        <th className="text-left p-2">Email</th>
-                        <th className="text-left p-2">Name</th>
-                        <th className="text-left p-2">Title</th>
-                        <th className="text-left p-2">Source</th>
-                        <th className="text-left p-2">Score</th>
-                        <th className="text-left p-2">Status</th>
-                        <th className="text-left p-2 hidden md:table-cell">Catatan / Risk</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.emails.map((e, i) => {
-                        const statusTone = e.status === "verified" ? "success"
-                                         : e.status === "risky" ? "warning"
-                                         : e.status === "invalid" ? "error" : "neutral";
-                        const noteColor = e.status === "invalid"
-                          ? "text-rose-600"
-                          : e.status === "risky"
-                          ? "text-amber-700"
-                          : "text-slate-500";
-                        // Build Source badge content + tone based on origin tracking.
-                        // Backend `sources` field is an array (e.g. ["website","hunter"] for cross-validated).
-                        const srcSet = new Set(e.sources || (e.source ? [e.source] : []));
-                        const hasWebsite = srcSet.has("website") || srcSet.has("website_external");
-                        const hasHunter  = srcSet.has("hunter");
-                        const hasAlias   = srcSet.has("alias");
-                        let srcLabel, srcTone, srcTitle;
-                        if (hasWebsite && hasHunter) {
-                          srcLabel = "Playwright + Hunter.io";
-                          srcTone = "success";
-                          srcTitle = "Cross-validated: ditemukan di crawl website resmi DAN Hunter.io — paling tepercaya";
-                        } else if (hasWebsite) {
-                          srcLabel = srcSet.has("website_external") ? "Playwright (ext)" : "Playwright";
-                          srcTone = "info";
-                          srcTitle = "Ditemukan langsung di crawl website resmi (Playwright deep crawl)";
-                        } else if (hasHunter) {
-                          srcLabel = "Hunter.io";
-                          srcTone = "info";
-                          srcTitle = "Dari Hunter.io domain-search (B2B database)";
-                        } else if (hasAlias) {
-                          srcLabel = "Alias";
-                          srcTone = "neutral";
-                          srcTitle = "Alias generic (auto-injected) — diverifikasi via Alias Verifier internal";
-                        } else {
-                          srcLabel = "—";
-                          srcTone = "neutral";
-                          srcTitle = "";
-                        }
-                        return (
-                          <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
-                            <td className="p-2 font-mono text-xs text-slate-900 align-top">{e.email}</td>
-                            <td className="p-2 text-xs text-slate-700 align-top">{e.name || "—"}</td>
-                            <td className="p-2 text-xs text-slate-500 align-top">{e.job_title || "—"}</td>
-                            <td className="p-2 align-top whitespace-nowrap" title={srcTitle}>
-                              <Badge tone={srcTone}>{srcLabel}</Badge>
-                            </td>
-                            <td className="p-2 align-top"><Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>{e.confidence ?? "—"}</Badge></td>
-                            <td className="p-2 align-top"><Badge tone={statusTone}>{e.status}</Badge></td>
-                            <td className={`p-2 text-[11px] leading-snug hidden md:table-cell ${noteColor}`} title={e.description}>
-                              {e.description || "—"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
+                        <tr>
+                          <th className="text-left px-3 py-2 whitespace-nowrap">Email</th>
+                          <th className="text-left px-3 py-2 whitespace-nowrap">Name</th>
+                          <th className="text-left px-3 py-2 whitespace-nowrap">Title</th>
+                          <th className="text-left px-3 py-2 whitespace-nowrap">Source</th>
+                          <th className="text-left px-3 py-2 whitespace-nowrap">Score</th>
+                          <th className="text-left px-3 py-2 whitespace-nowrap">Status</th>
+                          <th className="text-left px-3 py-2 whitespace-nowrap hidden lg:table-cell">Catatan</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.emails.map((e, i) => {
+                          const statusTone = e.status === "verified" ? "success"
+                                           : e.status === "risky" ? "warning"
+                                           : e.status === "invalid" ? "error" : "neutral";
+                          const noteColor = e.status === "invalid"
+                            ? "text-rose-600"
+                            : e.status === "risky"
+                            ? "text-amber-700"
+                            : "text-slate-500";
+                          const srcSet = new Set(e.sources || (e.source ? [e.source] : []));
+                          const hasWebsite = srcSet.has("website") || srcSet.has("website_external");
+                          const hasHunter  = srcSet.has("hunter");
+                          const hasAlias   = srcSet.has("alias");
+                          let srcLabel, srcTone, srcTitle;
+                          if (hasWebsite && hasHunter) {
+                            srcLabel = "Web + Hunter";
+                            srcTone = "success";
+                            srcTitle = "Cross-validated: ditemukan di Playwright crawl DAN Hunter.io — paling tepercaya";
+                          } else if (hasWebsite) {
+                            srcLabel = srcSet.has("website_external") ? "Web (ext)" : "Playwright";
+                            srcTone = "info";
+                            srcTitle = "Ditemukan langsung di crawl website resmi (Playwright)";
+                          } else if (hasHunter) {
+                            srcLabel = "Hunter.io";
+                            srcTone = "info";
+                            srcTitle = "Dari Hunter.io domain-search";
+                          } else if (hasAlias) {
+                            srcLabel = "Alias";
+                            srcTone = "neutral";
+                            srcTitle = "Alias generic auto-injected";
+                          } else {
+                            srcLabel = "—";
+                            srcTone = "neutral";
+                            srcTitle = "";
+                          }
+                          return (
+                            <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                              <td className="px-3 py-2.5 font-mono text-xs text-slate-900 align-middle whitespace-nowrap max-w-[260px] truncate" title={e.email}>
+                                {e.email}
+                              </td>
+                              <td className="px-3 py-2.5 text-xs text-slate-700 align-middle whitespace-nowrap max-w-[160px] truncate" title={e.name || ""}>
+                                {e.name || "—"}
+                              </td>
+                              <td className="px-3 py-2.5 text-xs text-slate-500 align-middle whitespace-nowrap max-w-[180px] truncate" title={e.job_title || ""}>
+                                {e.job_title || "—"}
+                              </td>
+                              <td className="px-3 py-2.5 align-middle whitespace-nowrap" title={srcTitle}>
+                                <Badge tone={srcTone}>{srcLabel}</Badge>
+                              </td>
+                              <td className="px-3 py-2.5 align-middle whitespace-nowrap">
+                                <Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>{e.confidence ?? "—"}</Badge>
+                              </td>
+                              <td className="px-3 py-2.5 align-middle whitespace-nowrap">
+                                <Badge tone={statusTone}>{e.status}</Badge>
+                              </td>
+                              <td className={`px-3 py-2.5 text-[11px] align-middle hidden lg:table-cell max-w-[260px] truncate ${noteColor}`} title={e.description}>
+                                {e.description || "—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
               {savedId && (
