@@ -99,9 +99,12 @@ app.get("/sessions/:sid", async (req, res) => {
 app.delete("/sessions/:sid", async (req, res) => {
   try {
     await stopSession(db, req.params.sid, true);
+    // Comprehensive cleanup: remove all session traces (defensive against
+    // auto-resume coming back to life after a delete).
     await db.collection("wa_accounts").deleteOne({ session_id: req.params.sid });
     await db.collection("wa_chats").deleteMany({ session_id: req.params.sid });
     await db.collection("wa_messages").deleteMany({ session_id: req.params.sid });
+    await db.collection("wa_contacts").deleteMany({ session_id: req.params.sid });
     res.json({ ok: true });
   } catch (e) {
     console.error("DELETE /sessions error:", e);
