@@ -622,6 +622,7 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                         <th className="text-left p-2">Email</th>
                         <th className="text-left p-2">Name</th>
                         <th className="text-left p-2">Title</th>
+                        <th className="text-left p-2">Source</th>
                         <th className="text-left p-2">Score</th>
                         <th className="text-left p-2">Status</th>
                         <th className="text-left p-2 hidden md:table-cell">Catatan / Risk</th>
@@ -637,11 +638,42 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                           : e.status === "risky"
                           ? "text-amber-700"
                           : "text-slate-500";
+                        // Build Source badge content + tone based on origin tracking.
+                        // Backend `sources` field is an array (e.g. ["website","hunter"] for cross-validated).
+                        const srcSet = new Set(e.sources || (e.source ? [e.source] : []));
+                        const hasWebsite = srcSet.has("website") || srcSet.has("website_external");
+                        const hasHunter  = srcSet.has("hunter");
+                        const hasAlias   = srcSet.has("alias");
+                        let srcLabel, srcTone, srcTitle;
+                        if (hasWebsite && hasHunter) {
+                          srcLabel = "Playwright + Hunter.io";
+                          srcTone = "success";
+                          srcTitle = "Cross-validated: ditemukan di crawl website resmi DAN Hunter.io — paling tepercaya";
+                        } else if (hasWebsite) {
+                          srcLabel = srcSet.has("website_external") ? "Playwright (ext)" : "Playwright";
+                          srcTone = "info";
+                          srcTitle = "Ditemukan langsung di crawl website resmi (Playwright deep crawl)";
+                        } else if (hasHunter) {
+                          srcLabel = "Hunter.io";
+                          srcTone = "info";
+                          srcTitle = "Dari Hunter.io domain-search (B2B database)";
+                        } else if (hasAlias) {
+                          srcLabel = "Alias";
+                          srcTone = "neutral";
+                          srcTitle = "Alias generic (auto-injected) — diverifikasi via Alias Verifier internal";
+                        } else {
+                          srcLabel = "—";
+                          srcTone = "neutral";
+                          srcTitle = "";
+                        }
                         return (
                           <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                             <td className="p-2 font-mono text-xs text-slate-900 align-top">{e.email}</td>
                             <td className="p-2 text-xs text-slate-700 align-top">{e.name || "—"}</td>
                             <td className="p-2 text-xs text-slate-500 align-top">{e.job_title || "—"}</td>
+                            <td className="p-2 align-top whitespace-nowrap" title={srcTitle}>
+                              <Badge tone={srcTone}>{srcLabel}</Badge>
+                            </td>
                             <td className="p-2 align-top"><Badge tone={e.confidence >= 80 ? "success" : e.confidence >= 50 ? "warning" : "error"}>{e.confidence ?? "—"}</Badge></td>
                             <td className="p-2 align-top"><Badge tone={statusTone}>{e.status}</Badge></td>
                             <td className={`p-2 text-[11px] leading-snug hidden md:table-cell ${noteColor}`} title={e.description}>
