@@ -1,0 +1,45 @@
+{
+  "summary": "Frontend-only Playwright verification of WhatsApp Phase 2. All requested flows PASS: login as demo@test.com -> nav-whatsapp -> /whatsapp route -> EmptyState 'Belum ada akun WhatsApp' (when accounts empty) -> click wa-add-account opens scrollable qr-modal (class includes both overflow-y-auto + max-h-[90vh]) -> qr-image rendered in ~2.3s (<<6s) -> qr-modal-close works -> account card persists with 'Scan QR'/'Connecting' badge -> clicking card shows 'Pilih chat untuk baca pesan' right-panel placeholder. Composer test-ids (wa-attach-btn, wa-file-input, wa-message-input, wa-send-btn) verified present in WhatsApp.jsx source via grep (lines 572, 565, 585, 592) — not testable at runtime without an active connected session. Cleanup via DELETE /api/whatsapp/accounts/{sid} returns API list to []. Backend 17/17 pytest already verified by main agent; not re-run here.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "WA accounts cleanup -> EmptyState", "issue": "After DELETE all accounts via API returns GET=[] (verified), reloading /whatsapp re-shows an account card (e.g. 'TEST_resume') instead of EmptyState. Backend appears to auto-resume/restore a persisted Baileys session on page load, re-creating an account row. Not blocking, but cleanup is not idempotent from the UI perspective. Consider clearing Baileys auth_info files when DELETE /api/whatsapp/accounts/{sid} is called, or excluding restored sessions until user opts in.", "affected_selectors": ["[data-testid^='wa-account-']"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_6.json"],
+  "action_items": [
+    "Investigate auto-resume behavior: after DELETE returns 200 and GET returns [], a subsequent page reload re-introduces an account (label 'TEST_resume'). DELETE handler may need to also remove Baileys session files / disable auto-restore for deleted SIDs to keep cleanup deterministic.",
+    "(No other actions needed) iteration_5 LOW polish item is already fixed — qr-modal now has max-h-[90vh] + overflow-y-auto."
+  ],
+  "critical_code_review_comments": [
+    "server.py is still large (~5000 lines). Splitting into routers (whatsapp/, prospects/, auth/, templates/) is still recommended per file-size guideline (>700 lines).",
+    "WhatsApp.jsx polls /chats every 8s and /messages every 5s plus /status every 2s — three concurrent intervals per active page; consider SSE or WebSocket pushed from backend to reduce load and latency.",
+    "DELETE /api/whatsapp/accounts/{sid} appears to not fully purge the underlying Baileys session, allowing UI to re-show the account on reload. Either purge session files on delete, or filter resumed sessions that no longer have a DB row."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (17/17 pytest from prior run, not re-executed)", "frontend": "100% on the 6 requested flow items"},
+  "test_credentials": "Owner: demo@test.com / demo1234 (verified working). Login response uses key 'token' in localStorage.",
+  "seed_data_creation": "No persistent seed. Test created 2 transient WA accounts (Baileys sessions returning QR within ~2.3s), then cleaned both via DELETE /api/whatsapp/accounts/{sid}. Final GET /api/whatsapp/accounts -> [] confirmed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 frontend WhatsApp flow is solid. Composer-level UI (wa-attach-btn / wa-file-input / wa-message-input / wa-send-btn at /app/frontend/src/pages/WhatsApp.jsx lines 565-592) can only be tested with a connected Baileys session (real phone scan) — skip in automated tests. Auto-accept window.confirm before clicking delete buttons. Toast 'Welcome back' can briefly overlap top-right action buttons; either wait ~3s or remove via JS before clicking wa-add-account. The DELETE -> reload -> account reappears behavior is a backend auto-resume side effect — flag it to main agent rather than treat as test flake.",
+  "tests_executed_frontend": [
+    "Login demo@test.com -> dashboard - PASS",
+    "Sidebar [data-testid='nav-whatsapp'] click -> navigates to /whatsapp - PASS",
+    "EmptyState 'Belum ada akun WhatsApp' visible when 0 accounts - PASS (after API pre-cleanup)",
+    "[data-testid='wa-add-account'] click -> [data-testid='qr-modal'] opens within 8s - PASS",
+    "qr-modal class includes both 'overflow-y-auto' and 'max-h-[90vh]' (scrollable) - PASS",
+    "[data-testid='qr-image'] renders within 6s - PASS (~2.3s)",
+    "[data-testid='qr-modal-close'] closes modal - PASS",
+    "[data-testid^='wa-account-{sid}'] card persists in left rail after closing modal - PASS",
+    "Card badge text contains 'Scan QR' or 'Connecting' - PASS",
+    "Click account card -> right panel shows 'Pilih chat untuk baca pesan' - PASS (no chats since not real-connected)",
+    "Composer test-ids exist in source (grep): wa-attach-btn L572, wa-file-input L565, wa-message-input L585, wa-send-btn L592 - PASS (skipped runtime test as documented)",
+    "DELETE /api/whatsapp/accounts/{sid} for each created sid -> 200 - PASS",
+    "GET /api/whatsapp/accounts after cleanup -> [] - PASS",
+    "Reload /whatsapp after cleanup -> EmptyState - FAIL (backend auto-resumes a session; see integration_issues)"
+  ],
+  "rca_of_the_issue": "Reload-after-cleanup repopulating an account: DELETE removes the DB row but Baileys auth_info on disk persists; on app/page refresh the backend auto-loads any on-disk sessions and re-creates account rows. Mitigation: in DELETE handler, also rm -rf the Baileys auth_info directory for that session_id, or maintain a 'deleted' tombstone that auto-resume must consult before recreating."
+}
