@@ -2873,64 +2873,109 @@ async def _check_inbox_access(sc_id: str, user: dict) -> dict:
 async def inbox_list(
     sc_id: str,
     folder: str = "INBOX",
-    limit: int = 20,
+    limit: int = 50,
     unread_only: bool = False,
+    sync: bool = False,
     user: dict = Depends(get_current_user),
 ):
-    """Fetch latest emails from IMAP for a sub-company. folder=INBOX|Sent|Trash"""
+    """Fetch emails for a sub-company folder.
+
+    Strategy: CACHE-FIRST + DELTA SYNC. Tiap pesan disimpan di `inbox_cache` collection.
+    Default (sync=False): kembalikan cached messages instan (sangat cepat, no IMAP call).
+    sync=True: IMAP fetch HANYA UID baru (lebih besar dari max UID cache), upsert ke
+    cache, lalu return cache terbaru. Email lama TIDAK di-fetch ulang → tidak berat.
+    """
     if folder not in FOLDER_KEYS:
         raise HTTPException(400, "folder harus salah satu: INBOX, Sent, Trash")
     sc = await _check_inbox_access(sc_id, user)
 
-    def _fetch():
-        import email
-        try:
-            with _imap_connect(sc) as m:
-                mailbox = _resolve_folder(m, folder)
-                typ, _ = m.select(mailbox, readonly=True)
-                if typ != "OK":
-                    return {"_error": f"Folder tidak ditemukan: {mailbox}"}
-                criteria = "(UNSEEN)" if unread_only else "ALL"
-                typ, data = m.search(None, criteria)
-                if typ != "OK" or not data or not data[0]:
-                    return {"mailbox": mailbox, "messages": []}
-                ids = data[0].split()[-limit:][::-1]
-                items = []
-                for mid in ids:
-                    typ, msg_data = m.fetch(mid, "(BODY.PEEK[HEADER] FLAGS)")
-                    if typ != "OK" or not msg_data:
-                        continue
-                    raw = b""
-                    flags_str = ""
-                    for part in msg_data:
-                        if isinstance(part, tuple):
-                            raw = part[1]
-                        elif isinstance(part, bytes):
-                            flags_str = part.decode(errors="ignore")
-                    msg = email.message_from_bytes(raw)
-                    items.append({
-                        "uid": mid.decode(),
-                        "from": _decode_hdr(msg.get("From", "")),
-                        "to": _decode_hdr(msg.get("To", "")),
-                        "subject": _decode_hdr(msg.get("Subject", "")) or "(no subject)",
-                        "date": msg.get("Date", ""),
-                        "message_id": msg.get("Message-ID", ""),
-                        "unread": "\\Seen" not in flags_str,
-                    })
-                return {"mailbox": mailbox, "messages": items}
-        except Exception as e:
-            return {"_error": _format_imap_error(e)}
+    # Query cached
+    cache_q = {"tenant_id": user["tenant_id"], "sub_company_id": sc_id, "folder": folder}
+    if unread_only:
+        cache_q["unread"] = True
 
-    result = await asyncio.to_thread(_fetch)
-    if isinstance(result, dict) and "_error" in result:
-        raise HTTPException(400, f"IMAP error: {result['_error']}")
+    # Trigger sync (only if requested OR cache is empty)
+    cached_count = await db.inbox_cache.count_documents(cache_q)
+    do_sync = sync or cached_count == 0
+
+    if do_sync:
+        # Find current max UID in cache for delta-sync
+        last = await db.inbox_cache.find_one(
+            {"tenant_id": user["tenant_id"], "sub_company_id": sc_id, "folder": folder},
+            sort=[("uid_int", -1)],
+            projection={"_id": 0, "uid_int": 1},
+        )
+        last_uid = (last or {}).get("uid_int", 0)
+
+        def _fetch_new():
+            import email
+            try:
+                with _imap_connect(sc) as m:
+                    mailbox = _resolve_folder(m, folder)
+                    typ, _ = m.select(mailbox, readonly=True)
+                    if typ != "OK":
+                        return {"_error": f"Folder tidak ditemukan: {mailbox}"}
+                    # Search hanya UID > last_uid (delta — paling cepat)
+                    criteria = f"UID {last_uid + 1}:*" if last_uid > 0 else "ALL"
+                    typ, data = m.uid("search", None, criteria)
+                    if typ != "OK" or not data or not data[0]:
+                        return {"mailbox": mailbox, "new": []}
+                    uids = data[0].split()
+                    # Limit ke 200 email terbaru kalau initial sync (besar)
+                    if last_uid == 0:
+                        uids = uids[-200:]
+                    items = []
+                    for uid in uids:
+                        typ, msg_data = m.uid("fetch", uid, "(BODY.PEEK[HEADER] FLAGS)")
+                        if typ != "OK" or not msg_data:
+                            continue
+                        raw = b""
+                        flags_str = ""
+                        for part in msg_data:
+                            if isinstance(part, tuple):
+                                raw = part[1]
+                            elif isinstance(part, bytes):
+                                flags_str = part.decode(errors="ignore")
+                        msg = email.message_from_bytes(raw)
+                        items.append({
+                            "uid": uid.decode(),
+                            "uid_int": int(uid.decode()),
+                            "from": _decode_hdr(msg.get("From", "")),
+                            "to": _decode_hdr(msg.get("To", "")),
+                            "subject": _decode_hdr(msg.get("Subject", "")) or "(no subject)",
+                            "date": msg.get("Date", ""),
+                            "message_id": msg.get("Message-ID", ""),
+                            "unread": "\\Seen" not in flags_str,
+                        })
+                    return {"mailbox": mailbox, "new": items}
+            except Exception as e:
+                return {"_error": _format_imap_error(e)}
+
+        result = await asyncio.to_thread(_fetch_new)
+        if isinstance(result, dict) and "_error" in result:
+            # Kalau ada cache, tetap return cached + warning soft
+            if cached_count == 0:
+                raise HTTPException(400, f"IMAP error: {result['_error']}")
+        else:
+            # Bulk upsert ke cache (email lama tidak ditarik ulang)
+            for it in result.get("new", []):
+                await db.inbox_cache.update_one(
+                    {"tenant_id": user["tenant_id"], "sub_company_id": sc_id, "folder": folder, "uid": it["uid"]},
+                    {"$set": {**it, "tenant_id": user["tenant_id"], "sub_company_id": sc_id,
+                              "folder": folder, "fetched_at": now_iso()}},
+                    upsert=True,
+                )
+
+    # Return cached messages (sort newest first by uid_int desc)
+    messages = await db.inbox_cache.find(cache_q, {"_id": 0, "tenant_id": 0, "sub_company_id": 0, "folder": 0, "fetched_at": 0}).sort("uid_int", -1).limit(limit).to_list(limit)
     return {
         "sub_company_id": sc_id,
         "sub_company_name": sc["name"],
         "folder": folder,
-        "mailbox": result["mailbox"],
-        "count": len(result["messages"]),
-        "messages": result["messages"],
+        "mailbox": folder,
+        "count": len(messages),
+        "messages": messages,
+        "synced": do_sync,
     }
 
 

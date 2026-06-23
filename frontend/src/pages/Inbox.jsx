@@ -114,8 +114,12 @@ export default function Inbox() {
       restoreSelection();
     }
     try {
+      // Backend cache-first delta sync:
+      // - Default (force=false): kembalikan cached messages instan (no IMAP call).
+      // - Force refresh (force=true): trigger IMAP fetch UID > last cached UID (delta only,
+      //   email lama tidak ditarik ulang sehingga sangat cepat).
       const { data } = await api.get(`/inbox/${activeId}`, {
-        params: { folder, limit: 20, unread_only: unreadOnly },
+        params: { folder, limit: 50, unread_only: unreadOnly, sync: force ? "true" : "false" },
       });
       // Merge in any UIDs we already opened locally — protects against IMAP servers
       // that don't persist \Seen reliably and prevents the "comes back as unread" issue.
