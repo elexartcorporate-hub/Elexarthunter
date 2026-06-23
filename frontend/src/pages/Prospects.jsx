@@ -1743,6 +1743,19 @@ function AddManualProspectModal({ activeTask, onClose, onCreated }) {
     attach_to_task: !!activeTask,
   });
   const [saving, setSaving] = useState(false);
+  const firstInputRef = useRef(null);
+
+  // Auto-focus first input on open, close on Escape
+  useEffect(() => {
+    firstInputRef.current?.focus();
+    const onKey = (e) => { if (e.key === "Escape" && !saving) onClose(); };
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [saving, onClose]);
 
   const submit = async (e) => {
     e?.preventDefault?.();
@@ -1785,75 +1798,231 @@ function AddManualProspectModal({ activeTask, onClose, onCreated }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm grid place-items-center p-4 z-50" data-testid="add-manual-modal">
-      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h2 className="font-display text-xl font-semibold text-slate-900">Tambah Prospect Manual</h2>
-            <p className="text-xs text-slate-500 mt-1">Input data perusahaan + email kontak. Bisa langsung di-attach ke tugas aktif.</p>
+    <div
+      className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[60] flex items-start sm:items-center justify-center p-4 overflow-y-auto"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
+      data-testid="add-manual-modal"
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-xl my-4 sm:my-0 max-h-[calc(100vh-2rem)] flex flex-col"
+        onMouseDown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-manual-title"
+      >
+        {/* Sticky header */}
+        <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-indigo-100 text-indigo-600 grid place-items-center shrink-0">
+              <Plus size={18} weight="bold" />
+            </div>
+            <div className="min-w-0">
+              <h2 id="add-manual-title" className="font-display text-base sm:text-lg font-semibold text-slate-900">
+                Tambah Prospect Manual
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">Isi data perusahaan & email kontak utama</p>
+            </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1" data-testid="close-modal-btn">
-            <X size={20} weight="bold" />
+          <button
+            type="button"
+            onClick={() => !saving && onClose()}
+            disabled={saving}
+            className="text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg p-1.5 transition disabled:opacity-50 shrink-0"
+            data-testid="close-modal-btn"
+            aria-label="Tutup"
+          >
+            <X size={18} weight="bold" />
           </button>
         </div>
 
-        <form onSubmit={submit} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <TermInput label="Nama Perusahaan *" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} placeholder="PT Contoh Sejahtera" required data-testid="manual-company" />
-            <TermInput label="Website" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} placeholder="example.com" data-testid="manual-website" />
+        {/* Scrollable form body */}
+        <form onSubmit={submit} className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          {/* Section 1: Company */}
+          <div className="space-y-3">
+            <div className="text-[10px] uppercase tracking-widest font-semibold text-indigo-600 flex items-center gap-2">
+              <Buildings size={12} weight="bold" /> Data Perusahaan
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Nama Perusahaan <span className="text-rose-500">*</span>
+              </label>
+              <input
+                ref={firstInputRef}
+                value={form.company_name}
+                onChange={(e) => setForm({ ...form, company_name: e.target.value })}
+                placeholder="PT Contoh Sejahtera"
+                required
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                data-testid="manual-company"
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Website</label>
+                <input
+                  value={form.website}
+                  onChange={(e) => setForm({ ...form, website: e.target.value })}
+                  placeholder="example.com"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                  data-testid="manual-website"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Industri</label>
+                <input
+                  value={form.industry}
+                  onChange={(e) => setForm({ ...form, industry: e.target.value })}
+                  placeholder="Travel & Tourism"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                  data-testid="manual-industry"
+                />
+              </div>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <TermInput label="Email Kontak *" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="contact@example.com" required data-testid="manual-email" />
-            <TermInput label="Nama Kontak" value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} placeholder="Budi Santoso" data-testid="manual-contact-name" />
+          {/* Section 2: Contact */}
+          <div className="space-y-3">
+            <div className="text-[10px] uppercase tracking-widest font-semibold text-indigo-600 flex items-center gap-2">
+              <UsersFour size={12} weight="bold" /> Kontak Utama
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Email <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                placeholder="contact@example.com"
+                required
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none font-mono"
+                data-testid="manual-email"
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Nama Kontak</label>
+                <input
+                  value={form.contact_name}
+                  onChange={(e) => setForm({ ...form, contact_name: e.target.value })}
+                  placeholder="Budi Santoso"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                  data-testid="manual-contact-name"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Jabatan</label>
+                <input
+                  value={form.job_title}
+                  onChange={(e) => setForm({ ...form, job_title: e.target.value })}
+                  placeholder="Marketing Manager"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                  data-testid="manual-job-title"
+                />
+              </div>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <TermInput label="Jabatan" value={form.job_title} onChange={(e) => setForm({ ...form, job_title: e.target.value })} placeholder="Marketing Manager" data-testid="manual-job-title" />
-            <TermInput label="Industri" value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} placeholder="Travel & Tourism" data-testid="manual-industry" />
-          </div>
+          {/* Section 3: Optional details (collapsible feeling) */}
+          <details className="group" data-testid="manual-optional-details">
+            <summary className="text-[10px] uppercase tracking-widest font-semibold text-slate-500 hover:text-indigo-600 cursor-pointer flex items-center gap-2 select-none">
+              <CaretRight size={12} weight="bold" className="transition-transform group-open:rotate-90" />
+              Detail tambahan (opsional)
+            </summary>
+            <div className="mt-3 space-y-3 pl-4 border-l-2 border-slate-100">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Kota</label>
+                  <input
+                    value={form.city}
+                    onChange={(e) => setForm({ ...form, city: e.target.value })}
+                    placeholder="Denpasar"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                    data-testid="manual-city"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Negara</label>
+                  <input
+                    value={form.country}
+                    onChange={(e) => setForm({ ...form, country: e.target.value })}
+                    placeholder="Indonesia"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                    data-testid="manual-country"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Telepon</label>
+                  <input
+                    value={form.phone}
+                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    placeholder="+62-21-xxxx"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                    data-testid="manual-phone"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Notes</label>
+                <textarea
+                  rows={2}
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  placeholder="Catatan internal tentang prospect ini…"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none"
+                  data-testid="manual-notes"
+                />
+              </div>
+            </div>
+          </details>
 
-          <div className="grid grid-cols-3 gap-3">
-            <TermInput label="Kota" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} placeholder="Denpasar" data-testid="manual-city" />
-            <TermInput label="Negara" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} placeholder="Indonesia" data-testid="manual-country" />
-            <TermInput label="Telepon" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+62-21-xxxx" data-testid="manual-phone" />
-          </div>
-
-          <div>
-            <label className="block text-[11px] uppercase tracking-wider text-slate-500 font-medium mb-1">Notes</label>
-            <textarea
-              rows={2}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
-              placeholder="Catatan tambahan tentang prospect ini..."
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              data-testid="manual-notes"
-            />
-          </div>
-
+          {/* Attach-to-task toggle */}
           {activeTask && (
-            <label className="flex items-center gap-2 p-3 bg-indigo-50/50 border border-indigo-100 rounded-lg cursor-pointer" data-testid="manual-attach-toggle">
+            <label
+              className="flex items-center gap-3 p-3 bg-indigo-50/60 border border-indigo-100 rounded-xl cursor-pointer hover:bg-indigo-50 transition"
+              data-testid="manual-attach-toggle"
+            >
               <input
                 type="checkbox"
                 checked={form.attach_to_task}
                 onChange={(e) => setForm({ ...form, attach_to_task: e.target.checked })}
-                className="w-4 h-4 text-indigo-600 rounded"
+                className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
               />
-              <div className="text-xs">
-                <div className="font-medium text-slate-900">Langsung masuk ke tugas aktif</div>
-                <div className="text-slate-500">{activeTask.name} ({activeTask.date}) — prospect ini akan otomatis ter-attach</div>
+              <div className="text-xs flex-1 min-w-0">
+                <div className="font-medium text-slate-900 truncate">Langsung masuk ke tugas aktif</div>
+                <div className="text-slate-500 truncate">{activeTask.name} · {activeTask.date}</div>
               </div>
+              <Target size={16} weight="bold" className="text-indigo-500 shrink-0" />
             </label>
           )}
-
-          <div className="flex gap-2 pt-2 border-t border-slate-100">
-            <GhostButton onClick={onClose} type="button" disabled={saving} data-testid="manual-cancel-btn">Batal</GhostButton>
-            <PrimaryButton type="submit" disabled={saving} data-testid="manual-save-btn">
-              {saving ? <><Spinner size={14} weight="bold" className="animate-spin" /> Menyimpan…</> : <><CheckCircle size={14} weight="bold" /> Simpan Prospect</>}
-            </PrimaryButton>
-          </div>
         </form>
-      </Card>
+
+        {/* Sticky footer */}
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-slate-50/50 shrink-0 rounded-b-2xl">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 transition"
+            data-testid="manual-cancel-btn"
+          >
+            Batal
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={saving || !form.company_name.trim() || !form.email.trim()}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 transition"
+            data-testid="manual-save-btn"
+          >
+            {saving ? (
+              <><Spinner size={14} weight="bold" className="animate-spin" /> Menyimpan…</>
+            ) : (
+              <><CheckCircle size={14} weight="bold" /> Simpan Prospect</>
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
