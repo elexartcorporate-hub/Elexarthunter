@@ -160,7 +160,7 @@ export default function Prospects() {
       {tab === "email"     && emailTabUnlocked && <EmailStep task={activeTask} onSubmitted={() => { setTab("tersimpan"); setActiveTask(null); setTasksRefresh((k) => k + 1); setRefreshKey((k) => k + 1); }} />}
       {tab === "analitik"  && <EmailActivity />}
       {tab === "tersimpan" && <TasksList refreshKey={tasksRefresh} onPick={(t) => { setActiveTask(t); setTab("add"); }} onRefresh={() => setTasksRefresh((k) => k + 1)} />}
-      {tab === "list"      && <ProspectList quota={quota} />}
+      {tab === "list"      && <ProspectList quota={quota} activeTask={activeTask} refreshTask={refreshTask} />}
     </div>
   );
 }
@@ -298,6 +298,137 @@ function ConfettiBurst() {
 }
 
 /* ─────────────── TAB 1: ADD PROSPECT ─────────────── */
+function ExistingProspectPicker({ activeTask, onAttached }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [attachingId, setAttachingId] = useState(null);
+
+  const taskPids = new Set(activeTask?.prospect_ids || []);
+
+  const search = async (query) => {
+    setLoading(true);
+    try {
+      const params = query ? { q: query } : {};
+      const { data } = await api.get("/prospects", { params });
+      // Exclude prospects already in this task
+      setResults(data.filter((p) => !taskPids.has(p.id)).slice(0, 50));
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Debounced search-as-you-type
+  useEffect(() => {
+    if (!open) return;
+    const t = setTimeout(() => search(q), 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, open]);
+
+  const attach = async (pid, companyName) => {
+    setAttachingId(pid);
+    try {
+      await api.post(`/tasks/${activeTask.id}/prospects/${pid}`);
+      toast.success(`✓ ${companyName} masuk ke tugas aktif`);
+      // Remove from local results (already attached)
+      setResults((rs) => rs.filter((r) => r.id !== pid));
+      onAttached?.();
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setAttachingId(null);
+    }
+  };
+
+  return (
+    <div className="mb-3 border border-slate-200 rounded-lg overflow-hidden" data-testid="existing-picker">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 hover:bg-slate-100 text-left text-xs transition"
+        data-testid="existing-picker-toggle"
+      >
+        <span className="flex items-center gap-2">
+          <UsersFour size={14} weight="bold" className="text-indigo-600" />
+          <span className="font-medium text-slate-700">Pakai prospect yang sudah tersimpan</span>
+          <span className="text-[10px] text-slate-500">— search dari Prospect List & langsung attach ke tugas</span>
+        </span>
+        <CaretRight size={12} weight="bold" className={`text-slate-400 transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="p-3 bg-white space-y-2">
+          <div className="relative">
+            <MagnifyingGlass size={14} weight="bold" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Cari company / email / website / industry…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+              data-testid="existing-picker-input"
+              autoFocus
+            />
+          </div>
+
+          {loading ? (
+            <div className="text-center py-4 text-xs text-slate-400">
+              <Spinner size={14} weight="bold" className="animate-spin inline mr-1" /> Mencari…
+            </div>
+          ) : results.length === 0 ? (
+            <div className="text-center py-4 text-xs text-slate-400">
+              {q ? `Tidak ada hasil untuk "${q}"` : "Mulai ketik untuk mencari prospect tersimpan"}
+            </div>
+          ) : (
+            <div className="max-h-80 overflow-y-auto space-y-1.5">
+              {results.map((p) => {
+                const primary = (p.emails || []).find((e) => e.is_primary) || (p.emails || [])[0];
+                return (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-2 p-2 border border-slate-100 rounded-lg hover:border-indigo-200 hover:bg-indigo-50/30 transition"
+                    data-testid={`existing-row-${p.id}`}
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 grid place-items-center font-medium text-xs shrink-0">
+                      {(p.company_name || "?").charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-slate-900 truncate">{p.company_name}</div>
+                      <div className="text-[10px] text-slate-500 truncate font-mono">{primary?.email || p.domain || "—"}</div>
+                    </div>
+                    <Badge tone={STATUS_TONE[p.status] || "neutral"}>{p.status}</Badge>
+                    <button
+                      type="button"
+                      onClick={() => attach(p.id, p.company_name)}
+                      disabled={attachingId === p.id}
+                      className="px-2.5 py-1.5 rounded-md text-[11px] font-medium bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white inline-flex items-center gap-1 shrink-0"
+                      data-testid={`attach-${p.id}`}
+                    >
+                      {attachingId === p.id ? (
+                        <Spinner size={11} weight="bold" className="animate-spin" />
+                      ) : (
+                        <><Plus size={11} weight="bold" /> Add</>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="text-[10px] text-slate-400 text-center pt-1">
+                Menampilkan {results.length} hasil (max 50)
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmail }) {
   const navigate = useNavigate();
   const [domain, setDomain] = useState("");
@@ -523,6 +654,19 @@ function AddProspect({ quota, activeTask, refreshTask, onProspectSaved, onGoEmai
                 </button>
               )}
             </div>
+
+            {/* Pick from existing Prospect List — quick-attach existing prospects to active task
+                without re-discovering. Helpful when user already has saved leads and just wants
+                to assign them to today's outreach batch. */}
+            {activeTask && (
+              <ExistingProspectPicker
+                activeTask={activeTask}
+                onAttached={() => {
+                  refreshTask?.();
+                  onProspectSaved?.();
+                }}
+              />
+            )}
 
             {/* Category selector — required so the backend injects the right aliases */}
             <div className="mb-2">
@@ -1455,12 +1599,13 @@ function OutreachModal({ todayList, activeTask, onClose, onSent }) {
 }
 
 /* ─────────────── TAB 2: PROSPECT LIST ─────────────── */
-function ProspectList({ quota }) {
+function ProspectList({ quota, activeTask, refreshTask }) {
   const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [statusFilter, setStatusFilter] = useState("");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showAddManual, setShowAddManual] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -1494,6 +1639,11 @@ function ProspectList({ quota }) {
         {STATUSES.map((s) => (
           <FilterPill key={s} label={s} active={statusFilter === s} onClick={() => setStatusFilter(s)} count={counts[s]} testid={`filter-${s.replace(/\s/g,'')}`} />
         ))}
+        <div className="ml-auto">
+          <PrimaryButton onClick={() => setShowAddManual(true)} data-testid="add-manual-btn">
+            <Plus size={14} weight="bold" /> Add Manual
+          </PrimaryButton>
+        </div>
       </div>
       <Card className="p-5">
         <div className="flex gap-2 mb-4">
@@ -1556,6 +1706,153 @@ function ProspectList({ quota }) {
             </table>
           </div>
         )}
+      </Card>
+
+      {showAddManual && (
+        <AddManualProspectModal
+          activeTask={activeTask}
+          onClose={() => setShowAddManual(false)}
+          onCreated={(prospect, attachedToTask) => {
+            setShowAddManual(false);
+            if (attachedToTask) {
+              toast.success(`✓ ${prospect.company_name} ditambah & langsung masuk ke tugas aktif`);
+              if (refreshTask) refreshTask();
+            } else {
+              toast.success(`✓ ${prospect.company_name} ditambah ke Prospect List`);
+            }
+            load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddManualProspectModal({ activeTask, onClose, onCreated }) {
+  const [form, setForm] = useState({
+    company_name: "",
+    website: "",
+    email: "",
+    contact_name: "",
+    job_title: "",
+    industry: "",
+    city: "",
+    country: "",
+    phone: "",
+    notes: "",
+    attach_to_task: !!activeTask,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    if (!form.company_name.trim()) return toast.error("Nama perusahaan wajib diisi");
+    if (!form.email.trim()) return toast.error("Email wajib diisi");
+    setSaving(true);
+    try {
+      const payload = {
+        company_name: form.company_name.trim(),
+        website: form.website.trim() || null,
+        industry: form.industry.trim() || null,
+        city: form.city.trim() || null,
+        country: form.country.trim() || null,
+        phone: form.phone.trim() || null,
+        notes: form.notes.trim() || null,
+        status: "New",
+        emails: [{
+          email: form.email.trim().toLowerCase(),
+          name: form.contact_name.trim() || null,
+          job_title: form.job_title.trim() || null,
+          is_primary: true,
+        }],
+      };
+      const { data: created } = await api.post("/prospects", payload);
+      let attached = false;
+      if (form.attach_to_task && activeTask?.id) {
+        try {
+          await api.post(`/tasks/${activeTask.id}/prospects/${created.id}`);
+          attached = true;
+        } catch (err) {
+          toast.error("Prospect dibuat, tapi gagal attach ke task: " + formatApiError(err));
+        }
+      }
+      onCreated(created, attached);
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm grid place-items-center p-4 z-50" data-testid="add-manual-modal">
+      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h2 className="font-display text-xl font-semibold text-slate-900">Tambah Prospect Manual</h2>
+            <p className="text-xs text-slate-500 mt-1">Input data perusahaan + email kontak. Bisa langsung di-attach ke tugas aktif.</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1" data-testid="close-modal-btn">
+            <X size={20} weight="bold" />
+          </button>
+        </div>
+
+        <form onSubmit={submit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <TermInput label="Nama Perusahaan *" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} placeholder="PT Contoh Sejahtera" required data-testid="manual-company" />
+            <TermInput label="Website" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} placeholder="example.com" data-testid="manual-website" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <TermInput label="Email Kontak *" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="contact@example.com" required data-testid="manual-email" />
+            <TermInput label="Nama Kontak" value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} placeholder="Budi Santoso" data-testid="manual-contact-name" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <TermInput label="Jabatan" value={form.job_title} onChange={(e) => setForm({ ...form, job_title: e.target.value })} placeholder="Marketing Manager" data-testid="manual-job-title" />
+            <TermInput label="Industri" value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} placeholder="Travel & Tourism" data-testid="manual-industry" />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <TermInput label="Kota" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} placeholder="Denpasar" data-testid="manual-city" />
+            <TermInput label="Negara" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} placeholder="Indonesia" data-testid="manual-country" />
+            <TermInput label="Telepon" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+62-21-xxxx" data-testid="manual-phone" />
+          </div>
+
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider text-slate-500 font-medium mb-1">Notes</label>
+            <textarea
+              rows={2}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+              placeholder="Catatan tambahan tentang prospect ini..."
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              data-testid="manual-notes"
+            />
+          </div>
+
+          {activeTask && (
+            <label className="flex items-center gap-2 p-3 bg-indigo-50/50 border border-indigo-100 rounded-lg cursor-pointer" data-testid="manual-attach-toggle">
+              <input
+                type="checkbox"
+                checked={form.attach_to_task}
+                onChange={(e) => setForm({ ...form, attach_to_task: e.target.checked })}
+                className="w-4 h-4 text-indigo-600 rounded"
+              />
+              <div className="text-xs">
+                <div className="font-medium text-slate-900">Langsung masuk ke tugas aktif</div>
+                <div className="text-slate-500">{activeTask.name} ({activeTask.date}) — prospect ini akan otomatis ter-attach</div>
+              </div>
+            </label>
+          )}
+
+          <div className="flex gap-2 pt-2 border-t border-slate-100">
+            <GhostButton onClick={onClose} type="button" disabled={saving} data-testid="manual-cancel-btn">Batal</GhostButton>
+            <PrimaryButton type="submit" disabled={saving} data-testid="manual-save-btn">
+              {saving ? <><Spinner size={14} weight="bold" className="animate-spin" /> Menyimpan…</> : <><CheckCircle size={14} weight="bold" /> Simpan Prospect</>}
+            </PrimaryButton>
+          </div>
+        </form>
       </Card>
     </div>
   );
