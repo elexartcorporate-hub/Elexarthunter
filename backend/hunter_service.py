@@ -295,31 +295,74 @@ async def playwright_deep_crawl(domain: str, logs: list, extra_path: Optional[st
 #  Hunter.io REAL API
 # ────────────────────────────────────────────────────────────
 async def hunter_io_search(domain: str, logs: list) -> Dict:
-    """Real Hunter.io domain-search call. Falls back to empty result if API key missing or call fails."""
+    """Real Hunter.io domain-search call with PAGINATION.
+
+    Hunter.io API caps each request at 100 results and exposes total via `meta.results`.
+    We page through using `offset=0,100,200,…` until we've fetched everything (or hit
+    HUNTER_MAX_RESULTS — a safety cap to avoid burning the daily quota on huge domains).
+    """
     if not HUNTER_API_KEY:
         logs.append("  > Hunter.io API key missing in env, skipping")
         return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
+
+    PAGE_SIZE = 100  # Hunter.io API max per request
+    HUNTER_MAX_RESULTS = int(os.environ.get("HUNTER_MAX_RESULTS", "500"))  # cap to protect quota
+
+    raw_emails: list = []
+    payload: dict = {}
+    total: int = 0
+    offset: int = 0
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(
-                f"{HUNTER_BASE}/domain-search",
-                params={"domain": domain, "api_key": HUNTER_API_KEY, "limit": 25},
-            )
-            if r.status_code == 429:
-                logs.append("  > Hunter.io rate-limited (429) — proceeding without Hunter data")
-                return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
-            r.raise_for_status()
-            payload = r.json().get("data", {}) or {}
+        async with httpx.AsyncClient(timeout=30) as client:
+            while True:
+                r = await client.get(
+                    f"{HUNTER_BASE}/domain-search",
+                    params={
+                        "domain": domain,
+                        "api_key": HUNTER_API_KEY,
+                        "limit": PAGE_SIZE,
+                        "offset": offset,
+                    },
+                )
+                if r.status_code == 429:
+                    logs.append(
+                        f"  > Hunter.io rate-limited (429) at offset={offset} — returning {len(raw_emails)} so far"
+                    )
+                    break
+                r.raise_for_status()
+                data = r.json()
+                payload = data.get("data", {}) or {}
+                page_emails = payload.get("emails") or []
+                meta = data.get("meta", {}) or {}
+                total = int(meta.get("results") or 0) or total
+                raw_emails.extend(page_emails)
+                logs.append(
+                    f"  > Hunter.io page offset={offset} → {len(page_emails)} emails "
+                    f"(total reported={total}, accumulated={len(raw_emails)})"
+                )
+                # Stop conditions
+                if len(page_emails) < PAGE_SIZE:
+                    break  # last page (Hunter returned fewer than asked)
+                if len(raw_emails) >= total > 0:
+                    break  # got everything
+                if len(raw_emails) >= HUNTER_MAX_RESULTS:
+                    logs.append(
+                        f"  > Hunter.io hit safety cap HUNTER_MAX_RESULTS={HUNTER_MAX_RESULTS} — stopping"
+                    )
+                    break
+                offset += PAGE_SIZE
     except httpx.HTTPStatusError as e:
         code = e.response.status_code if e.response else "?"
         body = (e.response.text if e.response is not None else "")[:200]
         logs.append(f"  > Hunter.io HTTP {code}: {body}")
-        return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
+        # If we already got some data from earlier pages, keep it
+        if not raw_emails:
+            return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
     except Exception as e:
-        logs.append(f"  > Hunter.io error: {e} — proceeding without Hunter data")
-        return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
+        logs.append(f"  > Hunter.io error: {e} — proceeding with {len(raw_emails)} emails")
+        if not raw_emails:
+            return {"domain": domain, "organization": None, "country": None, "industry": None, "emails": []}
 
-    raw_emails = payload.get("emails") or []
     emails = []
     for em in raw_emails:
         emails.append({
@@ -334,7 +377,10 @@ async def hunter_io_search(domain: str, logs: list) -> Dict:
             "linkedin": em.get("linkedin"),
             "phone_number": em.get("phone_number"),
         })
-    logs.append(f"  > Hunter.io returned {len(emails)} emails (organization='{payload.get('organization')}')")
+    logs.append(
+        f"  > Hunter.io total fetched: {len(emails)} emails / {total} reported "
+        f"(organization='{payload.get('organization')}')"
+    )
     return {
         "domain": domain,
         "organization": payload.get("organization"),
@@ -568,7 +614,13 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None, 
     for c in merged["contacts"]:
         sources = c.get("_sources") or set()
         if len(sources) > 1:
-            continue  # cross-validated, no need
+            continue  # cross-validated (website + hunter), no need
+        # Skip SMTP probe for Hunter-sourced emails: Hunter does its own verification
+        # internally and provides a `confidence` score (0-100). Probing 300+ emails per
+        # domain via SMTP RCPT TO would (a) be very slow and (b) risk getting our IP
+        # blocklisted. Trust Hunter's score and treat as "verified" if confidence ≥ 80.
+        if c.get("source") == "hunter":
+            continue
         meta = {
             "public_on_website": c.get("source") == "website",
             "alias_match": c.get("source") == "alias",
@@ -587,6 +639,11 @@ async def run_hunter_workflow(domain: str, aliases: Optional[List[str]] = None, 
         # Website-only emails are inherently verified (published on official site = real)
         elif c.get("source") in ("website", "website_external"):
             c["status"] = "verified"
+        # Hunter-only emails: trust Hunter's own confidence score (no SMTP probe to avoid
+        # IP blocklisting on huge result sets). Hunter has its own deliverability checks.
+        elif c.get("source") == "hunter":
+            conf = c.get("confidence_score") or 0
+            c["status"] = "verified" if conf >= 80 else "unverified"
 
         v = verify_map.get(c["email"])
         if v:
