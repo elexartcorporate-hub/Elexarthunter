@@ -153,6 +153,7 @@ export default function Prospects() {
         <TabBtn active={tab === "analitik"} onClick={() => setTab("analitik")} icon={ChartLine}      label="4 · Analitik"     testid="tab-analitik" />
         <TabBtn active={tab === "tersimpan"} onClick={() => setTab("tersimpan")} icon={ListBullets}   label="Tersimpan"        testid="tab-tersimpan" />
         <TabBtn active={tab === "list"}      onClick={() => setTab("list")}      icon={UsersFour}     label="Prospect List"    testid="tab-list" />
+        <TabBtn active={tab === "bounced"}   onClick={() => setTab("bounced")}   icon={XCircle}       label="Bounced Email"    testid="tab-bounced" />
       </div>
 
       {tab === "jadwal"    && <Calendar quota={quota} onChanged={() => { setRefreshKey((k) => k + 1); setTasksRefresh((k) => k + 1); }} onTaskCreated={(t) => { setActiveTask(t); setTab("add"); setTasksRefresh((k) => k + 1); }} onTaskContinue={(t) => { setActiveTask(t); const tgt = t.target || 0; const cnt = t.prospect_count || 0; const reached = tgt > 0 ? cnt >= tgt : cnt > 0; setTab(reached ? "email" : "add"); setTasksRefresh((k) => k + 1); }} />}
@@ -161,6 +162,7 @@ export default function Prospects() {
       {tab === "analitik"  && <EmailActivity />}
       {tab === "tersimpan" && <TasksList refreshKey={tasksRefresh} onPick={(t) => { setActiveTask(t); setTab("add"); }} onRefresh={() => setTasksRefresh((k) => k + 1)} />}
       {tab === "list"      && <ProspectList quota={quota} activeTask={activeTask} refreshTask={refreshTask} />}
+      {tab === "bounced"   && <BouncedEmails />}
     </div>
   );
 }
@@ -2467,6 +2469,121 @@ function TasksList({ refreshKey, onPick, onRefresh }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ─── Bounced Emails ────────────────────────────────────────────────────────
+function BouncedEmails() {
+  const navigate = useNavigate();
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/bounced-emails", { params: q ? { q } : {} });
+      setRows(data);
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const removeLog = async (email) => {
+    if (!confirm(`Hapus ${email} dari log bounce?`)) return;
+    try {
+      await api.delete("/bounced-emails", { params: { email } });
+      toast.success(`✓ ${email} dihapus dari log`);
+      setRows((rs) => rs.filter((r) => r.email !== email));
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
+        <XCircle size={14} weight="bold" />
+        <span>Email yang bounce/mailer-daemon otomatis dihapus dari Prospect List. Log di bawah ini hanya untuk referensi.</span>
+      </div>
+
+      <Card className="p-5">
+        <div className="flex gap-2 mb-4">
+          <div className="relative flex-1">
+            <MagnifyingGlass size={14} weight="bold" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+              placeholder="Cari email / company / website..."
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && load()}
+              data-testid="bounced-search"
+            />
+          </div>
+          <PrimaryButton onClick={load} data-testid="bounced-search-btn">Search</PrimaryButton>
+        </div>
+
+        {loading ? (
+          <div className="text-center py-10 text-slate-500">Loading…</div>
+        ) : rows.length === 0 ? (
+          <EmptyState icon={XCircle} title="Belum ada bounce" description="Email yang bounce/mailer-daemon akan muncul di sini." />
+        ) : (
+          <div className="border border-slate-200 rounded-lg overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
+                  <tr>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Email</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Company</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Website</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Industry</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Location</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Error</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Bounced</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={`${r.email}-${r.prospect_id}`} className="border-t border-slate-100 hover:bg-slate-50">
+                      <td className="px-3 py-2.5 font-mono text-xs text-slate-900 whitespace-nowrap max-w-[260px] truncate" title={r.email}>{r.email}</td>
+                      <td className="px-3 py-2.5 text-xs text-slate-700 whitespace-nowrap max-w-[180px] truncate" title={r.company_name || ""}>{r.company_name || "—"}</td>
+                      <td className="px-3 py-2.5 text-xs text-indigo-600 whitespace-nowrap max-w-[160px] truncate" title={r.website || ""}>{r.website || "—"}</td>
+                      <td className="px-3 py-2.5 text-xs text-slate-500 whitespace-nowrap max-w-[140px] truncate" title={r.industry || ""}>{r.industry || "—"}</td>
+                      <td className="px-3 py-2.5 text-xs text-slate-500 whitespace-nowrap max-w-[160px] truncate">{[r.city, r.country].filter(Boolean).join(", ") || "—"}</td>
+                      <td className="px-3 py-2.5 text-[11px] text-rose-600 whitespace-nowrap max-w-[200px] truncate" title={r.error || ""}>⚠ {r.error || "bounce"}</td>
+                      <td className="px-3 py-2.5 text-xs text-slate-500 whitespace-nowrap">{r.bounced_at ? new Date(r.bounced_at).toLocaleDateString("id-ID") : "—"}</td>
+                      <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          {r.prospect_id && (
+                            <button
+                              onClick={() => navigate(`/prospects/${r.prospect_id}`)}
+                              className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded"
+                              title="Buka detail company"
+                              data-testid={`open-prospect-${r.prospect_id}`}
+                            >
+                              <ArrowRight size={12} weight="bold" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => removeLog(r.email)}
+                            className="p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 rounded"
+                            title="Hapus dari log"
+                            data-testid={`del-bounce-${r.email}`}
+                          >
+                            <Trash size={12} weight="bold" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

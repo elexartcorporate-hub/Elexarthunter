@@ -2355,6 +2355,68 @@ async def _task_view(t: dict) -> dict:
     return t
 
 
+async def _mark_bounced(send_id: str, error: str, tenant_id: str, prospect_id: Optional[str], to_email: str, sender_user_id: Optional[str] = None) -> None:
+    """Tandai email sebagai bounce + auto-hapus dari prospect.emails + log ke bounced_emails."""
+    await db.email_sends.update_one(
+        {"id": send_id},
+        {"$set": {"status": "bounce", "bounced": True, "error": error, "bounced_at": now_iso()}},
+    )
+    if not prospect_id or not to_email:
+        return
+    email_lower = to_email.lower()
+    await db.prospects.update_one(
+        {"id": prospect_id, "tenant_id": tenant_id},
+        {"$pull": {"emails": {"email": email_lower}}},
+    )
+    pros = await db.prospects.find_one(
+        {"id": prospect_id, "tenant_id": tenant_id},
+        {"_id": 0, "company_name": 1, "website": 1, "industry": 1, "city": 1, "country": 1, "domain": 1},
+    ) or {}
+    await db.bounced_emails.update_one(
+        {"tenant_id": tenant_id, "email": email_lower, "prospect_id": prospect_id},
+        {"$set": {
+            "tenant_id": tenant_id,
+            "prospect_id": prospect_id,
+            "company_name": pros.get("company_name"),
+            "website": pros.get("website") or pros.get("domain"),
+            "industry": pros.get("industry"),
+            "city": pros.get("city"),
+            "country": pros.get("country"),
+            "email": email_lower,
+            "error": error,
+            "sender_user_id": sender_user_id,
+            "send_id": send_id,
+            "bounced_at": now_iso(),
+        }},
+        upsert=True,
+    )
+
+
+@api.get("/bounced-emails")
+async def list_bounced_emails(user: dict = Depends(get_current_user), q: Optional[str] = None):
+    """List email bounce. Non-Owner hanya lihat yang mereka kirim sendiri."""
+    qry = {"tenant_id": user["tenant_id"]}
+    if user.get("role") != "Owner":
+        qry["sender_user_id"] = user["id"]
+    rows = await db.bounced_emails.find(qry, {"_id": 0}).sort("bounced_at", -1).to_list(2000)
+    if q:
+        ql = q.lower()
+        rows = [r for r in rows if ql in (f"{r.get('email','')} {r.get('company_name','')} {r.get('website','')}").lower()]
+    return rows
+
+
+@api.delete("/bounced-emails")
+async def delete_bounced_log(email: str, user: dict = Depends(get_current_user)):
+    """Hapus 1 entry dari log bounce (tidak mengubah prospect)."""
+    qry = {"email": email.lower(), "tenant_id": user["tenant_id"]}
+    if user.get("role") != "Owner":
+        qry["sender_user_id"] = user["id"]
+    res = await db.bounced_emails.delete_many(qry)
+    return {"deleted": res.deleted_count}
+
+
+
+
 @api.get("/tasks")
 async def list_tasks(
     user: dict = Depends(get_current_user),
@@ -2630,7 +2692,7 @@ async def submit_task(tid: str, payload: OutreachTaskSubmit, background: Backgro
                     await db.prospects.update_one({"id": s["prospect_id"], "status": "New"},
                                                    {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
             else:
-                await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+                await _mark_bounced(s["id"], result["error"], user["tenant_id"], s.get("prospect_id"), s.get("to_email"), user["id"])
             await asyncio.sleep(180)  # 3-minute throttle between sends
         await db.outreach_tasks.update_one({"id": tid}, {"$set": {"status": "completed", "updated_at": now_iso()}})
 
@@ -3515,7 +3577,7 @@ async def send_prospect_email(pid: str, payload: SendEmailReq, background: Backg
                 {"$set": {"status": "Contacted", "last_activity_at": now_iso()}},
             )
         else:
-            await db.email_sends.update_one({"id": send_id}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+            await _mark_bounced(send_id, result["error"], user["tenant_id"], payload.prospect_id, payload.to_email, user["id"])
             await _log_activity(pid, user["tenant_id"], "email_bounced", user["id"], {"to": payload.to_email, "error": result["error"]})
         await db.prospects.update_one({"id": pid}, {"$set": {"last_activity_at": now_iso()}})
 
@@ -3630,7 +3692,7 @@ async def bulk_send_email(payload: BulkSendEmailReq, background: BackgroundTasks
                 await db.prospects.update_one({"id": s["prospect_id"], "status": "New"},
                                               {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
             else:
-                await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+                await _mark_bounced(s["id"], result["error"], user["tenant_id"], s.get("prospect_id"), s.get("to_email"), user["id"])
             await asyncio.sleep(180)  # 3-minute throttle between sends
 
     background.add_task(_runner_all)
@@ -4431,7 +4493,7 @@ async def _scheduler_loop():
                 tenant = await db.tenants.find_one({"id": s["tenant_id"]}) or {}
                 sender = await db.users.find_one({"id": s["sender_user_id"]})
                 if not sender:
-                    await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": "Sender user not found at send-time"}})
+                    await _mark_bounced(s["id"], "Sender user not found at send-time", s["tenant_id"], s.get("prospect_id"), s.get("to_email"), s.get("sender_user_id"))
                     continue
                 try:
                     smtp_src = await _resolve_smtp(s["tenant_id"], sender, s.get("sub_company_id"))
@@ -4439,7 +4501,7 @@ async def _scheduler_loop():
                     smtp_src = None
                     logger.warning(f"scheduler _resolve_smtp failed for {s['id']}: {ex}")
                 if not smtp_src:
-                    await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": "SMTP not configured at send-time"}})
+                    await _mark_bounced(s["id"], "SMTP not configured at send-time", s["tenant_id"], s.get("prospect_id"), s.get("to_email"), s.get("sender_user_id"))
                     continue
                 from_email = smtp_src.get("smtp_from_email") or smtp_src.get("smtp_user") or "noreply@example.com"
                 from_name  = smtp_src.get("smtp_from_name")
@@ -4469,7 +4531,7 @@ async def _scheduler_loop():
                         await db.prospects.update_one({"id": s["prospect_id"], "status": "New"},
                                                        {"$set": {"status": "Contacted", "last_activity_at": now_iso()}})
                 else:
-                    await db.email_sends.update_one({"id": s["id"]}, {"$set": {"status": "bounce", "bounced": True, "error": result["error"]}})
+                    await _mark_bounced(s["id"], result["error"], s["tenant_id"], s.get("prospect_id"), s.get("to_email"), s.get("sender_user_id"))
                 # Throttle 3 minutes between sends to dodge SMTP relay rate-limits
                 # (matches the immediate-send runner). Skip sleep after the last one.
                 if idx < len(due) - 1:
