@@ -4802,6 +4802,33 @@ class WAAccountCreate(BaseModel):
     label: Optional[str] = None
 
 
+@api.get("/whatsapp/health")
+async def wa_health():
+    """Diagnose WA service connectivity. Public — no auth needed so user can debug from anywhere."""
+    out = {
+        "backend": "ok",
+        "wa_service_url": WA_SERVICE_URL,
+        "wa_service": "unknown",
+        "wa_service_detail": None,
+    }
+    if not WA_SERVICE_URL:
+        out["wa_service"] = "not_configured"
+        out["wa_service_detail"] = "WA_SERVICE_URL env var belum di-set di backend/.env"
+        return out
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as cx:
+            r = await cx.get(f"{WA_SERVICE_URL}/health")
+        if r.status_code == 200 and r.json().get("ok"):
+            out["wa_service"] = "ok"
+        else:
+            out["wa_service"] = "error"
+            out["wa_service_detail"] = f"Status {r.status_code}: {r.text[:120]}"
+    except Exception as e:
+        out["wa_service"] = "unreachable"
+        out["wa_service_detail"] = f"{type(e).__name__}: {str(e)[:160]}"
+    return out
+
+
 @api.get("/whatsapp/accounts")
 async def wa_list_accounts(user: dict = Depends(get_current_user)):
     """List WA accounts. Owner sees all in tenant (sales monitoring), others see own."""

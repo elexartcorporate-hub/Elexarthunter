@@ -136,6 +136,7 @@ export default function WhatsAppPage() {
   const [qrOpen, setQrOpen] = useState(false);
   const [qrAccount, setQrAccount] = useState(null);
   const [mediaUploading, setMediaUploading] = useState(false);
+  const [health, setHealth] = useState(null);
   const messagesEnd = useRef(null);
   const lastChatSyncRef = useRef(null);
   const lastMsgSyncRef = useRef({});
@@ -152,8 +153,30 @@ export default function WhatsAppPage() {
       if (!activeSid && data.length > 0) {
         setActiveSid(data[0].session_id);
       }
-    } catch (err) { toast.error(formatApiError(err)); }
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        toast.error(
+          "Backend WhatsApp endpoint TIDAK ADA. Backend di VPS belum di-update. Jalankan `deploy` lagi.",
+          { duration: 10000 }
+        );
+      } else {
+        toast.error(formatApiError(err));
+      }
+    }
     finally { setLoading(false); }
+  };
+
+  const loadHealth = async () => {
+    try {
+      const { data } = await api.get("/whatsapp/health");
+      setHealth(data);
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        setHealth({ backend: "outdated", wa_service: "unknown", wa_service_detail: "Backend belum di-deploy ulang setelah pull terbaru. Jalankan `deploy` di VPS." });
+      } else {
+        setHealth({ backend: "error", wa_service: "unknown", wa_service_detail: formatApiError(err) });
+      }
+    }
   };
 
   const loadChats = async (sid, opts = {}) => {
@@ -217,7 +240,7 @@ export default function WhatsAppPage() {
     finally { if (!delta) setMessagesLoading(false); }
   };
 
-  useEffect(() => { loadAccounts(); }, []); // eslint-disable-line
+  useEffect(() => { loadAccounts(); loadHealth(); }, []); // eslint-disable-line
   useEffect(() => {
     if (activeSid) {
       lastChatSyncRef.current = null;
@@ -252,7 +275,24 @@ export default function WhatsAppPage() {
       await loadAccounts();
       setQrAccount({ session_id: data.session_id });
       setQrOpen(true);
-    } catch (err) { toast.error(formatApiError(err)); }
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 404) {
+        toast.error(
+          "Backend belum mendukung WhatsApp. Cek 'WA Health' di bawah, lalu jalankan `deploy` di VPS.",
+          { duration: 12000 }
+        );
+        loadHealth();
+      } else if (status === 503) {
+        toast.error(
+          "WA Service tidak jalan. Setup supervisor config (/etc/supervisor/conf.d/hunter-wa-service.conf) + restart.",
+          { duration: 12000 }
+        );
+        loadHealth();
+      } else {
+        toast.error(formatApiError(err));
+      }
+    }
   };
 
   const handleScanAgain = (acc) => {
@@ -347,7 +387,7 @@ export default function WhatsAppPage() {
         subtitle={`Multi-account via Baileys · max 3 akun per user${user?.role === "Owner" ? " · (Owner sees all in tenant)" : ""}`}
         action={
           <div className="flex items-center gap-2">
-            <GhostButton onClick={loadAccounts} disabled={loading} data-testid="wa-refresh">
+            <GhostButton onClick={() => { loadAccounts(); loadHealth(); }} disabled={loading} data-testid="wa-refresh">
               <ArrowsClockwise size={14} weight="bold" className={loading ? "animate-spin" : ""} /> Refresh
             </GhostButton>
             <PrimaryButton onClick={handleAdd} disabled={!canAdd} data-testid="wa-add-account" title={!canAdd ? "Sudah max 3 akun" : ""}>
@@ -356,6 +396,67 @@ export default function WhatsAppPage() {
           </div>
         }
       />
+
+      {health && (health.wa_service !== "ok" || health.backend !== "ok") && (
+        <div
+          className="mb-4 rounded-lg border-2 border-rose-200 bg-rose-50 p-4"
+          data-testid="wa-health-banner"
+        >
+          <div className="flex items-start gap-3">
+            <Warning size={22} weight="fill" className="text-rose-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-rose-900 mb-1">WhatsApp Service tidak siap</div>
+              <div className="text-sm text-rose-800 mb-2">
+                <b>Backend:</b> {health.backend === "ok" ? "✓ OK" : `✗ ${health.backend}`} ·{" "}
+                <b>WA Service:</b> {health.wa_service === "ok" ? "✓ OK" : `✗ ${health.wa_service}`}
+              </div>
+              {health.wa_service_detail && (
+                <div className="text-xs text-rose-700 mb-2 font-mono break-words bg-rose-100 p-2 rounded">
+                  {health.wa_service_detail}
+                </div>
+              )}
+              <details className="text-xs text-rose-800">
+                <summary className="cursor-pointer font-semibold">📖 Cara fix (klik untuk expand)</summary>
+                <div className="mt-2 space-y-1 pl-3">
+                  {health.backend !== "ok" && (
+                    <>
+                      <div className="font-semibold">1. Backend belum di-deploy:</div>
+                      <div>SSH ke VPS, lalu jalankan: <code className="bg-rose-100 px-1 rounded">deploy</code></div>
+                    </>
+                  )}
+                  {health.wa_service !== "ok" && (
+                    <>
+                      <div className="font-semibold mt-2">2. WA Service belum jalan di VPS:</div>
+                      <div>SSH ke VPS, lalu:</div>
+                      <pre className="bg-rose-100 p-2 rounded text-[10px] overflow-x-auto mt-1">
+{`# 1. Install supervisor config
+sudo cp /var/www/hunter.elexart.com/etc/supervisor.wa-service.conf \\
+        /etc/supervisor/conf.d/hunter-wa-service.conf
+
+# 2. Edit secret (samakan dengan backend/.env WA_SERVICE_SECRET)
+sudo nano /etc/supervisor/conf.d/hunter-wa-service.conf
+
+# 3. Tambah ke backend/.env:
+echo 'WA_SERVICE_URL=http://localhost:3002' >> /var/www/hunter.elexart.com/backend/.env
+echo 'WA_SERVICE_SECRET=<your-secret-here>'  >> /var/www/hunter.elexart.com/backend/.env
+
+# 4. Install Node deps + start
+cd /var/www/hunter.elexart.com/wa-service && yarn install
+sudo supervisorctl reread && sudo supervisorctl update
+sudo supervisorctl restart hunter-wa-service hunter-backend
+
+# 5. Verify
+sudo supervisorctl status hunter-wa-service
+curl http://localhost:3002/health`}
+                      </pre>
+                    </>
+                  )}
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+      )}
 
       {accounts.length === 0 ? (
         <EmptyState
