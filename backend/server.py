@@ -2285,12 +2285,16 @@ async def prospects_calendar_pipeline(date: str, user: dict = Depends(get_curren
 
 @api.post("/scheduled-emails/{send_id}/cancel")
 async def cancel_scheduled_email(send_id: str, user: dict = Depends(get_current_user)):
+    # Non-Owner hanya boleh cancel email yang dia kirim sendiri
+    q = {"id": send_id, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}}
+    if user.get("role") != "Owner":
+        q["sender_user_id"] = user["id"]
     res = await db.email_sends.update_one(
-        {"id": send_id, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}},
+        q,
         {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
     )
     if not res.matched_count:
-        raise HTTPException(404, "Not found or already processed")
+        raise HTTPException(404, "Not found, already processed, or you don't own it")
     return {"ok": True}
 
 
@@ -2307,17 +2311,23 @@ async def cancel_task_scheduled_emails(
     pending/delivered (semua jadi cancelled / belum pernah kirim), task akan dikembalikan
     ke status `draft` supaya user bisa edit ulang prospect/templat sebelum kirim ulang.
     """
+    cancel_q = {"task_id": tid, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}}
+    if user.get("role") != "Owner":
+        cancel_q["sender_user_id"] = user["id"]
     res = await db.email_sends.update_many(
-        {"task_id": tid, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}},
+        cancel_q,
         {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
     )
     task_reset = False
     if reset_to_draft and res.modified_count > 0:
         # Reset hanya kalau tidak ada email yang ter-deliver berhasil (artinya batch belum benar-benar terkirim).
-        delivered_count = await db.email_sends.count_documents({
+        delivered_q = {
             "task_id": tid, "tenant_id": user["tenant_id"],
             "status": {"$in": ["delivered", "opened", "clicked", "replied"]},
-        })
+        }
+        if user.get("role") != "Owner":
+            delivered_q["sender_user_id"] = user["id"]
+        delivered_count = await db.email_sends.count_documents(delivered_q)
         if delivered_count == 0:
             await db.outreach_tasks.update_one(
                 {"id": tid, "tenant_id": user["tenant_id"]},
@@ -2329,11 +2339,11 @@ async def cancel_task_scheduled_emails(
 
 @api.post("/scheduled-emails/cancel-prospect/{pid}")
 async def cancel_prospect_scheduled_emails(pid: str, user: dict = Depends(get_current_user)):
-    """Batalkan SEMUA email scheduled/queued ke 1 prospect tertentu."""
-    res = await db.email_sends.update_many(
-        {"prospect_id": pid, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}},
-        {"$set": {"status": "cancelled", "cancelled_at": now_iso()}},
-    )
+    """Batalkan SEMUA email scheduled/queued ke 1 prospect tertentu (RBAC-scoped per sender)."""
+    q = {"prospect_id": pid, "tenant_id": user["tenant_id"], "status": {"$in": ["queued", "scheduled"]}}
+    if user.get("role") != "Owner":
+        q["sender_user_id"] = user["id"]
+    res = await db.email_sends.update_many(q, {"$set": {"status": "cancelled", "cancelled_at": now_iso()}})
     return {"ok": True, "cancelled": res.modified_count}
 
 
@@ -4092,10 +4102,10 @@ async def list_email_sends(
     sender_user_id: Optional[str] = None,
 ):
     q = {"tenant_id": user["tenant_id"]}
-    # RBAC scope: Owner & Admin lihat SEMUA email di tenant; user lain hanya lihat email
-    # YANG MEREKA KIRIM SENDIRI. Sender_user_id explicit param tetap dihormati (Owner bisa
-    # filter "Show me emails by user X").
-    if user.get("role") not in ("Owner", "Admin"):
+    # RBAC scope: HANYA Owner (Super Admin) yang lihat SEMUA email di tenant.
+    # Role lain (Admin, Manager, Staff, Sales) hanya boleh lihat email YANG MEREKA KIRIM SENDIRI.
+    # Owner masih bisa filter "Show me emails by user X" via param sender_user_id.
+    if user.get("role") != "Owner":
         q["sender_user_id"] = user["id"]
     elif sender_user_id:
         q["sender_user_id"] = sender_user_id
