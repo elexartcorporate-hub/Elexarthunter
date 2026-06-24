@@ -53,18 +53,22 @@ ok "Backend up"
 
 # ─── 2b. WA Service (Baileys Node.js sidecar): install deps + restart ──────
 if [[ -d wa-service ]]; then
-  log "WA Service: yarn install …"
-  cd wa-service
-  yarn install --frozen-lockfile --silent || yarn install --silent
-  cd ..
   if sudo supervisorctl status "$SUPERVISOR_WA" >/dev/null 2>&1; then
+    log "WA Service: yarn install …"
+    cd wa-service
+    yarn install --frozen-lockfile --silent || yarn install --silent
+    cd ..
     log "Restart wa-service (supervisor: $SUPERVISOR_WA) …"
     sudo supervisorctl restart "$SUPERVISOR_WA"
     ok "WA Service up"
   else
-    log "WA Service belum di supervisor — skip restart. Setup supervisor config dulu:"
-    log "  sudo cp etc/supervisor.wa-service.conf /etc/supervisor/conf.d/$SUPERVISOR_WA.conf"
-    log "  sudo supervisorctl reread && sudo supervisorctl update"
+    log "WA Service belum di supervisor — auto-setup sekarang …"
+    if [[ -x wa-setup.sh ]] || [[ -f wa-setup.sh ]]; then
+      sudo bash wa-setup.sh
+      ok "WA Service auto-installed"
+    else
+      warn "wa-setup.sh tidak ada — skip WA setup. Jalankan manual jika perlu."
+    fi
   fi
 fi
 

@@ -417,40 +417,28 @@ export default function WhatsAppPage() {
               )}
               <details className="text-xs text-rose-800">
                 <summary className="cursor-pointer font-semibold">📖 Cara fix (klik untuk expand)</summary>
-                <div className="mt-2 space-y-1 pl-3">
-                  {health.backend !== "ok" && (
-                    <>
-                      <div className="font-semibold">1. Backend belum di-deploy:</div>
-                      <div>SSH ke VPS, lalu jalankan: <code className="bg-rose-100 px-1 rounded">deploy</code></div>
-                    </>
-                  )}
-                  {health.wa_service !== "ok" && (
-                    <>
-                      <div className="font-semibold mt-2">2. WA Service belum jalan di VPS:</div>
-                      <div>SSH ke VPS, lalu:</div>
-                      <pre className="bg-rose-100 p-2 rounded text-[10px] overflow-x-auto mt-1">
-{`# 1. Install supervisor config
-sudo cp /var/www/hunter.elexart.com/etc/supervisor.wa-service.conf \\
-        /etc/supervisor/conf.d/hunter-wa-service.conf
-
-# 2. Edit secret (samakan dengan backend/.env WA_SERVICE_SECRET)
-sudo nano /etc/supervisor/conf.d/hunter-wa-service.conf
-
-# 3. Tambah ke backend/.env:
-echo 'WA_SERVICE_URL=http://localhost:3002' >> /var/www/hunter.elexart.com/backend/.env
-echo 'WA_SERVICE_SECRET=<your-secret-here>'  >> /var/www/hunter.elexart.com/backend/.env
-
-# 4. Install Node deps + start
-cd /var/www/hunter.elexart.com/wa-service && yarn install
-sudo supervisorctl reread && sudo supervisorctl update
-sudo supervisorctl restart hunter-wa-service hunter-backend
-
-# 5. Verify
-sudo supervisorctl status hunter-wa-service
-curl http://localhost:3002/health`}
-                      </pre>
-                    </>
-                  )}
+                <div className="mt-2 space-y-2 pl-3">
+                  <div className="font-semibold text-rose-900">SSH ke VPS, lalu jalankan SATU perintah ini:</div>
+                  <pre className="bg-slate-900 text-emerald-300 p-3 rounded text-[11px] overflow-x-auto font-mono">
+{`cd /var/www/hunter.elexart.com && sudo bash wa-setup.sh`}
+                  </pre>
+                  <div className="text-rose-700 mt-1">
+                    Script otomatis: generate secret, write supervisor config, install Node deps,
+                    restart wa-service + backend, dan verify health. <b>Idempotent</b> — aman dijalankan ulang.
+                  </div>
+                  <div className="font-semibold text-rose-900 mt-3">Atau (kalau wa-setup.sh sudah pernah jalan):</div>
+                  <pre className="bg-slate-900 text-emerald-300 p-3 rounded text-[11px] overflow-x-auto font-mono">
+{`deploy`}
+                  </pre>
+                  <div className="text-rose-700 mt-1">
+                    Setelah commit baru, cukup ketik <code className="bg-rose-100 px-1 rounded">deploy</code> — script
+                    auto-detect & restart wa-service.
+                  </div>
+                  <div className="font-semibold text-rose-900 mt-3">Verify manual:</div>
+                  <pre className="bg-slate-900 text-emerald-300 p-3 rounded text-[11px] overflow-x-auto font-mono">
+{`curl http://localhost:3002/health
+curl https://hunter.elexart.com/api/whatsapp/health`}
+                  </pre>
                 </div>
               </details>
             </div>
