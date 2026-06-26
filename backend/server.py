@@ -2517,6 +2517,65 @@ async def list_tasks(
     return rows
 
 
+@api.post("/tasks/recover-orphans/{date}")
+async def recover_orphan_prospects(date: str, user: dict = Depends(get_current_user)):
+    """Recover prospects yang ditambahkan pada tanggal X tapi tidak terhubung ke task apapun.
+    Auto-create task baru (status=draft) untuk tanggal itu & attach semua orphan prospect ke situ.
+    Berguna untuk user yang sempat 'terputus' setelah add prospect tanpa create task dulu."""
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+    nxt = dt + timedelta(days=1)
+
+    # Find prospects user created on this date
+    # Then exclude those already attached to ANY task (any date) of this user
+    all_attached: set = set()
+    all_user_tasks = await db.outreach_tasks.find(
+        {"tenant_id": user["tenant_id"], "user_id": user["id"]},
+        {"_id": 0, "prospect_ids": 1},
+    ).to_list(2000)
+    for t in all_user_tasks:
+        all_attached.update(t.get("prospect_ids") or [])
+
+    orphans = await db.prospects.find({
+        "tenant_id": user["tenant_id"],
+        "assigned_user_id": user["id"],
+        "created_at": {"$gte": dt.isoformat(), "$lt": nxt.isoformat()},
+        "id": {"$nin": list(all_attached)},
+    }, {"_id": 0, "id": 1}).to_list(500)
+
+    if not orphans:
+        raise HTTPException(404, "Tidak ada orphan prospect untuk tanggal ini")
+
+    orphan_ids = [p["id"] for p in orphans]
+
+    # Reuse current daily_target from user settings
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "daily_target": 1}) or {}
+    target = u.get("daily_target") or 0
+
+    tid = str(uuid.uuid4())
+    doc = {
+        "id": tid,
+        "tenant_id": user["tenant_id"],
+        "user_id": user["id"],
+        "date": date,
+        "target": target,
+        "name": f"Recovered {date}",
+        "notes": "Auto-recovered from orphan prospects",
+        "status": "draft",
+        "prospect_ids": orphan_ids,
+        "submit_at": None,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "recovered_from_orphans": True,
+    }
+    await db.outreach_tasks.insert_one(doc)
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["prospect_count"] = len(orphan_ids)
+    return out
+
+
 @api.post("/tasks")
 async def create_task(payload: OutreachTaskCreate, user: dict = Depends(get_current_user)):
     try:

@@ -4,7 +4,7 @@ import { Card, TermInput, TermSelect, TermTextarea, PrimaryButton, GhostButton, 
 import {
   CaretLeft, CaretRight, CalendarCheck, Plus, X, PaperPlaneTilt,
   Clock, CheckCircle, XCircle, Lock, ArrowsClockwise, Trash, PencilSimple, ArrowRight,
-  UsersThree as Users,
+  UsersThree as Users, Warning,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -229,6 +229,30 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
     } catch (err) { toast.error(formatApiError(err)); }
   };
 
+  // Compute orphan prospects: prospects on this date that are NOT linked to any task.
+  const taskPids = new Set();
+  for (const t of tasks) {
+    for (const pid of (t.prospect_ids || [])) taskPids.add(pid);
+  }
+  const orphanProspects = (detail?.prospects || []).filter((p) => !taskPids.has(p.id));
+  const hasActionableTask = tasks.some((t) => t.status === "draft" || t.status === "ready");
+
+  const recoverOrphans = async () => {
+    if (!orphanProspects.length) return;
+    if (!window.confirm(
+      `Anda punya ${orphanProspects.length} prospect tanpa tugas. ` +
+      `Buat tugas baru dan masukkan ${orphanProspects.length} prospect tersebut ke tugas itu? ` +
+      `Tugas akan terbuka di "Lanjut tambah prospect" untuk diteruskan.`
+    )) return;
+    try {
+      const { data } = await api.post(`/tasks/recover-orphans/${date}`);
+      toast.success(`✅ Tugas baru dibuat dengan ${data.prospect_count} prospect`);
+      await load();
+      if (onTaskContinue) onTaskContinue(data);
+      else if (onTaskCreated) onTaskCreated(data);
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
   const d = new Date(date + "T00:00:00");
   const isPast   = new Date().toISOString().slice(0,10) > date;
   const isFuture = new Date().toISOString().slice(0,10) < date;
@@ -267,6 +291,28 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
               </div>
             </div>
           </Card>
+
+          {/* Recover orphan prospects → auto-create task with them attached */}
+          {orphanProspects.length > 0 && !hasActionableTask && (
+            <Card className="p-4 bg-gradient-to-br from-amber-50 to-orange-50 border-amber-300" data-testid="orphan-recover-card">
+              <div className="flex items-start gap-3">
+                <Warning size={22} weight="duotone" className="text-amber-600 shrink-0" />
+                <div className="flex-1">
+                  <div className="font-semibold text-amber-900 text-sm flex items-center gap-2">
+                    {orphanProspects.length} prospect tanpa tugas
+                    <Badge tone="warning" className="!text-[9px]">terputus</Badge>
+                  </div>
+                  <div className="text-xs text-amber-800 mt-1 mb-3">
+                    Anda sempat add <b>{orphanProspects.length}</b> prospect di tanggal ini tapi belum membuat tugas.
+                    Klik <b>Lanjutkan</b> untuk auto-buat tugas + masukin semua prospect itu ke tugasnya supaya bisa diteruskan email outreach-nya.
+                  </div>
+                  <PrimaryButton onClick={recoverOrphans} data-testid="recover-orphans-btn">
+                    <ArrowRight size={14} weight="bold" /> Lanjutkan ({orphanProspects.length} prospect → tugas baru)
+                  </PrimaryButton>
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* Existing tasks for this date */}
           {tasks.length > 0 && (
