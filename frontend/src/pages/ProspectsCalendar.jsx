@@ -250,7 +250,18 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
       await load();
       if (onTaskContinue) onTaskContinue(data);
       else if (onTaskCreated) onTaskCreated(data);
-    } catch (err) { toast.error(formatApiError(err)); }
+    } catch (err) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail;
+      if (status === 404 && (!detail || detail === "Not Found")) {
+        toast.error(
+          "Backend di VPS belum punya endpoint recover-orphans. Jalankan: cd /var/www/hunter.elexart.com && bash wa-setup.sh",
+          { duration: 12000 }
+        );
+      } else {
+        toast.error(formatApiError(err));
+      }
+    }
   };
 
   const d = new Date(date + "T00:00:00");
@@ -423,15 +434,47 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
             </h3>
             {detail?.prospects?.length ? (
               <div className="space-y-1.5">
-                {detail.prospects.map((p) => {
-                  const primary = (p.emails || []).find((e) => e.is_primary) || (p.emails || [])[0];
-                  return (
-                    <div key={p.id} className="border border-slate-200 rounded-lg p-2.5">
-                      <div className="text-sm font-medium text-slate-900 truncate">{p.company_name}</div>
-                      <div className="text-xs text-slate-500 truncate font-mono">{primary?.email || p.domain}</div>
-                    </div>
-                  );
-                })}
+                {(() => {
+                  // Build prospect_id → email status map (latest sent/scheduled wins)
+                  const statusMap = {};
+                  for (const s of (detail?.sent_emails || [])) {
+                    if (s.prospect_id) statusMap[s.prospect_id] = { kind: "sent", at: s.sent_at, to: s.to_email };
+                  }
+                  for (const s of (detail?.scheduled_emails || [])) {
+                    if (s.prospect_id && !statusMap[s.prospect_id]) {
+                      statusMap[s.prospect_id] = { kind: "scheduled", at: s.scheduled_at, to: s.to_email };
+                    }
+                  }
+                  return detail.prospects.map((p) => {
+                    const primary = (p.emails || []).find((e) => e.is_primary) || (p.emails || [])[0];
+                    const st = statusMap[p.id];
+                    return (
+                      <div key={p.id} className="border border-slate-200 rounded-lg p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-slate-900 truncate">{p.company_name}</div>
+                            <div className="text-xs text-slate-500 truncate font-mono">{primary?.email || p.domain}</div>
+                          </div>
+                          {st?.kind === "sent" && (
+                            <Badge tone="success" className="!text-[10px] shrink-0" title={`Sent to ${st.to}`}>
+                              <PaperPlaneTilt size={9} weight="fill" /> Sent {st.at ? new Date(st.at).toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"}) : ""}
+                            </Badge>
+                          )}
+                          {st?.kind === "scheduled" && (
+                            <Badge tone="purple" className="!text-[10px] shrink-0" title={`Scheduled to ${st.to}`}>
+                              <Clock size={9} weight="fill" /> {st.at ? new Date(st.at).toLocaleString("id-ID",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : "Scheduled"}
+                            </Badge>
+                          )}
+                          {!st && (
+                            <Badge tone="neutral" className="!text-[10px] shrink-0">
+                              Belum email
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             ) : (
               <div className="text-xs text-slate-400 text-center py-4 border border-dashed border-slate-200 rounded-lg">Belum ada prospect</div>
