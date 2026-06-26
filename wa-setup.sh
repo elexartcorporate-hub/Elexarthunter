@@ -99,19 +99,53 @@ if [[ -n "$BACKEND_PROGRAMS" ]]; then
     log "Restarting backend program: $prog …"
     sudo supervisorctl restart "$prog" 2>&1 | tail -2 || true
   done
-  sleep 3
-  # Check status
+  sleep 4
+  # Check status — diagnose deeply if any fail
   for prog in $BACKEND_PROGRAMS; do
     STATUS="$(sudo supervisorctl status "$prog" 2>&1 || true)"
     if echo "$STATUS" | grep -q "RUNNING"; then
       ok "Backend '$prog' RUNNING"
     else
-      err "Backend '$prog' GAGAL START: $STATUS"
-      warn "Cek log: sudo tail -n 50 /var/log/supervisor/${prog}.err.log"
-      echo ""
-      echo "── Last 30 lines of ${prog} error log ──"
-      sudo tail -n 30 "/var/log/supervisor/${prog}.err.log" 2>/dev/null || echo "(log tidak bisa dibaca)"
-      echo "─────────────────────────────────────────"
+      err "Backend '$prog' GAGAL: $STATUS"
+      echo
+      echo "════════════════════════════════════════════════"
+      echo " DIAGNOSTIC INFO untuk $prog"
+      echo "════════════════════════════════════════════════"
+      # Show supervisor config (find file matching this program)
+      SVCONF="$(grep -l "program:${prog}" /etc/supervisor/conf.d/*.conf 2>/dev/null | head -1)"
+      if [[ -n "$SVCONF" ]]; then
+        echo
+        echo "── Supervisor config: $SVCONF ──"
+        cat "$SVCONF"
+        # Extract command path & test if it exists
+        CMD_PATH="$(grep -oP 'command=\K\S+' "$SVCONF" | head -1)"
+        if [[ -n "$CMD_PATH" ]]; then
+          if [[ -x "$CMD_PATH" ]]; then
+            ok "Command path exists & executable: $CMD_PATH"
+          else
+            err "Command path TIDAK ada / tidak executable: $CMD_PATH"
+            err "→ Ini biasanya yang bikin 'spawn error'. Fix supervisor config command= path."
+            if [[ "$CMD_PATH" == *"/venv/"* ]] || [[ "$CMD_PATH" == *"/.venv/"* ]]; then
+              warn "Sepertinya pakai Python venv. Rebuild venv:"
+              warn "  cd $APP_DIR/backend && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+            fi
+          fi
+        fi
+      fi
+      # Last 50 lines of error log
+      echo
+      echo "── Last 50 lines /var/log/supervisor/${prog}.err.log ──"
+      sudo tail -n 50 "/var/log/supervisor/${prog}.err.log" 2>/dev/null || echo "(log tidak bisa dibaca)"
+      echo
+      echo "── Last 20 lines /var/log/supervisor/${prog}.out.log ──"
+      sudo tail -n 20 "/var/log/supervisor/${prog}.out.log" 2>/dev/null || echo "(log tidak bisa dibaca)"
+      echo "════════════════════════════════════════════════"
+      echo
+      warn "Fix steps:"
+      warn "  1. Lihat error log di atas untuk error spesifik (ImportError, file not found, port in use, dll)"
+      warn "  2. Common fix kalau venv rusak: cd $APP_DIR/backend && python3 -m venv venv && venv/bin/pip install -r requirements.txt"
+      warn "  3. Restart: sudo supervisorctl restart $prog"
+      warn "  4. Lalu jalankan ulang: cd $APP_DIR && sudo bash wa-setup.sh"
     fi
   done
 else

@@ -418,26 +418,32 @@ export default function WhatsAppPage() {
               <details className="text-xs text-rose-800">
                 <summary className="cursor-pointer font-semibold">📖 Cara fix (klik untuk expand)</summary>
                 <div className="mt-2 space-y-2 pl-3">
-                  <div className="font-semibold text-rose-900">SSH ke VPS, lalu jalankan SATU perintah ini:</div>
+                  <div className="font-semibold text-rose-900">SSH ke VPS, jalankan SATU perintah ini:</div>
                   <pre className="bg-slate-900 text-emerald-300 p-3 rounded text-[11px] overflow-x-auto font-mono">
 {`cd /var/www/hunter.elexart.com && sudo bash wa-setup.sh`}
                   </pre>
                   <div className="text-rose-700 mt-1">
-                    Script otomatis: generate secret, write supervisor config, install Node deps,
-                    restart wa-service + backend, dan verify health. <b>Idempotent</b> — aman dijalankan ulang.
+                    Script otomatis: pull code, install deps, generate secret, setup supervisor, restart backend + wa-service, & verify.
+                    <b> Idempotent</b> — aman dijalankan ulang.
                   </div>
-                  <div className="font-semibold text-rose-900 mt-3">Atau (kalau wa-setup.sh sudah pernah jalan):</div>
+
+                  <div className="font-semibold text-rose-900 mt-4">⚠️ Kalau wa-setup.sh udah jalan tapi MASIH error:</div>
+                  <div className="text-rose-700 mt-1 mb-1">Backend di VPS mungkin spawn-error (Python venv rusak, dll). Jalankan diagnostic:</div>
                   <pre className="bg-slate-900 text-emerald-300 p-3 rounded text-[11px] overflow-x-auto font-mono">
-{`deploy`}
+{`cd /var/www/hunter.elexart.com && bash wa-doctor.sh`}
                   </pre>
                   <div className="text-rose-700 mt-1">
-                    Setelah commit baru, cukup ketik <code className="bg-rose-100 px-1 rounded">deploy</code> — script
-                    auto-detect & restart wa-service.
+                    Script ini cuma <b>baca</b> (tidak modify). Screenshot output-nya, kirim ke saya supaya bisa diagnose exact error-nya.
                   </div>
-                  <div className="font-semibold text-rose-900 mt-3">Verify manual:</div>
+
+                  <div className="font-semibold text-rose-900 mt-4">Common fix backend spawn-error:</div>
                   <pre className="bg-slate-900 text-emerald-300 p-3 rounded text-[11px] overflow-x-auto font-mono">
-{`curl http://localhost:3002/health
-curl https://hunter.elexart.com/api/whatsapp/health`}
+{`# Rebuild Python venv
+cd /var/www/hunter.elexart.com/backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+sudo supervisorctl restart hunter-backend`}
                   </pre>
                 </div>
               </details>
