@@ -244,24 +244,54 @@ function DayDrawer({ date, calendarTarget, onClose, onScheduled, onTaskCreated, 
       `Buat tugas baru dan masukkan ${orphanProspects.length} prospect tersebut ke tugas itu? ` +
       `Tugas akan terbuka di "Lanjut tambah prospect" untuk diteruskan.`
     )) return;
+
+    const orphanIds = orphanProspects.map((p) => p.id);
+
+    // Strategy: try new combined endpoint first; on 404, fallback to client-side
+    // (create task + loop attach) — works on OLD backend without the new endpoint.
+    let task = null;
     try {
       const { data } = await api.post(`/tasks/recover-orphans/${date}`);
-      toast.success(`✅ Tugas baru dibuat dengan ${data.prospect_count} prospect`);
-      await load();
-      if (onTaskContinue) onTaskContinue(data);
-      else if (onTaskCreated) onTaskCreated(data);
+      task = data;
     } catch (err) {
       const status = err?.response?.status;
-      const detail = err?.response?.data?.detail;
-      if (status === 404 && (!detail || detail === "Not Found")) {
-        toast.error(
-          "Backend di VPS belum punya endpoint recover-orphans. Jalankan: cd /var/www/hunter.elexart.com && bash wa-setup.sh",
-          { duration: 12000 }
-        );
+      const detail = err?.response?.data?.detail || "";
+      // If the endpoint truly doesn't exist OR detail is generic "Not Found" → fallback
+      if (status === 404 && (!detail || detail === "Not Found" || /not\s*found/i.test(detail))) {
+        // Fallback: create task + attach prospects one by one
+        toast.message("Menggunakan mode fallback (backend lama)…", { duration: 2500 });
+        try {
+          const createRes = await api.post("/tasks", {
+            date,
+            name: `Recovered ${date}`,
+            notes: "Auto-recovered from orphan prospects",
+          });
+          task = createRes.data;
+          let attached = 0;
+          for (const pid of orphanIds) {
+            try {
+              await api.post(`/tasks/${task.id}/prospects/${pid}`);
+              attached += 1;
+            } catch (_) { /* skip already-attached or other errors */ }
+          }
+          task.prospect_count = attached;
+        } catch (e2) {
+          toast.error(`Gagal buat tugas (fallback): ${formatApiError(e2)}`);
+          return;
+        }
+      } else if (status === 404 && detail.includes("orphan")) {
+        toast.error(detail);
+        return;
       } else {
         toast.error(formatApiError(err));
+        return;
       }
     }
+
+    toast.success(`✅ Tugas baru dibuat dengan ${task.prospect_count || orphanIds.length} prospect`);
+    await load();
+    if (onTaskContinue) onTaskContinue(task);
+    else if (onTaskCreated) onTaskCreated(task);
   };
 
   const d = new Date(date + "T00:00:00");
