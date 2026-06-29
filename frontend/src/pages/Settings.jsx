@@ -533,49 +533,124 @@ function CompaniesSection() {
                   ⚠️ LinkedIn settings endpoint belum tersedia di backend VPS Anda. Jalankan <code>bash wa-setup.sh</code> untuk pull versi terbaru.
                 </div>
               ) : (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <TermInput
-                      label="LinkedIn Profile URL"
-                      placeholder="https://www.linkedin.com/in/your-handle"
-                      value={linkedin.profile_url || ""}
-                      onChange={(e) => { setLinkedin({ ...linkedin, profile_url: e.target.value }); setLinkedinDirty(true); }}
-                      data-testid="li-profile-url"
-                    />
-                    <TermInput
-                      label="Profile Name (sender)"
-                      placeholder="e.g. Andi · Sales Lead at Acme"
-                      value={linkedin.profile_name || ""}
-                      onChange={(e) => { setLinkedin({ ...linkedin, profile_name: e.target.value }); setLinkedinDirty(true); }}
-                      data-testid="li-profile-name"
-                    />
-                  </div>
-                  <TermTextarea
-                    label="Signature / Closing"
-                    placeholder="— Andi, Sales at Acme · acme.com"
-                    rows={2}
-                    value={linkedin.signature || ""}
-                    onChange={(e) => { setLinkedin({ ...linkedin, signature: e.target.value }); setLinkedinDirty(true); }}
-                    data-testid="li-signature"
-                  />
-                  <TermTextarea
-                    label="Default Connection Template (opsional, AI akan tetap personalisasi)"
-                    placeholder="Hi {{first_name}}, saya {{sender}} dari {{company}}. Saya tertarik dengan {{target_company}}…"
-                    rows={3}
-                    value={linkedin.default_connection_template || ""}
-                    onChange={(e) => { setLinkedin({ ...linkedin, default_connection_template: e.target.value }); setLinkedinDirty(true); }}
-                    data-testid="li-default-template"
-                  />
-                  <p className="text-[11px] text-slate-500">
-                    User yang ditugaskan ke company ini akan memakai identitas LinkedIn di atas saat AI generate connection note (Gemini Flash 3).
-                  </p>
-                </div>
+                <LinkedInIdentityFields
+                  scId={editing}
+                  linkedin={linkedin}
+                  setLinkedin={(v) => { setLinkedin(v); setLinkedinDirty(true); }}
+                />
               )}
             </div>
           </div>
         </ModalShell>
       )}
     </Card>
+  );
+}
+
+/* ──────────── LinkedIn Identity Fields (with Test Generate preview) ──────────── */
+function LinkedInIdentityFields({ scId, linkedin, setLinkedin }) {
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState(null); // {text, kind}
+  const [kind, setKind] = useState("connection_note");
+  const [dmName, setDmName] = useState("Budi Santoso");
+  const [dmTitle, setDmTitle] = useState("Head of Procurement");
+  const [companyName, setCompanyName] = useState("PT Maju Bersama");
+  const [industry, setIndustry] = useState("Logistics");
+
+  const setField = (k, v) => setLinkedin({ ...linkedin, [k]: v });
+
+  const runPreview = async () => {
+    setPreviewing(true);
+    setPreview(null);
+    try {
+      const { data } = await api.post(`/companies/${scId}/linkedin-settings/test-generate`, {
+        settings: linkedin,
+        kind,
+        company_name: companyName,
+        industry,
+        country: "Indonesia",
+        city: "Jakarta",
+        dm_name: dmName,
+        dm_title: dmTitle,
+      });
+      setPreview({ text: data.text, kind: data.kind });
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        toast.warning("Endpoint test-generate belum ada di backend VPS. Jalankan: bash wa-setup.sh");
+      } else {
+        toast.error(formatApiError(err));
+      }
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!preview?.text) return;
+    try { await navigator.clipboard.writeText(preview.text); toast.success("Tersalin"); }
+    catch { toast.error("Copy gagal"); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <TermInput label="LinkedIn Profile URL" placeholder="https://www.linkedin.com/in/your-handle"
+          value={linkedin.profile_url || ""} onChange={(e) => setField("profile_url", e.target.value)} data-testid="li-profile-url" />
+        <TermInput label="Profile Name (sender)" placeholder="e.g. Andi · Sales Lead at Acme"
+          value={linkedin.profile_name || ""} onChange={(e) => setField("profile_name", e.target.value)} data-testid="li-profile-name" />
+      </div>
+      <TermTextarea label="Signature / Closing" placeholder="— Andi, Sales at Acme · acme.com" rows={2}
+        value={linkedin.signature || ""} onChange={(e) => setField("signature", e.target.value)} data-testid="li-signature" />
+      <TermTextarea label="Default Connection Template (opsional, AI akan tetap personalisasi)"
+        placeholder="Hi {{first_name}}, saya {{sender}} dari {{company}}. Saya tertarik dengan {{target_company}}…" rows={3}
+        value={linkedin.default_connection_template || ""}
+        onChange={(e) => setField("default_connection_template", e.target.value)} data-testid="li-default-template" />
+      <p className="text-[11px] text-slate-500">
+        User yang ditugaskan ke company ini akan memakai identitas LinkedIn di atas saat AI generate connection note (Gemini Flash 3).
+      </p>
+
+      {/* Test Generate panel */}
+      <div className="border border-dashed border-indigo-200 rounded-xl p-3 bg-indigo-50/40">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-semibold text-indigo-700 flex items-center gap-1.5">
+            <LinkedinLogo size={12} weight="fill" /> Test Generate — preview AI message dengan settings di atas
+          </div>
+          <span className="text-[10px] text-slate-500">Tidak tersimpan ke DB</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2">
+          <div className="md:col-span-1">
+            <label className="block text-[11px] text-slate-600 mb-0.5">Message kind</label>
+            <select value={kind} onChange={(e) => setKind(e.target.value)}
+              className="w-full text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-white"
+              data-testid="li-test-kind">
+              <option value="connection_note">Connection Note</option>
+              <option value="ice_breaker">Ice Breaker</option>
+              <option value="first_message">First Message</option>
+              <option value="follow_up">Follow Up</option>
+            </select>
+          </div>
+          <TermInput label="Dummy company" value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+          <TermInput label="Industry" value={industry} onChange={(e) => setIndustry(e.target.value)} />
+          <div className="grid grid-cols-2 gap-1">
+            <TermInput label="DM name" value={dmName} onChange={(e) => setDmName(e.target.value)} />
+            <TermInput label="DM title" value={dmTitle} onChange={(e) => setDmTitle(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <PrimaryButton onClick={runPreview} disabled={previewing} data-testid="li-test-generate-btn">
+            {previewing ? "Generating…" : "Generate Preview"}
+          </PrimaryButton>
+          {preview?.text && (
+            <GhostButton onClick={copy} data-testid="li-test-copy-btn">Copy</GhostButton>
+          )}
+        </div>
+        {preview?.text && (
+          <div className="mt-3 bg-white border border-slate-200 rounded-lg p-3 whitespace-pre-wrap text-[13px] text-slate-800 leading-relaxed" data-testid="li-test-preview-text">
+            {preview.text}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

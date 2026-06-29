@@ -5375,6 +5375,69 @@ async def get_company_linkedin_settings(sc_id: str, user: dict = Depends(get_cur
     return {"sub_company_id": sc["id"], "name": sc["name"], "linkedin_settings": sc.get("linkedin_settings") or {}}
 
 
+class LITestGenerateReq(BaseModel):
+    settings: LICompanySettings
+    kind: Literal["connection_note", "ice_breaker", "first_message", "follow_up"] = "connection_note"
+    # Optional dummy prospect override for preview
+    company_name: Optional[str] = "Acme Industries"
+    industry: Optional[str] = "Manufacturing"
+    country: Optional[str] = "Indonesia"
+    city: Optional[str] = "Jakarta"
+    website: Optional[str] = "acme.com"
+    dm_name: Optional[str] = "Budi Santoso"
+    dm_title: Optional[str] = "Head of Procurement"
+
+
+@api.post("/companies/{sc_id}/linkedin-settings/test-generate")
+async def test_generate_linkedin_message(sc_id: str, payload: LITestGenerateReq,
+                                          user: dict = Depends(get_current_user)):
+    """Preview a sample AI message using the provided LinkedIn settings + a dummy prospect.
+    Does NOT save to DB. For Owner/Admin to sanity-check tone & signature before going live."""
+    if user["role"] not in ("Owner", "Admin"):
+        raise HTTPException(403, "Hanya Owner / Admin yang bisa test generate")
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1, "name": 1})
+    if not sc:
+        raise HTTPException(404, "Company tidak ditemukan")
+
+    ls = payload.settings.model_dump(exclude_unset=False)
+    hint_parts = []
+    if ls.get("profile_name"):
+        hint_parts.append(f"You are writing AS: {ls['profile_name']}")
+    hint_parts.append(f"Representing company: {sc['name']}")
+    if ls.get("signature"):
+        hint_parts.append(f"End message with this signature (if appropriate): {ls['signature']}")
+    if payload.kind == "connection_note" and ls.get("default_connection_template"):
+        hint_parts.append(f"Use this template as base (rephrase + personalize): {ls['default_connection_template']}")
+    sender_hint = " | ".join(hint_parts)
+
+    dummy_prospect = {
+        "company_name": payload.company_name,
+        "website": payload.website,
+        "industry": payload.industry,
+        "country": payload.country,
+        "city": payload.city,
+        "research": {},
+    }
+    dummy_dm = {"full_name": payload.dm_name, "job_title": payload.dm_title}
+    try:
+        text = await li_generate_message(
+            prospect_id=f"preview-{sc_id}", kind=payload.kind,
+            prospect=dummy_prospect, dm=dummy_dm, custom_hint=sender_hint,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"AI message gen gagal: {e}")
+    return {
+        "kind": payload.kind,
+        "text": text,
+        "sender_context": {
+            "sub_company_id": sc["id"],
+            "sub_company_name": sc["name"],
+            **ls,
+        },
+        "preview_prospect": {**dummy_prospect, "decision_maker": dummy_dm},
+    }
+
+
 async def _li_get_user_sender_context(user: dict) -> dict:
     """Get LinkedIn sender context from user's assigned sub_companies. Picks first
     sub_company that has linkedin_settings configured."""
