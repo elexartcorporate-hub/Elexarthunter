@@ -46,7 +46,13 @@ function SearchModal({ open, date, onClose, onAdded }) {
       const { data } = await api.post("/linkedin/search-companies", { keyword: kw, country, limit: 20 });
       setResults(data.results || []);
       if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain.");
-    } catch (err) { toast.error(formatApiError(err)); }
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        toast.warning("Endpoint search belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
+      } else {
+        toast.error(formatApiError(err));
+      }
+    }
     finally { setLoading(false); }
   };
   const addOne = async (r) => {
@@ -461,13 +467,17 @@ export default function LinkedInProspect() {
   const [filterStatus, setFilterStatus] = useState("");
   const [filterQ, setFilterQ] = useState("");
   const [senderCtx, setSenderCtx] = useState(null); // {profile_name, sub_company_name, ...} or {empty:true}
+  const [backendOutdated, setBackendOutdated] = useState(false);
 
   const loadDashboard = async () => {
     setLoading(true);
     try {
       const { data } = await api.get(`/linkedin/dashboard`, { params: { date } });
       setDashboard(data); setProspects(data.prospects); setTarget(data.target);
-    } catch (err) { toast.error(formatApiError(err)); }
+    } catch (err) {
+      if (err?.response?.status === 404) setBackendOutdated(true);
+      else toast.error(formatApiError(err));
+    }
     finally { setLoading(false); }
   };
   const loadKpi = async () => {
@@ -488,7 +498,11 @@ export default function LinkedInProspect() {
     try {
       const { data } = await api.get(`/linkedin/sender-context`);
       setSenderCtx(data || { empty: true });
-    } catch (_) { setSenderCtx(null); /* endpoint missing on old backend */ }
+      setBackendOutdated(false);
+    } catch (err) {
+      setSenderCtx(null);
+      if (err?.response?.status === 404) setBackendOutdated(true);
+    }
   };
 
   useEffect(() => { loadDashboard(); loadKpi(); loadReminders(); /* eslint-disable-next-line */ }, [date]);
@@ -560,6 +574,22 @@ export default function LinkedInProspect() {
         }
       />
 
+      {/* Backend outdated banner — VPS belum di-update */}
+      {backendOutdated && (
+        <div className="mb-3 flex items-start justify-between gap-3 px-3 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[12px]" data-testid="li-backend-outdated">
+          <div className="flex items-start gap-2 text-amber-800">
+            <Warning size={14} weight="fill" className="mt-0.5 shrink-0" />
+            <div>
+              <div className="font-semibold">Backend VPS Anda belum di-update.</div>
+              <div className="text-amber-700 mt-0.5">
+                Beberapa endpoint LinkedIn baru (sender-context, search, dll) belum tersedia. SSH ke VPS lalu jalankan:
+                <code className="ml-1 px-1.5 py-0.5 bg-amber-100 rounded font-mono text-[11px]">bash wa-setup.sh</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sender identity badge — derived from sub_company linkedin_settings */}
       {senderCtx && !senderCtx.empty && (senderCtx.profile_name || senderCtx.profile_url) && (
         <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0A66C2]/5 border border-[#0A66C2]/20 text-[12px]" data-testid="li-sender-badge">
@@ -576,7 +606,7 @@ export default function LinkedInProspect() {
           )}
         </div>
       )}
-      {senderCtx?.empty && (user?.role === "Owner" || user?.role === "Admin") && (
+      {!backendOutdated && senderCtx?.empty && (user?.role === "Owner" || user?.role === "Admin") && (
         <div className="mb-3 flex items-center justify-between px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-[12px]" data-testid="li-sender-missing">
           <div className="flex items-center gap-2 text-amber-800">
             <Warning size={14} weight="fill" />
