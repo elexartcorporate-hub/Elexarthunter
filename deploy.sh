@@ -44,6 +44,8 @@ fi
 source venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
+# emergentintegrations is hosted on Emergent's CDN, not PyPI — install separately
+pip install -q emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ 2>&1 | tail -3 || warn "emergentintegrations install warning"
 deactivate
 cd ..
 

@@ -83,13 +83,18 @@ BACKEND_PROGRAMS="$(sudo supervisorctl status 2>&1 | awk '{print $1}' | grep -i 
 
 if [[ -f "$BACKEND_DIR/requirements.txt" ]]; then
   log "Backend: pip install -r requirements.txt …"
+  # emergentintegrations butuh extra-index-url khusus (CDN Emergent, bukan PyPI)
+  EXTRA_IDX="--extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/"
   # Try venv first, fallback to system pip
   if [[ -d "$BACKEND_DIR/venv" ]]; then
     "$BACKEND_DIR/venv/bin/pip" install -q -r "$BACKEND_DIR/requirements.txt" 2>&1 | tail -5 || warn "pip install warnings"
+    "$BACKEND_DIR/venv/bin/pip" install -q emergentintegrations $EXTRA_IDX 2>&1 | tail -3 || warn "emergentintegrations install warning"
   elif [[ -d "$APP_DIR/venv" ]]; then
     "$APP_DIR/venv/bin/pip" install -q -r "$BACKEND_DIR/requirements.txt" 2>&1 | tail -5 || warn "pip install warnings"
+    "$APP_DIR/venv/bin/pip" install -q emergentintegrations $EXTRA_IDX 2>&1 | tail -3 || warn "emergentintegrations install warning"
   else
     pip install -q -r "$BACKEND_DIR/requirements.txt" 2>&1 | tail -5 || pip3 install -q -r "$BACKEND_DIR/requirements.txt" 2>&1 | tail -5 || warn "pip not found"
+    pip install -q emergentintegrations $EXTRA_IDX 2>&1 | tail -3 || pip3 install -q emergentintegrations $EXTRA_IDX 2>&1 | tail -3 || warn "emergentintegrations install warning"
   fi
   ok "Backend deps installed"
 fi
