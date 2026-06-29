@@ -5331,6 +5331,79 @@ async def li_delete_prospect(pid: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+class LISenderContextResp(BaseModel):
+    sub_company_id: Optional[str] = None
+    profile_url: Optional[str] = None
+    profile_name: Optional[str] = None
+    signature: Optional[str] = None
+    default_connection_template: Optional[str] = None
+
+
+class LICompanySettings(BaseModel):
+    profile_url: Optional[str] = None
+    profile_name: Optional[str] = None
+    signature: Optional[str] = None
+    default_connection_template: Optional[str] = None
+
+
+@api.patch("/companies/{sc_id}/linkedin-settings")
+async def set_company_linkedin_settings(sc_id: str, payload: LICompanySettings,
+                                         user: dict = Depends(get_current_user)):
+    """Owner / Admin sets LinkedIn identity for a sub_company. Users assigned to this
+    sub_company will USE this LinkedIn profile context when generating connection notes."""
+    if user["role"] not in ("Owner", "Admin"):
+        raise HTTPException(403, "Hanya Owner / Admin yang bisa set LinkedIn settings")
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not sc:
+        raise HTTPException(404, "Company tidak ditemukan")
+    settings = payload.model_dump(exclude_unset=True)
+    await db.sub_companies.update_one(
+        {"id": sc_id, "tenant_id": user["tenant_id"]},
+        {"$set": {"linkedin_settings": settings, "updated_at": now_iso()}},
+    )
+    return {"sub_company_id": sc_id, "linkedin_settings": settings}
+
+
+@api.get("/companies/{sc_id}/linkedin-settings")
+async def get_company_linkedin_settings(sc_id: str, user: dict = Depends(get_current_user)):
+    sc = await db.sub_companies.find_one(
+        {"id": sc_id, "tenant_id": user["tenant_id"]},
+        {"_id": 0, "id": 1, "name": 1, "linkedin_settings": 1},
+    )
+    if not sc:
+        raise HTTPException(404, "Company tidak ditemukan")
+    return {"sub_company_id": sc["id"], "name": sc["name"], "linkedin_settings": sc.get("linkedin_settings") or {}}
+
+
+async def _li_get_user_sender_context(user: dict) -> dict:
+    """Get LinkedIn sender context from user's assigned sub_companies. Picks first
+    sub_company that has linkedin_settings configured."""
+    sub_ids = user.get("sub_company_ids") or []
+    if not sub_ids:
+        return {}
+    rows = await db.sub_companies.find(
+        {"id": {"$in": sub_ids}, "tenant_id": user["tenant_id"]},
+        {"_id": 0, "id": 1, "name": 1, "linkedin_settings": 1},
+    ).to_list(50)
+    for r in rows:
+        ls = r.get("linkedin_settings") or {}
+        if ls.get("profile_url") or ls.get("profile_name") or ls.get("signature"):
+            return {
+                "sub_company_id": r["id"],
+                "sub_company_name": r["name"],
+                **ls,
+            }
+    return {}
+
+
+@api.get("/linkedin/sender-context")
+async def li_get_sender_context(user: dict = Depends(get_current_user)):
+    """Return the LinkedIn identity that this user will use for their outreach
+    (derived from their assigned sub_company linkedin_settings)."""
+    ctx = await _li_get_user_sender_context(user)
+    return ctx or {"empty": True}
+
+
 @api.post("/linkedin/prospects/{pid}/research")
 async def li_run_research(pid: str, user: dict = Depends(get_current_user)):
     """Trigger AI research via Claude Sonnet 4.5. Saves to prospect.research."""
@@ -5367,7 +5440,8 @@ class LIGenerateMessageReq(BaseModel):
 
 @api.post("/linkedin/prospects/{pid}/messages/generate")
 async def li_generate_msg(pid: str, payload: LIGenerateMessageReq, user: dict = Depends(get_current_user)):
-    """Generate AI message variant via Gemini 3 Flash. Returns text + saves to prospect.messages."""
+    """Generate AI message variant via Gemini 3 Flash. Uses sender's assigned sub_company
+    LinkedIn settings (signature, profile_name) as sender CONTEXT to LLM. Saves to prospect.messages."""
     p = await db.li_prospects.find_one({"id": pid, **_li_scope_q(user)}, {"_id": 0})
     if not p:
         raise HTTPException(404, "Not found")
@@ -5375,23 +5449,46 @@ async def li_generate_msg(pid: str, payload: LIGenerateMessageReq, user: dict = 
         raise HTTPException(403, "Tidak boleh generate untuk prospect orang lain")
     dm = p.get("decision_maker") or {}
     if not dm.get("full_name") and payload.kind != "connection_note":
-        # Allow connection_note tanpa DM (cuma ke company). Other kinds need DM.
         raise HTTPException(400, "Tambahkan Decision Maker dulu untuk generate message ini")
+
+    # Sender context from user's assigned sub_company (LinkedIn identity)
+    sender_user = await db.users.find_one({"id": p["user_id"]}, {"_id": 0}) or user
+    sender_ctx = await _li_get_user_sender_context(sender_user)
+
+    # Build hint that includes sender brand context (so AI knows whose voice to write in)
+    hint_parts = []
+    if sender_ctx.get("profile_name"):
+        hint_parts.append(f"You are writing AS: {sender_ctx['profile_name']}")
+    if sender_ctx.get("sub_company_name"):
+        hint_parts.append(f"Representing company: {sender_ctx['sub_company_name']}")
+    if sender_ctx.get("signature"):
+        hint_parts.append(f"End message with this signature (if appropriate): {sender_ctx['signature']}")
+    if payload.kind == "connection_note" and sender_ctx.get("default_connection_template"):
+        hint_parts.append(f"Use this template as base (rephrase + personalize): {sender_ctx['default_connection_template']}")
+    if payload.custom_hint:
+        hint_parts.append(f"Additional: {payload.custom_hint}")
+    sender_hint = " | ".join(hint_parts) if hint_parts else None
+
     try:
         text = await li_generate_message(
             prospect_id=pid, kind=payload.kind,
-            prospect=p, dm=dm, custom_hint=payload.custom_hint,
+            prospect=p, dm=dm, custom_hint=sender_hint,
         )
     except Exception as e:
         raise HTTPException(500, f"AI message gen gagal: {e}")
     messages = p.get("messages") or {}
-    messages[payload.kind] = {"text": text, "generated_at": now_iso()}
+    messages[payload.kind] = {
+        "text": text,
+        "generated_at": now_iso(),
+        "sender_context": sender_ctx or None,
+    }
     await db.li_prospects.update_one(
         {"id": pid},
         {"$set": {"messages": messages, "updated_at": now_iso()}},
     )
-    await _li_add_timeline(user["tenant_id"], user["id"], pid, f"msg_{payload.kind}_generated", {})
-    return {"kind": payload.kind, "text": text}
+    await _li_add_timeline(user["tenant_id"], user["id"], pid, f"msg_{payload.kind}_generated",
+                           {"via_company": (sender_ctx or {}).get("sub_company_name")})
+    return {"kind": payload.kind, "text": text, "sender_context": sender_ctx or None}
 
 
 @api.get("/linkedin/kpi")
