@@ -4607,6 +4607,33 @@ async def set_my_daily_target(payload: DailyTargetUpdate, user: dict = Depends(g
     return {"daily_target": payload.daily_target, "tasks_synced": synced}
 
 
+class LinkedInTargetUpdate(BaseModel):
+    linkedin_daily_target: int = Field(ge=0, le=500)
+
+
+@api.patch("/me/linkedin-target")
+async def set_my_linkedin_target(payload: LinkedInTargetUpdate, user: dict = Depends(get_current_user)):
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"linkedin_daily_target": payload.linkedin_daily_target, "updated_at": now_iso()}},
+    )
+    return {"linkedin_daily_target": payload.linkedin_daily_target}
+
+
+@api.patch("/team/{uid}/linkedin-target")
+async def set_team_linkedin_target(uid: str, payload: LinkedInTargetUpdate, user: dict = Depends(get_current_user)):
+    perms = await get_user_permissions(user)
+    if user["role"] != "Owner" and "set_team_targets" not in perms:
+        raise HTTPException(403, "Missing permission: set_team_targets")
+    res = await db.users.update_one(
+        {"id": uid, "tenant_id": user["tenant_id"]},
+        {"$set": {"linkedin_daily_target": payload.linkedin_daily_target, "updated_at": now_iso()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "User not found")
+    return {"linkedin_daily_target": payload.linkedin_daily_target}
+
+
 @api.patch("/team/{uid}/target")
 async def set_team_member_target(uid: str, payload: DailyTargetUpdate, user: dict = Depends(get_current_user)):
     perms = await get_user_permissions(user)
@@ -5017,6 +5044,350 @@ async def wa_mark_read(sid: str, jid: str, user: dict = Depends(get_current_user
         # Owner viewing — don't mark read on someone else's behalf
         return {"ok": True, "skipped": "owner_view_only"}
     return await _wa_call("POST", f"/sessions/{sid}/chats/{jid}/read")
+
+
+# ────────────────────────────────────────────────────────────
+# LinkedIn Prospect Module (manual workflow + AI assist)
+# ────────────────────────────────────────────────────────────
+from linkedin_service import (
+    research_company as li_research_company,
+    generate_message as li_generate_message,
+    PIPELINE_STAGES as LI_PIPELINE_STAGES,
+)
+
+
+class LIDecisionMaker(BaseModel):
+    full_name: str
+    job_title: Optional[str] = None
+    department: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    business_email: Optional[str] = None
+    phone: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class LIProspectCreate(BaseModel):
+    date: str  # YYYY-MM-DD
+    company_name: str
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    company_linkedin_url: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class LIProspectUpdate(BaseModel):
+    company_name: Optional[str] = None
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    company_linkedin_url: Optional[str] = None
+    notes: Optional[str] = None
+    research: Optional[dict] = None
+    decision_maker: Optional[LIDecisionMaker] = None
+    status: Optional[str] = None
+    messages: Optional[dict] = None  # {connection_note, ice_breaker, first_message, follow_up}
+    reply_status: Optional[Literal["interested","not_interested","meeting_requested","no_response"]] = None
+    priority: Optional[Literal["low","medium","high"]] = None
+
+
+async def _li_add_timeline(tenant_id: str, user_id: str, prospect_id: str, type_: str, data: Optional[dict] = None):
+    await db.li_timeline.insert_one({
+        "id": str(uuid.uuid4()),
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "prospect_id": prospect_id,
+        "type": type_,
+        "data": data or {},
+        "at": now_iso(),
+    })
+
+
+def _li_scope_q(user: dict) -> dict:
+    """Owner sees all. Others see own only."""
+    q = {"tenant_id": user["tenant_id"]}
+    if user.get("role") != "Owner":
+        q["user_id"] = user["id"]
+    return q
+
+
+@api.get("/linkedin/dashboard")
+async def li_dashboard(date: str, user: dict = Depends(get_current_user)):
+    """Daily session: target + completed + remaining + today's prospects."""
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Invalid date YYYY-MM-DD")
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "linkedin_daily_target": 1, "daily_target": 1}) or {}
+    target = int(u.get("linkedin_daily_target") or 15)
+    q = {**_li_scope_q(user), "date": date}
+    prospects = await db.li_prospects.find(q, {"_id": 0}).sort("created_at", 1).to_list(500)
+    completed = len(prospects)
+    return {
+        "date": date,
+        "target": target,
+        "completed": completed,
+        "remaining": max(0, target - completed),
+        "prospects": prospects,
+    }
+
+
+@api.get("/linkedin/calendar")
+async def li_calendar(year: int, month: int, user: dict = Depends(get_current_user)):
+    """Counts per day in a month — for calendar dots / progress."""
+    if month < 1 or month > 12:
+        raise HTTPException(400, "Invalid month")
+    from calendar import monthrange
+    last = monthrange(year, month)[1]
+    start = f"{year:04d}-{month:02d}-01"
+    end = f"{year:04d}-{month:02d}-{last:02d}"
+    q = {**_li_scope_q(user), "date": {"$gte": start, "$lte": end}}
+    rows = await db.li_prospects.find(q, {"_id": 0, "date": 1, "status": 1}).to_list(2000)
+    by_date: dict = {}
+    for r in rows:
+        d = by_date.setdefault(r["date"], {"total": 0, "won": 0, "accepted": 0, "connect_sent": 0})
+        d["total"] += 1
+        if r.get("status") == "won":
+            d["won"] += 1
+        if r.get("status") in ("accepted", "conversation", "follow_up", "meeting", "quotation", "won"):
+            d["accepted"] += 1
+        if r.get("status") in ("connect_sent", "accepted", "conversation", "follow_up", "meeting", "quotation", "won"):
+            d["connect_sent"] += 1
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "linkedin_daily_target": 1}) or {}
+    target = int(u.get("linkedin_daily_target") or 15)
+    return {"year": year, "month": month, "target": target, "days": by_date}
+
+
+@api.post("/linkedin/prospects")
+async def li_create_prospect(payload: LIProspectCreate, user: dict = Depends(get_current_user)):
+    try:
+        datetime.strptime(payload.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Invalid date YYYY-MM-DD")
+    pid = str(uuid.uuid4())
+    doc = {
+        "id": pid,
+        "tenant_id": user["tenant_id"],
+        "user_id": user["id"],
+        "date": payload.date,
+        "company_name": payload.company_name.strip(),
+        "website": payload.website,
+        "industry": payload.industry,
+        "country": payload.country,
+        "city": payload.city,
+        "company_linkedin_url": payload.company_linkedin_url,
+        "notes": payload.notes,
+        "research": None,
+        "decision_maker": None,
+        "messages": {},
+        "status": "added",
+        "priority": "medium",
+        "reply_status": None,
+        "connect_sent_at": None,
+        "accepted_at": None,
+        "first_message_sent_at": None,
+        "last_reply_at": None,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.li_prospects.insert_one(doc)
+    await _li_add_timeline(user["tenant_id"], user["id"], pid, "prospect_added",
+                           {"company_name": payload.company_name})
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/linkedin/prospects")
+async def li_list_prospects(
+    date: Optional[str] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """List with filters. status='all' or omitted = all stages."""
+    query = _li_scope_q(user)
+    if date:
+        query["date"] = date
+    if status and status != "all":
+        query["status"] = status
+    if q:
+        query["$or"] = [
+            {"company_name": {"$regex": re.escape(q), "$options": "i"}},
+            {"website": {"$regex": re.escape(q), "$options": "i"}},
+            {"industry": {"$regex": re.escape(q), "$options": "i"}},
+            {"decision_maker.full_name": {"$regex": re.escape(q), "$options": "i"}},
+            {"company_linkedin_url": {"$regex": re.escape(q), "$options": "i"}},
+        ]
+    rows = await db.li_prospects.find(query, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+    return rows
+
+
+@api.get("/linkedin/prospects/{pid}")
+async def li_get_prospect(pid: str, user: dict = Depends(get_current_user)):
+    p = await db.li_prospects.find_one({"id": pid, **_li_scope_q(user)}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Not found")
+    # Attach timeline
+    p["timeline"] = await db.li_timeline.find(
+        {"prospect_id": pid, "tenant_id": user["tenant_id"]},
+        {"_id": 0},
+    ).sort("at", -1).limit(100).to_list(100)
+    return p
+
+
+@api.patch("/linkedin/prospects/{pid}")
+async def li_update_prospect(pid: str, payload: LIProspectUpdate, user: dict = Depends(get_current_user)):
+    p = await db.li_prospects.find_one({"id": pid, **_li_scope_q(user)}, {"_id": 0, "user_id": 1, "status": 1})
+    if not p:
+        raise HTTPException(404, "Not found")
+    if p["user_id"] != user["id"] and user.get("role") != "Owner":
+        raise HTTPException(403, "Tidak boleh edit prospect orang lain")
+
+    changes = payload.model_dump(exclude_unset=True)
+    if "decision_maker" in changes and changes["decision_maker"]:
+        changes["decision_maker"] = changes["decision_maker"]  # already dict via model_dump
+
+    new_status = changes.get("status")
+    if new_status and new_status not in LI_PIPELINE_STAGES:
+        raise HTTPException(400, f"Invalid status. Allowed: {LI_PIPELINE_STAGES}")
+
+    # Auto-fill timestamps for key transitions
+    ts = now_iso()
+    if new_status == "connect_sent":
+        changes.setdefault("connect_sent_at", ts)
+    if new_status == "accepted":
+        changes.setdefault("accepted_at", ts)
+    if new_status == "conversation":
+        changes.setdefault("first_message_sent_at", ts)
+
+    changes["updated_at"] = ts
+    await db.li_prospects.update_one({"id": pid}, {"$set": changes})
+
+    # Timeline events for meaningful changes
+    if new_status and new_status != p.get("status"):
+        await _li_add_timeline(user["tenant_id"], user["id"], pid, f"status_{new_status}",
+                               {"from": p.get("status"), "to": new_status})
+    if "decision_maker" in changes:
+        await _li_add_timeline(user["tenant_id"], user["id"], pid, "dm_updated",
+                               {"name": (changes["decision_maker"] or {}).get("full_name")})
+
+    updated = await db.li_prospects.find_one({"id": pid}, {"_id": 0})
+    return updated
+
+
+@api.delete("/linkedin/prospects/{pid}")
+async def li_delete_prospect(pid: str, user: dict = Depends(get_current_user)):
+    p = await db.li_prospects.find_one({"id": pid, **_li_scope_q(user)}, {"_id": 0, "user_id": 1})
+    if not p:
+        raise HTTPException(404, "Not found")
+    if p["user_id"] != user["id"] and user.get("role") != "Owner":
+        raise HTTPException(403, "Tidak boleh hapus prospect orang lain")
+    await db.li_prospects.delete_one({"id": pid})
+    await db.li_timeline.delete_many({"prospect_id": pid})
+    return {"ok": True}
+
+
+@api.post("/linkedin/prospects/{pid}/research")
+async def li_run_research(pid: str, user: dict = Depends(get_current_user)):
+    """Trigger AI research via Claude Sonnet 4.5. Saves to prospect.research."""
+    p = await db.li_prospects.find_one({"id": pid, **_li_scope_q(user)}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Not found")
+    if p["user_id"] != user["id"] and user.get("role") != "Owner":
+        raise HTTPException(403, "Tidak boleh research prospect orang lain")
+    try:
+        research = await li_research_company(
+            prospect_id=pid,
+            company_name=p["company_name"],
+            website=p.get("website"),
+            industry=p.get("industry"),
+            country=p.get("country"),
+            city=p.get("city"),
+        )
+    except Exception as e:
+        raise HTTPException(500, f"AI research gagal: {e}")
+    new_status = p.get("status") if p.get("status") not in ("added",) else "researched"
+    await db.li_prospects.update_one(
+        {"id": pid},
+        {"$set": {"research": research, "status": new_status, "updated_at": now_iso()}},
+    )
+    await _li_add_timeline(user["tenant_id"], user["id"], pid, "research_completed",
+                           {"lead_score": research.get("lead_score")})
+    return {"research": research, "status": new_status}
+
+
+class LIGenerateMessageReq(BaseModel):
+    kind: Literal["connection_note", "ice_breaker", "first_message", "follow_up"]
+    custom_hint: Optional[str] = None
+
+
+@api.post("/linkedin/prospects/{pid}/messages/generate")
+async def li_generate_msg(pid: str, payload: LIGenerateMessageReq, user: dict = Depends(get_current_user)):
+    """Generate AI message variant via Gemini 3 Flash. Returns text + saves to prospect.messages."""
+    p = await db.li_prospects.find_one({"id": pid, **_li_scope_q(user)}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Not found")
+    if p["user_id"] != user["id"] and user.get("role") != "Owner":
+        raise HTTPException(403, "Tidak boleh generate untuk prospect orang lain")
+    dm = p.get("decision_maker") or {}
+    if not dm.get("full_name") and payload.kind != "connection_note":
+        # Allow connection_note tanpa DM (cuma ke company). Other kinds need DM.
+        raise HTTPException(400, "Tambahkan Decision Maker dulu untuk generate message ini")
+    try:
+        text = await li_generate_message(
+            prospect_id=pid, kind=payload.kind,
+            prospect=p, dm=dm, custom_hint=payload.custom_hint,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"AI message gen gagal: {e}")
+    messages = p.get("messages") or {}
+    messages[payload.kind] = {"text": text, "generated_at": now_iso()}
+    await db.li_prospects.update_one(
+        {"id": pid},
+        {"$set": {"messages": messages, "updated_at": now_iso()}},
+    )
+    await _li_add_timeline(user["tenant_id"], user["id"], pid, f"msg_{payload.kind}_generated", {})
+    return {"kind": payload.kind, "text": text}
+
+
+@api.get("/linkedin/kpi")
+async def li_kpi(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                 user: dict = Depends(get_current_user)):
+    """Daily/range KPI: counters per pipeline stage + rates."""
+    q = _li_scope_q(user)
+    if date_from and date_to:
+        q["date"] = {"$gte": date_from, "$lte": date_to}
+    elif date_from:
+        q["date"] = date_from
+    rows = await db.li_prospects.find(q, {"_id": 0, "status": 1}).to_list(5000)
+    counts = {s: 0 for s in LI_PIPELINE_STAGES}
+    for r in rows:
+        st = r.get("status") or "added"
+        if st in counts:
+            counts[st] += 1
+    total = len(rows)
+    connect_sent = sum(counts[s] for s in ("connect_sent","accepted","conversation","follow_up","meeting","quotation","won"))
+    accepted = sum(counts[s] for s in ("accepted","conversation","follow_up","meeting","quotation","won"))
+    conv = sum(counts[s] for s in ("conversation","follow_up","meeting","quotation","won"))
+    meetings = sum(counts[s] for s in ("meeting","quotation","won"))
+    deals = counts["won"]
+    pct = lambda a, b: round((a / b) * 100, 1) if b > 0 else 0.0
+    return {
+        "total": total,
+        "by_status": counts,
+        "connect_sent": connect_sent,
+        "accepted": accepted,
+        "conversation": conv,
+        "meetings": meetings,
+        "deals": deals,
+        "rates": {
+            "acceptance_rate": pct(accepted, connect_sent),
+            "conversation_rate": pct(conv, accepted),
+            "meeting_rate": pct(meetings, conv),
+            "deal_rate": pct(deals, meetings),
+        },
+    }
 
 
 app.include_router(api)

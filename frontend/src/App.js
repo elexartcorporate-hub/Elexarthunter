@@ -13,6 +13,7 @@ import EmailActivity from "@/pages/EmailActivity";
 import Templates from "@/pages/Templates";
 import Inbox from "@/pages/Inbox";
 import WhatsApp from "@/pages/WhatsApp";
+import LinkedInProspect from "@/pages/LinkedInProspect";
 import Settings from "@/pages/Settings";
 import "@/index.css";
 
@@ -110,6 +111,7 @@ export default function App() {
             <Route path="/templates" element={<PermRoute perm="templates"><Templates /></PermRoute>} />
             <Route path="/inbox" element={<PermRoute perm="inbox"><Inbox /></PermRoute>} />
             <Route path="/whatsapp" element={<PermRoute perm="inbox"><WhatsApp /></PermRoute>} />
+            <Route path="/linkedin" element={<PermRoute perm="prospects"><LinkedInProspect /></PermRoute>} />
             <Route path="/settings" element={<PermRoute perm="settings"><Settings /></PermRoute>} />
           </Route>
 

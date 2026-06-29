@@ -10,12 +10,14 @@ import {
   Lightning,
   Tray,
   WhatsappLogo,
+  LinkedinLogo,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const NAV = [
   { to: "/",           label: "Dashboard",       icon: ChartLineUp,  perm: "dashboard",      testid: "nav-dashboard" },
   { to: "/prospects",  label: "Prospects",       icon: UsersFour,    perm: "prospects",      testid: "nav-prospects" },
+  { to: "/linkedin",   label: "LinkedIn",        icon: LinkedinLogo, perm: "prospects",      testid: "nav-linkedin" },
   { to: "/inbox",      label: "Inbox",           icon: Tray,         perm: "inbox",          testid: "nav-inbox" },
   { to: "/whatsapp",   label: "WhatsApp",        icon: WhatsappLogo, perm: "inbox",          testid: "nav-whatsapp" },
   { to: "/templates",  label: "Templates",       icon: ListChecks,   perm: "templates",      testid: "nav-templates" },
