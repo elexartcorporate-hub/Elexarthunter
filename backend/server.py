@@ -5054,6 +5054,49 @@ from linkedin_service import (
     generate_message as li_generate_message,
     PIPELINE_STAGES as LI_PIPELINE_STAGES,
 )
+from company_search import search_companies as li_search_companies
+
+
+class LICompanySearch(BaseModel):
+    keyword: str
+    country: Optional[str] = None
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+@api.post("/linkedin/search-companies")
+async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(get_current_user)):
+    """Aggregator: search companies by keyword via DuckDuckGo (no API key)."""
+    try:
+        rows = await li_search_companies(payload.keyword, country=payload.country, limit=payload.limit)
+    except Exception as e:
+        raise HTTPException(502, f"Search engine error: {e}")
+    return {"keyword": payload.keyword, "count": len(rows), "results": rows}
+
+
+@api.get("/linkedin/reminders")
+async def li_reminders(user: dict = Depends(get_current_user)):
+    """Return prospects needing follow-up reminder (3/7/14 day buckets after connect_sent)."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    q = {**_li_scope_q(user), "status": "connect_sent", "connect_sent_at": {"$ne": None}}
+    rows = await db.li_prospects.find(q, {"_id": 0}).to_list(500)
+    buckets = {"day3": [], "day7": [], "day14": []}
+    for p in rows:
+        try:
+            ts = datetime.fromisoformat(p["connect_sent_at"].replace("Z", "+00:00"))
+            days = (now - ts).days
+        except Exception:
+            continue
+        item = {"id": p["id"], "company_name": p["company_name"],
+                "dm_name": (p.get("decision_maker") or {}).get("full_name"),
+                "days_waiting": days}
+        if days >= 14:
+            buckets["day14"].append(item)
+        elif days >= 7:
+            buckets["day7"].append(item)
+        elif days >= 3:
+            buckets["day3"].append(item)
+    return buckets
 
 
 class LIDecisionMaker(BaseModel):

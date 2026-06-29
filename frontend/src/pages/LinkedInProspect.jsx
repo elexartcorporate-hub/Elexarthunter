@@ -5,8 +5,9 @@ import { PageHeader, Card, PrimaryButton, GhostButton, Badge, EmptyState } from 
 import {
   LinkedinLogo, Plus, Trash, ArrowsClockwise, X, MagnifyingGlass, Buildings,
   User, PaperPlaneTilt, Copy, ArrowSquareOut, Sparkle, Target, ListBullets, Kanban,
-  PencilSimple, ChartLine, CheckCircle, Clock, Warning,
+  PencilSimple, ChartLine, CheckCircle, Clock, Warning, Table as TableIcon, Bell,
 } from "@phosphor-icons/react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { toast } from "sonner";
 
 const PIPELINE = [
@@ -29,6 +30,90 @@ const stageMap = Object.fromEntries(PIPELINE.map((s) => [s.key, s]));
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function fmtDate(s) { return s ? new Date(s).toLocaleDateString("id-ID",{day:"numeric",month:"short",year:"numeric"}) : ""; }
 function daysSince(iso) { if (!iso) return null; const d=Math.floor((Date.now()-new Date(iso).getTime())/86400000); return d; }
+
+// ─── Search Companies Modal (DDG/Bing aggregator) ───
+function SearchModal({ open, date, onClose, onAdded }) {
+  const [kw, setKw] = useState("");
+  const [country, setCountry] = useState("Indonesia");
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState([]);
+  const [adding, setAdding] = useState(null);
+  useEffect(() => { if (open) { setKw(""); setResults([]); } }, [open]);
+  const doSearch = async () => {
+    if (!kw.trim()) return;
+    setLoading(true); setResults([]);
+    try {
+      const { data } = await api.post("/linkedin/search-companies", { keyword: kw, country, limit: 20 });
+      setResults(data.results || []);
+      if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain.");
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setLoading(false); }
+  };
+  const addOne = async (r) => {
+    setAdding(r.domain);
+    try {
+      const { data } = await api.post("/linkedin/prospects", {
+        date, company_name: r.company_name, website: r.website,
+        country: r.country, industry: null, city: null,
+      });
+      toast.success(`✅ ${r.company_name} ditambahkan`);
+      onAdded?.(data);
+      setResults((prev) => prev.filter((x) => x.domain !== r.domain));
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setAdding(null); }
+  };
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[88vh] flex flex-col" onClick={(e)=>e.stopPropagation()} data-testid="li-search-modal">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+          <h3 className="font-bold flex items-center gap-2"><MagnifyingGlass size={18} weight="bold" className="text-[#0A66C2]" /> Search Companies (Aggregator)</h3>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={16} /></button>
+        </div>
+        <div className="p-4 flex gap-2 items-end border-b border-slate-200">
+          <div className="flex-1">
+            <label className="text-[10px] uppercase font-bold text-slate-500">Keyword</label>
+            <input value={kw} onChange={(e)=>setKw(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&doSearch()}
+              placeholder="e.g. Hotel Bali, Corporate Jakarta, Event Organizer"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#0A66C2]"
+              data-testid="li-search-keyword"/>
+          </div>
+          <div className="w-32">
+            <label className="text-[10px] uppercase font-bold text-slate-500">Country</label>
+            <input value={country} onChange={(e)=>setCountry(e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#0A66C2]"/>
+          </div>
+          <PrimaryButton onClick={doSearch} disabled={loading || !kw.trim()} data-testid="li-search-submit">
+            {loading ? <ArrowsClockwise size={14} weight="bold" className="animate-spin"/> : <MagnifyingGlass size={14} weight="bold"/>} Search
+          </PrimaryButton>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {loading && <div className="text-center text-sm text-slate-500 py-10">Mencari…</div>}
+          {!loading && results.length === 0 && (
+            <div className="text-center text-xs text-slate-400 py-10">
+              Tip: keyword spesifik = hasil lebih relevan. Contoh: &quot;Hotel Bintang 4 Bali&quot;, &quot;Travel Agency Singapore&quot;.
+            </div>
+          )}
+          {results.map((r) => (
+            <Card key={r.domain} className="p-3 hover:shadow-sm transition" data-testid={`li-search-result-${r.domain}`}>
+              <div className="flex items-start gap-3">
+                <Buildings size={18} weight="duotone" className="text-[#0A66C2] mt-0.5 shrink-0"/>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-sm text-slate-900">{r.company_name}</div>
+                  <div className="text-[11px] text-slate-500 font-mono truncate">{r.domain}</div>
+                  {r.snippet && <div className="text-xs text-slate-600 mt-1 line-clamp-2">{r.snippet}</div>}
+                </div>
+                <PrimaryButton onClick={()=>addOne(r)} disabled={adding===r.domain} className="!text-xs shrink-0">
+                  <Plus size={12} weight="bold"/> Add to Today
+                </PrimaryButton>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─── Add Prospect Modal ───
 function AddModal({ open, date, onClose, onCreated }) {
@@ -361,15 +446,20 @@ function DetailDrawer({ open, prospectId, onClose, onChanged }) {
 export default function LinkedInProspect() {
   const { user } = useAuth();
   const [date, setDate] = useState(todayISO());
-  const [view, setView] = useState("list"); // 'list' | 'kanban'
+  const [view, setView] = useState("list"); // 'list' | 'kanban' | 'table'
   const [dashboard, setDashboard] = useState(null);
   const [prospects, setProspects] = useState([]);
   const [loading, setLoading] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [target, setTarget] = useState(15);
   const [editTarget, setEditTarget] = useState(false);
   const [kpi, setKpi] = useState(null);
+  const [reminders, setReminders] = useState({ day3: [], day7: [], day14: [] });
+  const [dragId, setDragId] = useState(null);
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterQ, setFilterQ] = useState("");
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -386,7 +476,42 @@ export default function LinkedInProspect() {
     } catch (_) { /* ignore */ }
   };
 
-  useEffect(() => { loadDashboard(); loadKpi(); /* eslint-disable-next-line */ }, [date]);
+  const loadReminders = async () => {
+    try {
+      const { data } = await api.get(`/linkedin/reminders`);
+      setReminders(data || { day3: [], day7: [], day14: [] });
+    } catch (_) { /* ignore */ }
+  };
+
+  useEffect(() => { loadDashboard(); loadKpi(); loadReminders(); /* eslint-disable-next-line */ }, [date]);
+
+  // Drag-and-drop kanban: handle drop on a stage column
+  const onDropStage = async (newStatus) => {
+    if (!dragId) return;
+    const p = prospects.find((x) => x.id === dragId);
+    if (!p || p.status === newStatus) { setDragId(null); return; }
+    setDragId(null);
+    try {
+      await api.patch(`/linkedin/prospects/${p.id}`, { status: newStatus });
+      toast.success(`${p.company_name} → ${stageMap[newStatus]?.label}`);
+      loadDashboard(); loadKpi();
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  const filteredProspects = useMemo(() => {
+    let list = prospects;
+    if (filterStatus) list = list.filter((p) => p.status === filterStatus);
+    if (filterQ) {
+      const q = filterQ.toLowerCase();
+      list = list.filter((p) =>
+        (p.company_name || "").toLowerCase().includes(q) ||
+        (p.industry || "").toLowerCase().includes(q) ||
+        (p.city || "").toLowerCase().includes(q) ||
+        (p.decision_maker?.full_name || "").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [prospects, filterStatus, filterQ]);
 
   const saveTarget = async () => {
     try {
@@ -400,9 +525,11 @@ export default function LinkedInProspect() {
   const grouped = useMemo(() => {
     const g = {};
     for (const s of PIPELINE) g[s.key] = [];
-    for (const p of prospects) (g[p.status] ||= []).push(p);
+    for (const p of filteredProspects) (g[p.status] ||= []).push(p);
     return g;
-  }, [prospects]);
+  }, [filteredProspects]);
+
+  const totalReminders = reminders.day3.length + reminders.day7.length + reminders.day14.length;
 
   return (
     <div className="p-6 md:p-8 fade-up max-w-[1400px] mx-auto">
@@ -410,10 +537,16 @@ export default function LinkedInProspect() {
         title="LinkedIn Prospect"
         subtitle={`Manual workflow + AI assist · ${user?.role || ""}`}
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" data-testid="li-date-picker" />
+            {totalReminders > 0 && (
+              <GhostButton onClick={()=>setView("kanban")} className="!text-amber-700 !border-amber-300" data-testid="li-reminders-btn">
+                <Bell size={14} weight="fill"/> {totalReminders} reminders
+              </GhostButton>
+            )}
+            <GhostButton onClick={()=>setSearchOpen(true)} data-testid="li-search-btn"><MagnifyingGlass size={14} weight="bold"/> Search</GhostButton>
             <GhostButton onClick={loadDashboard} disabled={loading}><ArrowsClockwise size={14} weight="bold" className={loading?"animate-spin":""}/> Refresh</GhostButton>
-            <PrimaryButton onClick={()=>setAddOpen(true)} data-testid="li-add-btn"><Plus size={14} weight="bold"/> Add Prospect</PrimaryButton>
+            <PrimaryButton onClick={()=>setAddOpen(true)} data-testid="li-add-btn"><Plus size={14} weight="bold"/> Add Manual</PrimaryButton>
           </div>
         }
       />
@@ -451,70 +584,174 @@ export default function LinkedInProspect() {
         </Card>
       </div>
 
-      {/* View switch */}
-      <div className="flex items-center gap-2 mb-3">
+      {/* KPI chart */}
+      {kpi && kpi.total > 0 && (
+        <Card className="p-3 mb-4">
+          <div className="text-[10px] uppercase font-bold text-slate-500 mb-2 flex items-center gap-1">
+            <ChartLine size={11} weight="bold"/> Pipeline distribution
+          </div>
+          <div style={{ width: "100%", height: 160 }}>
+            <ResponsiveContainer>
+              <BarChart data={PIPELINE.map((s) => ({ name: s.label, value: kpi.by_status[s.key] || 0, key: s.key }))}>
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={50}/>
+                <YAxis tick={{ fontSize: 10 }} allowDecimals={false}/>
+                <Tooltip />
+                <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                  {PIPELINE.map((s, i) => (
+                    <Cell key={i} fill={
+                      s.tone === "success" ? "#10b981" :
+                      s.tone === "danger" ? "#ef4444" :
+                      s.tone === "warning" ? "#f59e0b" :
+                      s.tone === "purple" ? "#8b5cf6" :
+                      s.tone === "info" ? "#0A66C2" : "#94a3b8"
+                    }/>
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      )}
+
+      {/* View switch + filters */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
         <GhostButton onClick={()=>setView("list")} className={view==="list"?"!bg-[#0A66C2] !text-white":""} data-testid="li-view-list">
           <ListBullets size={14} weight="bold"/> List
         </GhostButton>
         <GhostButton onClick={()=>setView("kanban")} className={view==="kanban"?"!bg-[#0A66C2] !text-white":""} data-testid="li-view-kanban">
           <Kanban size={14} weight="bold"/> Kanban
         </GhostButton>
+        <GhostButton onClick={()=>setView("table")} className={view==="table"?"!bg-[#0A66C2] !text-white":""} data-testid="li-view-table">
+          <TableIcon size={14} weight="bold"/> Table
+        </GhostButton>
+        <div className="flex-1"/>
+        <input
+          placeholder="🔍 Filter company / DM / city…"
+          value={filterQ} onChange={(e)=>setFilterQ(e.target.value)}
+          className="border border-slate-200 rounded-lg px-2 py-1 text-sm w-56"
+          data-testid="li-filter-q"/>
+        <select value={filterStatus} onChange={(e)=>setFilterStatus(e.target.value)}
+          className="border border-slate-200 rounded-lg px-2 py-1 text-sm" data-testid="li-filter-status">
+          <option value="">All stages</option>
+          {PIPELINE.map((s)=><option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
       </div>
 
-      {prospects.length === 0 && !loading ? (
-        <EmptyState icon={LinkedinLogo} title="Belum ada prospect untuk hari ini" description="Klik 'Add Prospect' untuk mulai." />
+      {filteredProspects.length === 0 && !loading ? (
+        <EmptyState icon={LinkedinLogo} title={prospects.length===0?"Belum ada prospect untuk hari ini":"Tidak ada yang match filter"} description={prospects.length===0?"Klik 'Search' atau 'Add Manual' untuk mulai.":"Coba ubah filter / clear."} />
       ) : view === "list" ? (
         <div className="space-y-2">
-          {prospects.map((p) => (
-            <Card key={p.id} className="p-3 hover:shadow-md cursor-pointer transition" onClick={()=>setDetailId(p.id)} data-testid={`li-card-${p.id}`}>
-              <div className="flex items-center gap-3">
-                <Buildings size={20} weight="duotone" className="text-[#0A66C2] shrink-0"/>
-                <div className="min-w-0 flex-1">
-                  <div className="font-semibold text-slate-900 truncate">{p.company_name}</div>
-                  <div className="text-xs text-slate-500 truncate">
-                    {p.decision_maker?.full_name ? `${p.decision_maker.full_name} • ${p.decision_maker.job_title || ""}` : "DM belum diisi"}
-                    {p.industry && ` • ${p.industry}`}
-                    {p.city && ` • ${p.city}`}
+          {filteredProspects.map((p) => {
+            const wait = daysSince(p.connect_sent_at);
+            const needsReminder = p.status === "connect_sent" && wait != null && wait >= 3;
+            return (
+              <Card key={p.id} className="p-3 hover:shadow-md cursor-pointer transition" onClick={()=>setDetailId(p.id)} data-testid={`li-card-${p.id}`}>
+                <div className="flex items-center gap-3">
+                  <Buildings size={20} weight="duotone" className="text-[#0A66C2] shrink-0"/>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-slate-900 truncate flex items-center gap-1">
+                      {p.company_name}
+                      {needsReminder && <Bell size={11} weight="fill" className="text-amber-500" title={`${wait} days waiting`}/>}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">
+                      {p.decision_maker?.full_name ? `${p.decision_maker.full_name} • ${p.decision_maker.job_title || ""}` : "DM belum diisi"}
+                      {p.industry && ` • ${p.industry}`}
+                      {p.city && ` • ${p.city}`}
+                      {needsReminder && ` • ⏳ ${wait}d`}
+                    </div>
                   </div>
+                  {p.research?.lead_score != null && (
+                    <div className="text-center shrink-0">
+                      <div className="text-lg font-bold text-[#0A66C2]">{p.research.lead_score}</div>
+                      <div className="text-[9px] text-slate-500 uppercase">Lead Score</div>
+                    </div>
+                  )}
+                  <Badge tone={stageMap[p.status]?.tone || "neutral"} className="shrink-0">
+                    {stageMap[p.status]?.label || p.status}
+                  </Badge>
                 </div>
-                {p.research?.lead_score != null && (
-                  <div className="text-center shrink-0">
-                    <div className="text-lg font-bold text-[#0A66C2]">{p.research.lead_score}</div>
-                    <div className="text-[9px] text-slate-500 uppercase">Lead Score</div>
-                  </div>
-                )}
-                <Badge tone={stageMap[p.status]?.tone || "neutral"} className="shrink-0">
-                  {stageMap[p.status]?.label || p.status}
-                </Badge>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
+      ) : view === "table" ? (
+        <Card className="!p-0 overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50 border-b border-slate-200">
+              <tr>
+                {["Company","DM","Title","Industry","City","Score","Status","Updated"].map((h)=>(
+                  <th key={h} className="text-left px-3 py-2 font-bold text-slate-600 uppercase text-[10px]">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredProspects.map((p)=>(
+                <tr key={p.id} onClick={()=>setDetailId(p.id)} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer" data-testid={`li-row-${p.id}`}>
+                  <td className="px-3 py-2 font-semibold text-slate-900">{p.company_name}</td>
+                  <td className="px-3 py-2">{p.decision_maker?.full_name || "—"}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.decision_maker?.job_title || "—"}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.industry || "—"}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.city || "—"}</td>
+                  <td className="px-3 py-2 font-bold text-[#0A66C2]">{p.research?.lead_score ?? "—"}</td>
+                  <td className="px-3 py-2"><Badge tone={stageMap[p.status]?.tone||"neutral"} className="!text-[10px]">{stageMap[p.status]?.label || p.status}</Badge></td>
+                  <td className="px-3 py-2 text-slate-500 text-[10px]">{p.updated_at ? new Date(p.updated_at).toLocaleString("id-ID",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
       ) : (
         <div className="overflow-x-auto">
           <div className="flex gap-3 min-w-max pb-2">
             {PIPELINE.filter((s)=>grouped[s.key]?.length > 0 || ["added","researched","ready","connect_sent","accepted"].includes(s.key)).map((s) => (
-              <div key={s.key} className="w-64 shrink-0">
+              <div
+                key={s.key}
+                className="w-64 shrink-0"
+                onDragOver={(e)=>{ e.preventDefault(); e.currentTarget.classList.add("ring-2","ring-[#0A66C2]","rounded-lg"); }}
+                onDragLeave={(e)=>{ e.currentTarget.classList.remove("ring-2","ring-[#0A66C2]","rounded-lg"); }}
+                onDrop={(e)=>{ e.preventDefault(); e.currentTarget.classList.remove("ring-2","ring-[#0A66C2]","rounded-lg"); onDropStage(s.key); }}
+                data-testid={`li-stage-${s.key}`}
+              >
                 <div className="px-2 py-1.5 mb-2 bg-slate-100 rounded-t font-bold text-[10px] uppercase text-slate-700 flex items-center justify-between">
                   <span>{s.label}</span>
                   <span className="bg-white text-slate-600 px-1.5 rounded-full">{grouped[s.key]?.length || 0}</span>
                 </div>
-                <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-                  {(grouped[s.key] || []).map((p) => (
-                    <Card key={p.id} className="p-2 hover:shadow-md cursor-pointer transition text-xs" onClick={()=>setDetailId(p.id)} data-testid={`li-kanban-${p.id}`}>
-                      <div className="font-semibold text-slate-900 truncate">{p.company_name}</div>
-                      {p.decision_maker?.full_name && <div className="text-[10px] text-slate-500 truncate">{p.decision_maker.full_name}</div>}
-                      {p.research?.lead_score != null && (
-                        <div className="text-[10px] mt-1"><b className="text-[#0A66C2]">{p.research.lead_score}</b>/100</div>
-                      )}
-                    </Card>
-                  ))}
+                <div className="space-y-2 max-h-[60vh] overflow-y-auto p-1">
+                  {(grouped[s.key] || []).map((p) => {
+                    const wait = daysSince(p.connect_sent_at);
+                    const needsReminder = p.status === "connect_sent" && wait != null && wait >= 3;
+                    return (
+                      <Card
+                        key={p.id}
+                        className={`p-2 hover:shadow-md cursor-grab transition text-xs ${dragId===p.id ? "opacity-50":""}`}
+                        draggable
+                        onDragStart={()=>setDragId(p.id)}
+                        onDragEnd={()=>setDragId(null)}
+                        onClick={()=>setDetailId(p.id)}
+                        data-testid={`li-kanban-${p.id}`}
+                      >
+                        <div className="font-semibold text-slate-900 truncate flex items-center gap-1">
+                          {needsReminder && <Bell size={9} weight="fill" className="text-amber-500"/>}
+                          {p.company_name}
+                        </div>
+                        {p.decision_maker?.full_name && <div className="text-[10px] text-slate-500 truncate">{p.decision_maker.full_name}</div>}
+                        <div className="flex items-center justify-between mt-1">
+                          {p.research?.lead_score != null && (
+                            <div className="text-[10px]"><b className="text-[#0A66C2]">{p.research.lead_score}</b>/100</div>
+                          )}
+                          {needsReminder && <span className="text-[9px] text-amber-700">⏳ {wait}d</span>}
+                        </div>
+                      </Card>
+                    );
+                  })}
                 </div>
               </div>
             ))}
           </div>
         </div>
       )}
+
+      <SearchModal open={searchOpen} date={date} onClose={()=>setSearchOpen(false)} onAdded={()=>{ loadDashboard(); loadKpi(); }} />
 
       <AddModal open={addOpen} date={date} onClose={()=>setAddOpen(false)} onCreated={()=>{ loadDashboard(); loadKpi(); }} />
       <DetailDrawer open={!!detailId} prospectId={detailId} onClose={()=>setDetailId(null)} onChanged={()=>{ loadDashboard(); loadKpi(); }} />
