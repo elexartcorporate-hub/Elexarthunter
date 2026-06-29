@@ -5065,12 +5065,37 @@ class LICompanySearch(BaseModel):
 
 @api.post("/linkedin/search-companies")
 async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(get_current_user)):
-    """Aggregator: search companies by keyword via DuckDuckGo (no API key)."""
+    """Aggregator: search companies by keyword. Cached in MongoDB for 24 hours
+    to avoid rate-limit issues from search engines & speed up repeat queries."""
+    cache_key = f"{(payload.keyword or '').strip().lower()}|{(payload.country or '').strip().lower()}|{payload.limit}"
+    now_dt = datetime.now(timezone.utc)
+    cache = await db.li_search_cache.find_one({"key": cache_key}, {"_id": 0})
+    if cache:
+        try:
+            cached_at = datetime.fromisoformat(cache["cached_at"])
+            if (now_dt - cached_at).total_seconds() < 86400:  # 24h
+                return {"keyword": payload.keyword, "count": len(cache["results"]),
+                        "results": cache["results"], "cached": True}
+        except Exception:
+            pass
+
     try:
         rows = await li_search_companies(payload.keyword, country=payload.country, limit=payload.limit)
     except Exception as e:
+        # If we have stale cache (>24h), serve it as last-resort to avoid total failure
+        if cache and cache.get("results"):
+            return {"keyword": payload.keyword, "count": len(cache["results"]),
+                    "results": cache["results"], "cached": True, "stale": True}
         raise HTTPException(502, f"Search engine error: {e}")
-    return {"keyword": payload.keyword, "count": len(rows), "results": rows}
+
+    if rows:
+        await db.li_search_cache.update_one(
+            {"key": cache_key},
+            {"$set": {"key": cache_key, "keyword": payload.keyword, "country": payload.country,
+                      "results": rows, "cached_at": now_dt.isoformat()}},
+            upsert=True,
+        )
+    return {"keyword": payload.keyword, "count": len(rows), "results": rows, "cached": False}
 
 
 @api.get("/linkedin/reminders")

@@ -27,6 +27,48 @@ const PIPELINE = [
 
 const stageMap = Object.fromEntries(PIPELINE.map((s) => [s.key, s]));
 
+// Country dropdown — covers ASEAN + major business hubs + "Worldwide" option
+const COUNTRIES = [
+  { code: "",            name: "🌐 Worldwide (semua negara)" },
+  { code: "Indonesia",   name: "🇮🇩 Indonesia" },
+  { code: "Singapore",   name: "🇸🇬 Singapore" },
+  { code: "Malaysia",    name: "🇲🇾 Malaysia" },
+  { code: "Thailand",    name: "🇹🇭 Thailand" },
+  { code: "Vietnam",     name: "🇻🇳 Vietnam" },
+  { code: "Philippines", name: "🇵🇭 Philippines" },
+  { code: "Brunei",      name: "🇧🇳 Brunei" },
+  { code: "Cambodia",    name: "🇰🇭 Cambodia" },
+  { code: "Laos",        name: "🇱🇦 Laos" },
+  { code: "Myanmar",     name: "🇲🇲 Myanmar" },
+  { code: "Timor-Leste", name: "🇹🇱 Timor-Leste" },
+  { code: "India",       name: "🇮🇳 India" },
+  { code: "China",       name: "🇨🇳 China" },
+  { code: "Hong Kong",   name: "🇭🇰 Hong Kong" },
+  { code: "Taiwan",      name: "🇹🇼 Taiwan" },
+  { code: "Japan",       name: "🇯🇵 Japan" },
+  { code: "South Korea", name: "🇰🇷 South Korea" },
+  { code: "Australia",   name: "🇦🇺 Australia" },
+  { code: "New Zealand", name: "🇳🇿 New Zealand" },
+  { code: "United Arab Emirates", name: "🇦🇪 United Arab Emirates" },
+  { code: "Saudi Arabia",name: "🇸🇦 Saudi Arabia" },
+  { code: "Qatar",       name: "🇶🇦 Qatar" },
+  { code: "United Kingdom", name: "🇬🇧 United Kingdom" },
+  { code: "Germany",     name: "🇩🇪 Germany" },
+  { code: "France",      name: "🇫🇷 France" },
+  { code: "Netherlands", name: "🇳🇱 Netherlands" },
+  { code: "Spain",       name: "🇪🇸 Spain" },
+  { code: "Italy",       name: "🇮🇹 Italy" },
+  { code: "United States", name: "🇺🇸 United States" },
+  { code: "Canada",      name: "🇨🇦 Canada" },
+  { code: "Mexico",      name: "🇲🇽 Mexico" },
+  { code: "Brazil",      name: "🇧🇷 Brazil" },
+  { code: "Argentina",   name: "🇦🇷 Argentina" },
+  { code: "South Africa",name: "🇿🇦 South Africa" },
+  { code: "Nigeria",     name: "🇳🇬 Nigeria" },
+  { code: "Egypt",       name: "🇪🇬 Egypt" },
+  { code: "Turkey",      name: "🇹🇷 Turkey" },
+];
+
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function fmtDate(s) { return s ? new Date(s).toLocaleDateString("id-ID",{day:"numeric",month:"short",year:"numeric"}) : ""; }
 function daysSince(iso) { if (!iso) return null; const d=Math.floor((Date.now()-new Date(iso).getTime())/86400000); return d; }
@@ -46,6 +88,9 @@ function SearchModal({ open, date, onClose, onAdded }) {
       const { data } = await api.post("/linkedin/search-companies", { keyword: kw, country, limit: 20 });
       setResults(data.results || []);
       if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain.");
+      else if (data.stale) toast.warning(`${data.count} hasil dari cache lama (engine search lagi rate-limit, coba lagi nanti)`);
+      else if (data.cached) toast.success(`${data.count} hasil ⚡ dari cache (24 jam)`);
+      else toast.success(`${data.count} hasil baru`);
     } catch (err) {
       if (err?.response?.status === 404) {
         toast.warning("Endpoint search belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
@@ -70,34 +115,45 @@ function SearchModal({ open, date, onClose, onAdded }) {
   };
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[88vh] flex flex-col" onClick={(e)=>e.stopPropagation()} data-testid="li-search-modal">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
-          <h3 className="font-bold flex items-center gap-2"><MagnifyingGlass size={18} weight="bold" className="text-[#0A66C2]" /> Search Companies (Aggregator)</h3>
+    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-2 sm:p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[92vh] sm:max-h-[88vh] flex flex-col" onClick={(e)=>e.stopPropagation()} data-testid="li-search-modal">
+        <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-b border-slate-200">
+          <h3 className="font-bold flex items-center gap-2 text-sm sm:text-base"><MagnifyingGlass size={18} weight="bold" className="text-[#0A66C2]" /> Search Companies (Aggregator)</h3>
           <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={16} /></button>
         </div>
-        <div className="p-4 flex gap-2 items-end border-b border-slate-200">
-          <div className="flex-1">
-            <label className="text-[10px] uppercase font-bold text-slate-500">Keyword</label>
-            <input value={kw} onChange={(e)=>setKw(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&doSearch()}
-              placeholder="e.g. Hotel Bali, Corporate Jakarta, Event Organizer"
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#0A66C2]"
-              data-testid="li-search-keyword"/>
+        <div className="p-3 sm:p-4 border-b border-slate-200">
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:items-end">
+            <div className="sm:col-span-6">
+              <label className="text-[10px] uppercase font-bold text-slate-500">Keyword <span className="text-red-500">*</span></label>
+              <input value={kw} onChange={(e)=>setKw(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&doSearch()}
+                placeholder="e.g. Hotel Bali, Corporate Jakarta, Event Organizer"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#0A66C2]"
+                data-testid="li-search-keyword" autoFocus/>
+            </div>
+            <div className="sm:col-span-4">
+              <label className="text-[10px] uppercase font-bold text-slate-500">Country</label>
+              <select value={country} onChange={(e)=>setCountry(e.target.value)}
+                className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-[#0A66C2] bg-white"
+                data-testid="li-search-country">
+                {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <PrimaryButton onClick={doSearch} disabled={loading || !kw.trim()} data-testid="li-search-submit" className="w-full !justify-center">
+                {loading ? <ArrowsClockwise size={14} weight="bold" className="animate-spin"/> : <MagnifyingGlass size={14} weight="bold"/>} Search
+              </PrimaryButton>
+            </div>
           </div>
-          <div className="w-32">
-            <label className="text-[10px] uppercase font-bold text-slate-500">Country</label>
-            <input value={country} onChange={(e)=>setCountry(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#0A66C2]"/>
-          </div>
-          <PrimaryButton onClick={doSearch} disabled={loading || !kw.trim()} data-testid="li-search-submit">
-            {loading ? <ArrowsClockwise size={14} weight="bold" className="animate-spin"/> : <MagnifyingGlass size={14} weight="bold"/>} Search
-          </PrimaryButton>
+          {!kw.trim() && (
+            <p className="text-[11px] text-slate-500 mt-2">💡 Isi <b>Keyword</b> dulu (industry/jenis bisnis). Country boleh <b>Worldwide</b> kalau cari di semua negara.</p>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {loading && <div className="text-center text-sm text-slate-500 py-10">Mencari…</div>}
           {!loading && results.length === 0 && (
-            <div className="text-center text-xs text-slate-400 py-10">
-              Tip: keyword spesifik = hasil lebih relevan. Contoh: &quot;Hotel Bintang 4 Bali&quot;, &quot;Travel Agency Singapore&quot;.
+            <div className="text-center text-xs text-slate-400 py-10 px-4">
+              Tip: keyword spesifik = hasil lebih relevan.<br/>
+              Contoh: &quot;Hotel Bintang 4 Bali&quot;, &quot;Travel Agency Singapore&quot;, &quot;Manufacturing Surabaya&quot;.
             </div>
           )}
           {results.map((r) => (
@@ -151,7 +207,6 @@ function AddModal({ open, date, onClose, onCreated }) {
             { k: "website", l: "Website" },
             { k: "company_linkedin_url", l: "Company LinkedIn URL" },
             { k: "industry", l: "Industry" },
-            { k: "country", l: "Country" },
             { k: "city", l: "City" },
           ].map((f) => (
             <div key={f.k}>
@@ -163,6 +218,19 @@ function AddModal({ open, date, onClose, onCreated }) {
               />
             </div>
           ))}
+          <div>
+            <label className="text-xs text-slate-600 font-semibold">Country</label>
+            <select
+              value={form.country || ""}
+              onChange={(e) => setForm({ ...form, country: e.target.value })}
+              className="mt-0.5 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#0A66C2] bg-white"
+              data-testid="li-input-country"
+            >
+              {COUNTRIES.filter(c => c.code).map(c => (
+                <option key={c.code} value={c.code}>{c.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200 bg-slate-50">
           <GhostButton onClick={onClose}>Batal</GhostButton>

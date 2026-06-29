@@ -64,26 +64,97 @@ async def search_companies(
     country: Optional[str] = None,
     limit: int = 20,
 ) -> List[dict]:
-    """Search via DDG → fallback Bing. Returns list of company candidates."""
+    """Search via Yahoo → fallback DDG → Bing. Returns list of company candidates."""
     if not keyword or not keyword.strip():
         return []
     query = keyword.strip()
     if country and country.lower() not in query.lower():
         query = f"{query} {country}"
 
-    # Try DuckDuckGo first
+    # Try Yahoo first (most reliable from VPS/cloud IPs — DDG/Bing often blocked)
+    try:
+        results = await _search_yahoo(query, limit)
+        if results:
+            return [{**r, "country": country or None} for r in results]
+    except Exception:
+        pass
+    # Fallback to DuckDuckGo
     try:
         results = await _search_ddg(query, limit)
         if results:
             return [{**r, "country": country or None} for r in results]
     except Exception:
         pass
-    # Fallback to Bing
+    # Final fallback: Bing
     try:
         results = await _search_bing(query, limit)
         return [{**r, "country": country or None} for r in results]
     except Exception as e:
         raise RuntimeError(f"All search engines failed: {e}")
+
+
+async def _search_yahoo(query: str, limit: int) -> List[dict]:
+    """Yahoo Search HTML scraping — most reliable from cloud IPs."""
+    url = "https://search.yahoo.com/search"
+    params = {"p": query, "n": str(limit * 3)}
+    # Rotate UA to reduce rate-limiting
+    import random
+    uas = [
+        "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    ]
+    headers = {
+        "User-Agent": random.choice(uas),
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as cx:
+        r = await cx.get(url, params=params, headers=headers)
+    if r.status_code != 200:
+        raise RuntimeError(f"Yahoo returned {r.status_code}")
+    soup = BeautifulSoup(r.text, "lxml")
+    results = []
+    seen_domains = set()
+    for div in soup.select("div.algo")[: limit * 3]:
+        a = div.find("a", href=True)
+        if not a:
+            continue
+        raw_href = a.get("href", "")
+        # Yahoo wraps real URL in /RU=<encoded-url>/RK=…
+        m = re.search(r"/RU=([^/]+)", raw_href)
+        href = unquote(m.group(1)) if m else raw_href
+        if not href.startswith("http"):
+            continue
+        # Yahoo title format examples (messy):
+        #   "domain.comhttps://en.wikipedia.org › wiki › X<ACTUAL TITLE>"
+        #   "Ballco Manufacturing Co Inc."
+        title_raw = (a.get_text() or "").strip()
+        # Strip "<domain.tld>https://<url>"  prefix
+        title = re.sub(r"^\s*[\w\.-]+\.[a-z]{2,}\s*https?://\S+\s*", "", title_raw)
+        # Strip breadcrumb arrows " › path › path"
+        title = re.sub(r"\s*›[^›]*?(?=\s[A-Z])", "", title)
+        title = re.sub(r"\s*›\s*\S+\s*", " ", title).strip()
+        # Strip leading punctuation/dashes
+        title = re.sub(r"^[\-\|–—:\s]+", "", title).strip()
+        sn = div.select_one("p, .compText, span.fc-9th")
+        snippet = ((sn.get_text() if sn else "") or "").strip()[:300]
+        domain = _domain(href)
+        if not _is_company_site(href, domain) or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        # Final company name cleanup: prefer text before pipe/dash separator
+        company_name = re.sub(r"\s*[\|\-–—]\s*.*$", "", title).strip()
+        # Fallback: capitalize domain
+        if not company_name or len(company_name) < 3:
+            company_name = domain.split(".")[0].title()
+        if len(company_name) > 80:
+            company_name = company_name[:80].rstrip()
+        results.append({"company_name": company_name, "website": href, "domain": domain, "snippet": snippet})
+        if len(results) >= limit:
+            break
+    return results
 
 
 async def _search_ddg(query: str, limit: int) -> List[dict]:
