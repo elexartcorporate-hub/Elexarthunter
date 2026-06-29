@@ -460,6 +460,7 @@ export default function LinkedInProspect() {
   const [dragId, setDragId] = useState(null);
   const [filterStatus, setFilterStatus] = useState("");
   const [filterQ, setFilterQ] = useState("");
+  const [senderCtx, setSenderCtx] = useState(null); // {profile_name, sub_company_name, ...} or {empty:true}
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -483,7 +484,15 @@ export default function LinkedInProspect() {
     } catch (_) { /* ignore */ }
   };
 
+  const loadSenderContext = async () => {
+    try {
+      const { data } = await api.get(`/linkedin/sender-context`);
+      setSenderCtx(data || { empty: true });
+    } catch (_) { setSenderCtx(null); /* endpoint missing on old backend */ }
+  };
+
   useEffect(() => { loadDashboard(); loadKpi(); loadReminders(); /* eslint-disable-next-line */ }, [date]);
+  useEffect(() => { loadSenderContext(); }, []);
 
   // Drag-and-drop kanban: handle drop on a stage column
   const onDropStage = async (newStatus) => {
@@ -550,6 +559,32 @@ export default function LinkedInProspect() {
           </div>
         }
       />
+
+      {/* Sender identity badge — derived from sub_company linkedin_settings */}
+      {senderCtx && !senderCtx.empty && (senderCtx.profile_name || senderCtx.profile_url) && (
+        <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0A66C2]/5 border border-[#0A66C2]/20 text-[12px]" data-testid="li-sender-badge">
+          <LinkedinLogo size={14} weight="fill" className="text-[#0A66C2]" />
+          <span className="text-slate-700">Sending as</span>
+          <span className="font-semibold text-[#0A66C2]" data-testid="li-sender-name">{senderCtx.profile_name || senderCtx.profile_url}</span>
+          {senderCtx.sub_company_name && (
+            <span className="text-slate-500">· {senderCtx.sub_company_name}</span>
+          )}
+          {senderCtx.profile_url && (
+            <a href={senderCtx.profile_url} target="_blank" rel="noreferrer" className="ml-1 text-[#0A66C2] hover:underline inline-flex items-center gap-0.5">
+              <ArrowSquareOut size={11} weight="bold" />
+            </a>
+          )}
+        </div>
+      )}
+      {senderCtx?.empty && (user?.role === "Owner" || user?.role === "Admin") && (
+        <div className="mb-3 flex items-center justify-between px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-[12px]" data-testid="li-sender-missing">
+          <div className="flex items-center gap-2 text-amber-800">
+            <Warning size={14} weight="fill" />
+            <span>LinkedIn identity belum diset di Company Profile — AI message akan generik.</span>
+          </div>
+          <a href="/settings" className="text-amber-700 font-semibold hover:underline">Set di Settings → Companies →</a>
+        </div>
+      )}
 
       {/* Daily progress + KPI */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">

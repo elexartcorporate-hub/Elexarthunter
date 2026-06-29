@@ -5,6 +5,7 @@ import { PageHeader, Card, TermInput, TermSelect, TermTextarea, PrimaryButton, G
 import {
   Buildings, UsersThree, ShieldCheck, Tag, MapPin, Key,
   Plus, Trash, PencilSimple, X, Lock, EnvelopeSimple, CalendarBlank, Target,
+  LinkedinLogo,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -298,12 +299,36 @@ function CompaniesSection() {
   const [list, setList] = useState([]);
   const [editing, setEditing] = useState(null); // null | "new" | id
   const [form, setForm] = useState({ name: "", legal_name: "", phone: "", email_provider: "other", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true, imap_host: "", imap_port: 993, imap_ssl: true, imap_user: "", imap_password: "" });
+  const [linkedin, setLinkedin] = useState({ profile_url: "", profile_name: "", signature: "", default_connection_template: "" });
+  const [linkedinDirty, setLinkedinDirty] = useState(false);
+  const [linkedinAvailable, setLinkedinAvailable] = useState(true); // endpoint missing on old VPS backends
 
   const load = async () => { try { const { data } = await api.get("/sub-companies"); setList(data); } catch (e) { toast.error(formatApiError(e)); } };
   useEffect(() => { load(); }, []);
 
-  const startNew = () => { setForm({ name: "", legal_name: "", phone: "", email_provider: "other", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true, imap_host: "", imap_port: 993, imap_ssl: true, imap_user: "", imap_password: "" }); setEditing("new"); };
-  const startEdit = (sc) => { setForm({ ...sc, email_provider: sc.email_provider || "other", smtp_password: "", imap_password: "" }); setEditing(sc.id); };
+  const blankLinkedin = () => ({ profile_url: "", profile_name: "", signature: "", default_connection_template: "" });
+
+  const startNew = () => { setForm({ name: "", legal_name: "", phone: "", email_provider: "other", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true, imap_host: "", imap_port: 993, imap_ssl: true, imap_user: "", imap_password: "" }); setLinkedin(blankLinkedin()); setLinkedinDirty(false); setEditing("new"); };
+  const startEdit = async (sc) => {
+    setForm({ ...sc, email_provider: sc.email_provider || "other", smtp_password: "", imap_password: "" });
+    setLinkedin(blankLinkedin());
+    setLinkedinDirty(false);
+    setEditing(sc.id);
+    // Try fetching LinkedIn settings — gracefully degrade if endpoint missing on old backend
+    try {
+      const { data } = await api.get(`/companies/${sc.id}/linkedin-settings`);
+      const ls = data?.linkedin_settings || {};
+      setLinkedin({
+        profile_url: ls.profile_url || "",
+        profile_name: ls.profile_name || "",
+        signature: ls.signature || "",
+        default_connection_template: ls.default_connection_template || "",
+      });
+      setLinkedinAvailable(true);
+    } catch (err) {
+      if (err?.response?.status === 404) setLinkedinAvailable(false);
+    }
+  };
 
   const applyProvider = (provider) => {
     const presets = {
@@ -336,10 +361,26 @@ function CompaniesSection() {
     if (!form.name.trim()) return toast.error("Company name required");
     try {
       const payload = { ...form, smtp_port: parseInt(form.smtp_port) || 587 };
-      if (editing === "new") await api.post("/sub-companies", payload);
-      else {
+      let scId = editing;
+      if (editing === "new") {
+        const { data } = await api.post("/sub-companies", payload);
+        scId = data?.id || null;
+      } else {
         if (!payload.smtp_password) delete payload.smtp_password;
         await api.patch(`/sub-companies/${editing}`, payload);
+      }
+      // Save LinkedIn settings if dirty and we have an id
+      if (linkedinDirty && scId && linkedinAvailable) {
+        try {
+          await api.patch(`/companies/${scId}/linkedin-settings`, linkedin);
+        } catch (err) {
+          if (err?.response?.status === 404) {
+            setLinkedinAvailable(false);
+            toast.warning("LinkedIn settings tidak tersimpan — backend VPS belum di-update. Jalankan: bash wa-setup.sh");
+          } else {
+            toast.error(formatApiError(err));
+          }
+        }
       }
       toast.success("Saved"); setEditing(null); load();
     } catch (e) { toast.error(formatApiError(e)); }
@@ -379,6 +420,9 @@ function CompaniesSection() {
                 <div className="mt-3 flex flex-wrap gap-2 text-xs">
                   {sc.phone && <Badge tone="neutral">📞 {sc.phone}</Badge>}
                   {sc.smtp_host && <Badge tone="info">SMTP configured</Badge>}
+                  {sc.linkedin_settings?.profile_name && (
+                    <Badge tone="info"><LinkedinLogo size={10} weight="fill" className="inline mr-0.5" />{sc.linkedin_settings.profile_name}</Badge>
+                  )}
                   <Badge tone="success">{sc.user_count || 0} users</Badge>
                 </div>
               </div>
@@ -470,6 +514,63 @@ function CompaniesSection() {
                   <TermInput label="IMAP Password" type="password" placeholder={editing === "new" ? "(same as SMTP)" : "(leave empty)"} value={form.imap_password || ""} onChange={(e) => setForm({ ...form, imap_password: e.target.value })} />
                 </div>
               </div>
+            </div>
+
+            {/* LinkedIn Identity section */}
+            <div className="border-t border-slate-200 pt-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                  <LinkedinLogo size={14} weight="fill" className="text-[#0A66C2]" /> LinkedIn Identity
+                </div>
+                <span className="text-[11px] text-slate-500">Dipakai AI saat generate connection note</span>
+              </div>
+              {editing === "new" ? (
+                <div className="text-[12px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                  Save the company first, then edit it again to configure LinkedIn identity.
+                </div>
+              ) : !linkedinAvailable ? (
+                <div className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  ⚠️ LinkedIn settings endpoint belum tersedia di backend VPS Anda. Jalankan <code>bash wa-setup.sh</code> untuk pull versi terbaru.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <TermInput
+                      label="LinkedIn Profile URL"
+                      placeholder="https://www.linkedin.com/in/your-handle"
+                      value={linkedin.profile_url || ""}
+                      onChange={(e) => { setLinkedin({ ...linkedin, profile_url: e.target.value }); setLinkedinDirty(true); }}
+                      data-testid="li-profile-url"
+                    />
+                    <TermInput
+                      label="Profile Name (sender)"
+                      placeholder="e.g. Andi · Sales Lead at Acme"
+                      value={linkedin.profile_name || ""}
+                      onChange={(e) => { setLinkedin({ ...linkedin, profile_name: e.target.value }); setLinkedinDirty(true); }}
+                      data-testid="li-profile-name"
+                    />
+                  </div>
+                  <TermTextarea
+                    label="Signature / Closing"
+                    placeholder="— Andi, Sales at Acme · acme.com"
+                    rows={2}
+                    value={linkedin.signature || ""}
+                    onChange={(e) => { setLinkedin({ ...linkedin, signature: e.target.value }); setLinkedinDirty(true); }}
+                    data-testid="li-signature"
+                  />
+                  <TermTextarea
+                    label="Default Connection Template (opsional, AI akan tetap personalisasi)"
+                    placeholder="Hi {{first_name}}, saya {{sender}} dari {{company}}. Saya tertarik dengan {{target_company}}…"
+                    rows={3}
+                    value={linkedin.default_connection_template || ""}
+                    onChange={(e) => { setLinkedin({ ...linkedin, default_connection_template: e.target.value }); setLinkedinDirty(true); }}
+                    data-testid="li-default-template"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    User yang ditugaskan ke company ini akan memakai identitas LinkedIn di atas saat AI generate connection note (Gemini Flash 3).
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </ModalShell>
