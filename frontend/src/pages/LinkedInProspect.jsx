@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { PageHeader, Card, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
+import LinkedInCalendar from "./LinkedInCalendar";
 import {
   LinkedinLogo, Plus, Trash, ArrowsClockwise, X, MagnifyingGlass, Buildings,
   User, PaperPlaneTilt, Copy, ArrowSquareOut, Sparkle, Target, ListBullets, Kanban,
   PencilSimple, ChartLine, CheckCircle, Clock, Warning, Table as TableIcon, Bell,
+  CalendarCheck, Crosshair, UsersFour, Lock,
 } from "@phosphor-icons/react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { toast } from "sonner";
@@ -712,6 +714,7 @@ export default function LinkedInProspect() {
   const [filterQ, setFilterQ] = useState("");
   const [senderCtx, setSenderCtx] = useState(null); // {profile_name, sub_company_name, ...} or {empty:true}
   const [backendOutdated, setBackendOutdated] = useState(false);
+  const [tab, setTab] = useState("add"); // 'jadwal' | 'add' | 'connect' | 'analitik' | 'list' | 'rejected'
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -796,6 +799,17 @@ export default function LinkedInProspect() {
     return g;
   }, [filteredProspects]);
 
+  const completed = dashboard?.completed ?? 0;
+  const dailyTarget = dashboard?.target ?? 15;
+  const connectUnlocked = completed >= dailyTarget && dailyTarget > 0;
+  const todayProspects = prospects;
+  const connectQueue = useMemo(() => {
+    // Today's prospects ready to "be connected" — those with messages generated or with DM added
+    return todayProspects.filter((p) =>
+      ["dm_added", "ready", "researched"].includes(p.status) ||
+      (p.messages?.connection_note && p.status !== "connect_sent" && p.status !== "accepted")
+    );
+  }, [todayProspects]);
   const totalReminders = reminders.day3.length + reminders.day7.length + reminders.day14.length;
 
   return (
@@ -807,7 +821,7 @@ export default function LinkedInProspect() {
           <div className="flex items-center gap-2 flex-wrap">
             <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" data-testid="li-date-picker" />
             {totalReminders > 0 && (
-              <GhostButton onClick={()=>setView("kanban")} className="!text-amber-700 !border-amber-300" data-testid="li-reminders-btn">
+              <GhostButton onClick={()=>{ setTab("add"); setView("kanban"); }} className="!text-amber-700 !border-amber-300" data-testid="li-reminders-btn">
                 <Bell size={14} weight="fill"/> {totalReminders} reminders
               </GhostButton>
             )}
@@ -817,6 +831,56 @@ export default function LinkedInProspect() {
           </div>
         }
       />
+
+      {/* Step tabs */}
+      <div className="flex flex-wrap border border-slate-200 rounded-lg overflow-hidden w-fit bg-white mb-6 shadow-sm">
+        <LiTabBtn active={tab === "jadwal"} onClick={() => setTab("jadwal")} icon={CalendarCheck} label="1 · Jadwal" testid="li-tab-jadwal" />
+        <LiTabBtn active={tab === "add"} onClick={() => setTab("add")} icon={Crosshair} label={`2 · Add Prospect (${completed}/${dailyTarget})`} testid="li-tab-add" />
+        <LiTabBtn
+          active={tab === "connect"}
+          onClick={() => connectUnlocked ? setTab("connect") : toast.error("Selesaikan target dulu di tab Add Prospect")}
+          icon={connectUnlocked ? PaperPlaneTilt : Lock}
+          label="3 · Connect"
+          testid="li-tab-connect"
+          disabled={!connectUnlocked}
+        />
+        <LiTabBtn active={tab === "analitik"} onClick={() => setTab("analitik")} icon={ChartLine} label="4 · Analitik" testid="li-tab-analitik" />
+        <LiTabBtn active={tab === "list"} onClick={() => setTab("list")} icon={UsersFour} label="Prospect List" testid="li-tab-list" />
+      </div>
+
+      {/* Tab: JADWAL (Calendar) */}
+      {tab === "jadwal" && (
+        <LinkedInCalendar onPickDate={(d) => { setDate(d); setTab("add"); }} />
+      )}
+
+      {/* Tab: CONNECT (queue of prospects ready to send connect) */}
+      {tab === "connect" && (
+        <ConnectQueue
+          prospects={connectQueue}
+          onPick={(p) => setDetailId(p.id)}
+          onMarkSent={async (p) => {
+            try {
+              await api.patch(`/linkedin/prospects/${p.id}`, { status: "connect_sent", connect_sent_at: new Date().toISOString() });
+              toast.success(`✓ ${p.company_name} marked Connect Sent`);
+              loadDashboard(); loadKpi();
+            } catch (err) { toast.error(formatApiError(err)); }
+          }}
+        />
+      )}
+
+      {/* Tab: ANALITIK (KPI) */}
+      {tab === "analitik" && (
+        <AnalitikPanel kpi={kpi} date={date} />
+      )}
+
+      {/* Tab: PROSPECT LIST (all prospects across dates) */}
+      {tab === "list" && (
+        <AllProspectsList onPick={(p) => setDetailId(p.id)} />
+      )}
+
+      {/* Tab: ADD PROSPECT — original full view */}
+      {tab === "add" && (
+        <>
 
       {/* Backend outdated banner — VPS belum di-update */}
       {backendOutdated && (
@@ -1059,11 +1123,192 @@ export default function LinkedInProspect() {
           </div>
         </div>
       )}
+        </>
+      )}
 
       <SearchModal open={searchOpen} date={date} onClose={()=>setSearchOpen(false)} onAdded={()=>{ loadDashboard(); loadKpi(); }} />
 
       <AddModal open={addOpen} date={date} onClose={()=>setAddOpen(false)} onCreated={()=>{ loadDashboard(); loadKpi(); }} />
       <DetailDrawer open={!!detailId} prospectId={detailId} onClose={()=>setDetailId(null)} onChanged={()=>{ loadDashboard(); loadKpi(); }} />
+    </div>
+  );
+}
+
+/* ────────────── Tab helpers ────────────── */
+function LiTabBtn({ active, onClick, icon: Icon, label, testid, disabled }) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={testid}
+      disabled={disabled}
+      className={`px-4 py-2.5 text-sm font-medium flex items-center gap-2 transition-colors border-r border-slate-200 last:border-r-0 ${
+        active
+          ? "bg-[#0A66C2] text-white"
+          : disabled
+            ? "text-slate-400 cursor-not-allowed bg-slate-50"
+            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+      }`}
+    >
+      <Icon size={14} weight={active ? "fill" : "regular"} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ConnectQueue({ prospects, onPick, onMarkSent }) {
+  if (prospects.length === 0) {
+    return (
+      <Card className="p-8 text-center">
+        <PaperPlaneTilt size={32} className="text-slate-300 mx-auto mb-2"/>
+        <div className="text-sm font-semibold text-slate-700">Tidak ada prospect siap untuk Connect</div>
+        <div className="text-xs text-slate-500 mt-1">
+          Prospect siap connect = punya Decision Maker + Connection Note. Generate dulu di tab Add Prospect → klik detail.
+        </div>
+      </Card>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-slate-500 mb-2">
+        🎯 Target tercapai. Buka tiap prospect → klik <b>Open Company LinkedIn</b> → kirim connect manual → klik <b>Mark Sent</b> di sini.
+      </div>
+      {prospects.map((p) => (
+        <Card key={p.id} className="p-3 hover:shadow-md transition" data-testid={`li-connect-${p.id}`}>
+          <div className="flex items-start gap-3">
+            <LinkedinLogo size={20} weight="fill" className="text-[#0A66C2] mt-0.5 shrink-0"/>
+            <div className="min-w-0 flex-1 cursor-pointer" onClick={() => onPick(p)}>
+              <div className="font-semibold text-slate-900">{p.company_name}</div>
+              <div className="text-xs text-slate-500">
+                {p.decision_maker?.full_name ? `${p.decision_maker.full_name} • ${p.decision_maker.job_title || ""}` : "⚠️ DM belum diisi"}
+              </div>
+              {p.messages?.connection_note && (
+                <div className="text-[11px] text-slate-700 mt-1.5 line-clamp-2 bg-slate-50 px-2 py-1 rounded border border-slate-200">
+                  💬 {p.messages.connection_note}
+                </div>
+              )}
+              {!p.messages?.connection_note && (
+                <div className="text-[11px] text-amber-700 mt-1">⚠️ Connection note belum di-generate</div>
+              )}
+            </div>
+            <div className="flex flex-col gap-1 shrink-0">
+              {p.company_linkedin_url && (
+                <a href={p.company_linkedin_url} target="_blank" rel="noreferrer"
+                  className="text-[10px] inline-flex items-center gap-1 px-2 py-1 rounded bg-[#0A66C2] text-white hover:bg-[#084d92] font-semibold"
+                  data-testid={`li-open-${p.id}`}>
+                  <ArrowSquareOut size={11} weight="bold"/> Open LinkedIn
+                </a>
+              )}
+              <button onClick={() => onMarkSent(p)}
+                className="text-[10px] px-2 py-1 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 font-semibold"
+                data-testid={`li-mark-sent-${p.id}`}>
+                ✓ Mark Sent
+              </button>
+            </div>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function AnalitikPanel({ kpi, date }) {
+  if (!kpi) return <Card className="p-6"><div className="text-sm text-slate-500">Loading KPI…</div></Card>;
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <Card className="p-3"><div className="text-[10px] uppercase font-bold text-slate-500">Total Today</div><div className="text-2xl font-bold text-slate-900">{kpi.total ?? 0}</div></Card>
+        <Card className="p-3"><div className="text-[10px] uppercase font-bold text-slate-500">Connect Sent</div><div className="text-2xl font-bold text-[#0A66C2]">{kpi.connect_sent ?? 0}</div></Card>
+        <Card className="p-3"><div className="text-[10px] uppercase font-bold text-slate-500">Accepted</div><div className="text-2xl font-bold text-emerald-600">{kpi.accepted ?? 0}</div></Card>
+        <Card className="p-3"><div className="text-[10px] uppercase font-bold text-slate-500">Won</div><div className="text-2xl font-bold text-emerald-700">{kpi.won ?? 0}</div></Card>
+        <Card className="p-3"><div className="text-[10px] uppercase font-bold text-slate-500">Acceptance Rate</div><div className="text-2xl font-bold text-slate-900">{kpi.rates?.acceptance_rate ?? 0}%</div></Card>
+      </div>
+      {kpi.total > 0 && (
+        <Card className="p-3">
+          <div className="text-[10px] uppercase font-bold text-slate-500 mb-2 flex items-center gap-1">
+            <ChartLine size={11} weight="bold"/> Pipeline Distribution (since {date})
+          </div>
+          <div style={{ width: "100%", height: 280 }}>
+            <ResponsiveContainer>
+              <BarChart data={PIPELINE.map((s) => ({ name: s.label, value: kpi.by_status?.[s.key] || 0, key: s.key }))}>
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={70}/>
+                <YAxis tick={{ fontSize: 10 }} allowDecimals={false}/>
+                <Tooltip />
+                <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                  {PIPELINE.map((s, i) => (
+                    <Cell key={i} fill={
+                      s.tone === "success" ? "#10b981" :
+                      s.tone === "danger" ? "#ef4444" :
+                      s.tone === "warning" ? "#f59e0b" :
+                      s.tone === "purple" ? "#8b5cf6" :
+                      s.tone === "info" ? "#0A66C2" : "#94a3b8"
+                    }/>
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function AllProspectsList({ onPick }) {
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState("");
+  const [statusF, setStatusF] = useState("");
+  useEffect(() => {
+    setLoading(true);
+    api.get("/linkedin/prospects").then(({ data }) => setList(data || []))
+      .catch(() => {}).finally(() => setLoading(false));
+  }, []);
+  const filtered = list.filter((p) => {
+    if (statusF && p.status !== statusF) return false;
+    if (q) {
+      const qq = q.toLowerCase();
+      return (p.company_name || "").toLowerCase().includes(qq)
+          || (p.industry || "").toLowerCase().includes(qq)
+          || (p.decision_maker?.full_name || "").toLowerCase().includes(qq);
+    }
+    return true;
+  });
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <input placeholder="🔍 Search…" value={q} onChange={(e) => setQ(e.target.value)}
+          className="border border-slate-200 rounded-lg px-2 py-1 text-sm w-56" data-testid="li-all-filter-q"/>
+        <select value={statusF} onChange={(e) => setStatusF(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1 text-sm">
+          <option value="">All stages</option>
+          {PIPELINE.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
+        <span className="text-xs text-slate-500 ml-auto">{filtered.length} of {list.length} prospects</span>
+      </div>
+      {loading ? <Card className="p-6 text-center text-sm text-slate-500">Loading…</Card> :
+        filtered.length === 0 ? <EmptyState icon={LinkedinLogo} title="Belum ada prospect" description="Mulai dari tab Add Prospect → Search"/> :
+        <Card className="!p-0 overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50 border-b border-slate-200">
+              <tr>{["Date","Company","DM","Industry","City","Status","Updated"].map((h) => (
+                <th key={h} className="text-left px-3 py-2 font-bold text-slate-600 uppercase text-[10px]">{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {filtered.map((p) => (
+                <tr key={p.id} onClick={() => onPick(p)} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer" data-testid={`li-all-row-${p.id}`}>
+                  <td className="px-3 py-2 font-mono text-[10px] text-slate-500">{p.date}</td>
+                  <td className="px-3 py-2 font-semibold text-slate-900">{p.company_name}</td>
+                  <td className="px-3 py-2">{p.decision_maker?.full_name || "—"}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.industry || "—"}</td>
+                  <td className="px-3 py-2 text-slate-600">{p.city || "—"}</td>
+                  <td className="px-3 py-2"><Badge tone={stageMap[p.status]?.tone || "neutral"} className="!text-[10px]">{stageMap[p.status]?.label || p.status}</Badge></td>
+                  <td className="px-3 py-2 text-slate-500 text-[10px]">{p.updated_at ? new Date(p.updated_at).toLocaleString("id-ID", {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      }
     </div>
   );
 }
