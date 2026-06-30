@@ -10,11 +10,19 @@ import {
 import { toast } from "sonner";
 
 // ─── Helpers ───
+function formatPhone(jid) {
+  if (!jid) return "";
+  if (jid.includes("@g.us")) return "";
+  const num = jid.split("@")[0].split(":")[0]; // strip device part :12
+  return num.startsWith("+") ? num : "+" + num;
+}
 function jidName(jid, fallback) {
+  // For groups: use saved group name
   if (!jid) return fallback || "Unknown";
   if (jid.includes("@g.us")) return fallback || "Group";
-  const num = jid.split("@")[0];
-  return fallback || (num.startsWith("+") ? num : "+" + num);
+  // For private chats: ALWAYS show the actual phone number — never alias/push name.
+  // Push name (`fallback` from wa_chats.name) is unreliable (set by OTHER user, can be anything).
+  return formatPhone(jid);
 }
 
 function fmtTime(ts) {
@@ -554,7 +562,7 @@ sudo supervisorctl restart hunter-backend`}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline gap-2">
-                        <div className="text-sm font-semibold text-slate-900 truncate flex-1">
+                        <div className="text-sm font-semibold text-slate-900 truncate flex-1 font-mono" data-testid={`wa-chat-name-${c.jid}`}>
                           {jidName(c.jid, c.name)}
                           {(c.is_group || c.jid?.includes("@g.us")) && c.group_size > 0 && (
                             <span className="ml-1 text-[10px] text-emerald-600 font-normal">({c.group_size})</span>
@@ -562,6 +570,12 @@ sudo supervisorctl restart hunter-backend`}
                         </div>
                         <span className="text-[10px] text-slate-500 shrink-0">{fmtTime(c.last_message_ts)}</span>
                       </div>
+                      {/* Show push-name / alias as secondary, smaller, italic — never primary */}
+                      {!c.is_group && !c.jid?.includes("@g.us") && c.name && (
+                        <div className="text-[10px] text-slate-500 italic truncate -mt-0.5" data-testid={`wa-chat-alias-${c.jid}`}>
+                          ~{c.name}
+                        </div>
+                      )}
                       <div className="flex items-center gap-2">
                         <div className="text-xs text-slate-600 truncate flex-1">
                           {c.last_from_me ? <span className="text-slate-400">✓ </span> : null}
@@ -595,7 +609,16 @@ sudo supervisorctl restart hunter-backend`}
                   <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center">
                     <User size={14} weight="bold" />
                   </div>
-                  <div className="font-semibold text-slate-900 flex-1 truncate">{jidName(activeJid)}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-slate-900 truncate font-mono" data-testid="wa-active-header">{jidName(activeJid)}</div>
+                    {(() => {
+                      const c = chats.find((x) => x.jid === activeJid);
+                      const alias = c?.name;
+                      const isGroup = c?.is_group || activeJid?.includes("@g.us");
+                      if (!alias || isGroup) return null;
+                      return <div className="text-[10px] text-slate-500 italic truncate -mt-0.5">~{alias}</div>;
+                    })()}
+                  </div>
                   {isOwnerView && <Badge tone="warning" className="!text-[9px]">View-only</Badge>}
                 </div>
                 <div className="flex-1 overflow-y-auto p-4 bg-slate-50/50 space-y-2">

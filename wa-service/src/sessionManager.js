@@ -238,13 +238,22 @@ async function connectSession(db, sessionId) {
   sock.ev.on("contacts.upsert", async (contacts) => {
     for (const c of contacts) {
       if (!c.id) continue;
+      // Distinguish: saved name (from user's contact list) vs push name (alias set by other user)
+      // Address-book/saved name is what user explicitly saved → reliable.
+      // Push name (`notify`) is what the OTHER person set as their own display → unreliable/alias.
+      const savedName = c.name || c.verifiedName || null;       // reliable
+      const pushName  = c.notify || null;                        // alias — keep separate
+      const displayName = savedName || pushName || null;         // best-effort for legacy field
       await db.collection("wa_contacts").updateOne(
         { session_id: sessionId, jid: c.id },
         {
           $set: {
             session_id: sessionId,
             jid: c.id,
-            name: c.notify || c.name || c.verifiedName || null,
+            name: displayName,
+            saved_name: savedName,
+            push_name: pushName,
+            verified_name: c.verifiedName || null,
             updated_at: new Date(),
           },
         },
