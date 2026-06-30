@@ -398,6 +398,8 @@ export default function WhatsAppPage() {
   const [teamMembers, setTeamMembers] = useState([]);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteAccount, setDeleteAccount] = useState(null);
+  // Backend feature support — detect if VPS backend has the new PATCH/assign endpoints
+  const [backendSupport, setBackendSupport] = useState({ patch: null, assign: null });
   const messagesEnd = useRef(null);
   const lastChatSyncRef = useRef(null);
   const lastMsgSyncRef = useRef({});
@@ -432,6 +434,10 @@ export default function WhatsAppPage() {
         setActiveJid("");
         setMessages([]);
       }
+      // Probe backend support for new endpoints (only once we have a sample sid)
+      if (data.length > 0 && backendSupport.patch === null) {
+        detectBackendSupport(data[0].session_id);
+      }
     } catch (err) {
       if (err?.response?.status === 404) {
         toast.error(
@@ -463,6 +469,28 @@ export default function WhatsAppPage() {
         setHealth({ backend: "outdated", wa_service: "unknown", wa_service_detail: "Backend belum di-deploy ulang setelah pull terbaru. Jalankan `deploy` di VPS." });
       } else {
         setHealth({ backend: "error", wa_service: "unknown", wa_service_detail: formatApiError(err) });
+      }
+    }
+  };
+
+  // Detect if backend supports the new endpoints (PATCH account + assign chat).
+  // We do an OPTIONS-like probe by attempting a no-op PATCH with empty body to a fake sid
+  // — but the safer way is to look at /api/openapi.json or hit a sentinel endpoint.
+  // Simplest reliable approach: call PATCH with no body to a real account and see what status returns.
+  // 405 = endpoint missing. 422/400 = endpoint exists. 404 = sid not found.
+  const detectBackendSupport = async (sampleSid) => {
+    if (!sampleSid) return;
+    try {
+      // Send empty PATCH — if endpoint exists, backend returns 200/422; if not, 405.
+      await api.patch(`/whatsapp/accounts/${sampleSid}`, {});
+      setBackendSupport((s) => ({ ...s, patch: true }));
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 405 || status === 404) {
+        setBackendSupport((s) => ({ ...s, patch: false }));
+      } else {
+        // 400/422/403 means endpoint exists but request was invalid → supported
+        setBackendSupport((s) => ({ ...s, patch: true }));
       }
     }
   };
@@ -633,15 +661,22 @@ export default function WhatsAppPage() {
     try {
       await api.delete(`/whatsapp/accounts/${acc.session_id}`);
       toast.success("Akun WA dihapus");
+      // Optimistic removal: drop from list immediately so user sees instant feedback,
+      // even if loadAccounts is slow or polling hasn't refreshed yet.
+      setAccounts((prev) => prev.filter((a) => a.session_id !== acc.session_id));
       if (activeSid === acc.session_id) {
         setActiveSid("");
         setActiveJid("");
         setMessages([]);
+        setChats([]);
       }
-      await loadAccounts();
+      // Fetch fresh list (in case of any cleanup discrepancies)
+      setTimeout(() => loadAccounts(), 500);
       setDeleteOpen(false);
       setDeleteAccount(null);
-    } catch (err) { toast.error(formatApiError(err)); }
+    } catch (err) {
+      toast.error(formatApiError(err));
+    }
   };
 
   const askDelete = (acc) => {
@@ -764,6 +799,44 @@ export default function WhatsAppPage() {
           </div>
         }
       />
+
+      {backendSupport.patch === false && (
+        <div
+          className="mb-4 rounded-lg border-2 border-amber-300 bg-amber-50 p-4"
+          data-testid="wa-outdated-backend-banner"
+        >
+          <div className="flex items-start gap-3">
+            <Warning size={22} weight="fill" className="text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-amber-900 mb-1">
+                Backend VPS belum mendukung fitur Setting Koneksi & Assign Chat
+              </div>
+              <div className="text-sm text-amber-800 mb-2">
+                Anda sudah deploy frontend baru, tapi process <b>hunter-backend</b> di VPS
+                masih pakai kode lama (belum restart). Endpoint <code className="bg-amber-100 px-1 rounded">PATCH /api/whatsapp/accounts/&#123;sid&#125;</code> belum aktif.
+              </div>
+              <details className="text-xs text-amber-800">
+                <summary className="cursor-pointer font-semibold">📖 Cara fix di VPS (klik untuk expand)</summary>
+                <div className="mt-2 space-y-2 pl-3">
+                  <div className="font-semibold text-amber-900">SSH ke VPS, jalankan SATU perintah ini:</div>
+                  <pre className="bg-slate-900 text-emerald-300 p-3 rounded text-[11px] overflow-x-auto font-mono">
+{`cd /var/www/hunter.elexart.com
+git pull
+sudo supervisorctl restart hunter-backend hunter-wa-service
+# verify:
+curl -X PATCH https://hunter.elexart.com/api/whatsapp/accounts/x \\
+  -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application/json" -d '{}'
+# should return 404 (not 405). 404 = endpoint exists tapi sid salah.`}
+                  </pre>
+                  <div className="text-amber-700 mt-1">
+                    Setelah restart, refresh halaman ini — banner ini akan hilang dan tombol Simpan/Assign akan berfungsi.
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+      )}
 
       {health && (health.wa_service !== "ok" || health.backend !== "ok") && (
         <div
