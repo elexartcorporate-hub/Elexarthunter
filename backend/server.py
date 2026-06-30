@@ -5220,9 +5220,22 @@ async def wa_delete_account(sid: str, user: dict = Depends(get_current_user)):
     # Only account owner or Owner can delete (not team-inbox users)
     if acc["user_id"] != user["id"] and user.get("role") != "Owner":
         raise HTTPException(403, "Hanya Owner atau pemilik akun yang bisa menghapus")
-    # Cleanup assignments first
-    await db.wa_chat_assignments.delete_many({"session_id": sid, "tenant_id": user["tenant_id"]})
-    return await _wa_call("DELETE", f"/sessions/{sid}")
+    tenant_id = user["tenant_id"]
+    # Try to ask wa-service to stop the session (best-effort — don't fail the request
+    # if the sidecar is unreachable or already gone)
+    try:
+        await _wa_call("DELETE", f"/sessions/{sid}")
+    except HTTPException as e:
+        # Log but continue; we'll still purge from local DB so the UI reflects deletion
+        print(f"[wa_delete_account] sidecar DELETE failed for {sid}: {e.detail} — continuing with DB purge")
+    # DEFENSIVE: purge all traces at backend level regardless of wa-service result.
+    # This prevents the "deleted item reappears" bug where a stale wa_accounts row
+    # gets re-listed because the sidecar didn't actually clean it up.
+    await db.wa_chat_assignments.delete_many({"session_id": sid, "tenant_id": tenant_id})
+    await db.wa_accounts.delete_many({"session_id": sid})
+    await db.wa_chats.delete_many({"session_id": sid})
+    await db.wa_messages.delete_many({"session_id": sid})
+    return {"ok": True, "session_id": sid}
 
 
 @api.get("/whatsapp/accounts/{sid}/chats")
