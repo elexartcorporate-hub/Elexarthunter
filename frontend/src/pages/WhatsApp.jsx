@@ -333,16 +333,36 @@ export default function WhatsAppPage() {
 
   const handleSend = async () => {
     if (!draft.trim() || !activeSid || !activeJid) return;
+    const text = draft.trim();
+    // Optimistic UI — show message immediately so user sees it without waiting for poll
+    const optimisticId = `optimistic-${Date.now()}`;
+    const optimisticMsg = {
+      message_id: optimisticId,
+      jid: activeJid,
+      from_me: true,
+      text,
+      timestamp: new Date().toISOString(),
+      _optimistic: true,
+    };
+    setMessages((prev) => [...prev, optimisticMsg]);
+    setDraft("");
     setSending(true);
     try {
       await api.post(
         `/whatsapp/accounts/${activeSid}/chats/${encodeURIComponent(activeJid)}/messages`,
-        { text: draft.trim() }
+        { text }
       );
-      setDraft("");
-      // optimistic refresh
-      setTimeout(() => loadMessages(activeSid, activeJid, { delta: true }), 500);
-    } catch (err) { toast.error(formatApiError(err)); }
+      // Re-fetch full list (will replace optimistic with real persisted message via same JID)
+      setTimeout(() => {
+        // Full reload (not delta) so we drop optimistic & get the real persisted row with proper id
+        loadMessages(activeSid, activeJid);
+      }, 800);
+    } catch (err) {
+      // Roll back optimistic on failure
+      setMessages((prev) => prev.filter((m) => m.message_id !== optimisticId));
+      setDraft(text);
+      toast.error(formatApiError(err));
+    }
     finally { setSending(false); }
   };
 
