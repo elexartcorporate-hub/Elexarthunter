@@ -1253,15 +1253,96 @@ function SimpleListSection({ title, subtitle, path, icon: Icon, placeholder }) {
 function ApiSection() {
   const [settings, setSettings] = useState({});
   const [loading, setLoading] = useState(false);
-  useEffect(() => { api.get("/settings").then((r) => setSettings(r.data)).catch(() => {}); }, []);
-  const save = async () => { setLoading(true); try { const { data } = await api.patch("/settings", { hunter_api_key: settings.hunter_api_key }); setSettings(data); toast.success("Saved"); } catch (e) { toast.error(formatApiError(e)); } finally { setLoading(false); } };
+  const [sdLoading, setSdLoading] = useState(false);
+  const [sdTesting, setSdTesting] = useState(false);
+  const [sdUsage, setSdUsage] = useState(null);
+
+  useEffect(() => {
+    api.get("/settings").then((r) => setSettings(r.data)).catch(() => {});
+    api.get("/scrapingdog/usage").then((r) => setSdUsage(r.data)).catch(() => {});
+  }, []);
+
+  const saveHunter = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.patch("/settings", { hunter_api_key: settings.hunter_api_key });
+      setSettings(data); toast.success("Saved");
+    } catch (e) { toast.error(formatApiError(e)); } finally { setLoading(false); }
+  };
+
+  const saveSd = async () => {
+    setSdLoading(true);
+    try {
+      const { data } = await api.patch("/settings", { scrapingdog_api_key: settings.scrapingdog_api_key });
+      setSettings(data); toast.success("Scrapingdog key saved");
+    } catch (e) { toast.error(formatApiError(e)); } finally { setSdLoading(false); }
+  };
+
+  const testSd = async () => {
+    setSdTesting(true);
+    try {
+      const { data } = await api.post("/scrapingdog/validate", { api_key: settings.scrapingdog_api_key });
+      if (data.ok) toast.success("✓ Scrapingdog API key valid");
+      else toast.error(`Invalid: ${data.reason || data.status_code}`);
+    } catch (e) {
+      if (e?.response?.status === 404) toast.warning("Endpoint validate belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
+      else toast.error(formatApiError(e));
+    } finally { setSdTesting(false); }
+  };
+
   return (
-    <Card className="p-6 max-w-2xl">
-      <h2 className="font-display text-lg font-semibold text-slate-900">Hunter.io API Key</h2>
-      <p className="text-sm text-slate-500 mb-4">Currently using <Badge tone="warning">MOCK</Badge>. Get a real key at <a href="https://hunter.io/api-keys" target="_blank" rel="noreferrer" className="text-indigo-600 underline">hunter.io/api-keys</a>.</p>
-      <TermInput label="API Key" placeholder="(leave empty to use MOCK)" value={settings.hunter_api_key || ""} onChange={(e) => setSettings({ ...settings, hunter_api_key: e.target.value })} />
-      <div className="mt-4"><PrimaryButton onClick={save} disabled={loading}>{loading ? "Saving..." : "Save API Key"}</PrimaryButton></div>
-    </Card>
+    <div className="space-y-6 max-w-2xl">
+      <Card className="p-6">
+        <h2 className="font-display text-lg font-semibold text-slate-900">Hunter.io API Key</h2>
+        <p className="text-sm text-slate-500 mb-4">Currently using <Badge tone="warning">MOCK</Badge>. Get a real key at <a href="https://hunter.io/api-keys" target="_blank" rel="noreferrer" className="text-indigo-600 underline">hunter.io/api-keys</a>.</p>
+        <TermInput label="API Key" placeholder="(leave empty to use MOCK)" value={settings.hunter_api_key || ""} onChange={(e) => setSettings({ ...settings, hunter_api_key: e.target.value })} data-testid="hunter-api-key"/>
+        <div className="mt-4"><PrimaryButton onClick={saveHunter} disabled={loading}>{loading ? "Saving..." : "Save API Key"}</PrimaryButton></div>
+      </Card>
+
+      <Card className="p-6">
+        <div className="flex items-start justify-between mb-1">
+          <div>
+            <h2 className="font-display text-lg font-semibold text-slate-900 flex items-center gap-2">
+              <LinkedinLogo size={18} weight="fill" className="text-purple-600"/> Scrapingdog API Key
+              <Badge tone="info">LinkedIn Search</Badge>
+            </h2>
+            <p className="text-sm text-slate-500 mt-1">
+              Google SERP search + LinkedIn Scraper untuk dapat real company data. Cost: <b>1 credit/search</b>, <b>10 credits/enrichment</b>.<br/>
+              Get key at <a href="https://www.scrapingdog.com" target="_blank" rel="noreferrer" className="text-purple-600 underline">scrapingdog.com</a> (1000 free credits).
+            </p>
+          </div>
+        </div>
+        <TermInput label="API Key" placeholder="Your Scrapingdog API key"
+          value={settings.scrapingdog_api_key || ""}
+          onChange={(e) => setSettings({ ...settings, scrapingdog_api_key: e.target.value })}
+          data-testid="scrapingdog-api-key"/>
+        <div className="mt-4 flex gap-2">
+          <PrimaryButton onClick={saveSd} disabled={sdLoading} data-testid="scrapingdog-save">
+            {sdLoading ? "Saving..." : "Save Key"}
+          </PrimaryButton>
+          <button onClick={testSd} disabled={sdTesting || !settings.scrapingdog_api_key}
+            className="px-3 py-2 text-sm rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50 font-semibold"
+            data-testid="scrapingdog-test">
+            {sdTesting ? "Testing..." : "Test Connection"}
+          </button>
+        </div>
+        {sdUsage && (sdUsage.total_30d > 0) && (
+          <div className="mt-4 pt-4 border-t border-slate-200">
+            <div className="text-xs font-semibold text-slate-600 mb-2">Usage (last 30 days)</div>
+            <div className="flex items-center gap-3 text-xs">
+              <Badge tone="info">Total: {sdUsage.total_30d} credits</Badge>
+              <span className="text-slate-500">≈ ${(sdUsage.total_30d * 0.0002).toFixed(2)} estimated</span>
+            </div>
+            {Object.entries(sdUsage.by_day || {}).slice(0, 7).map(([day, vals]) => (
+              <div key={day} className="text-[11px] text-slate-600 flex justify-between mt-1">
+                <span>{day}</span>
+                <span>🔍 {vals.search || 0} search · 🎯 {vals.enrich || 0} enrich · <b>{vals.total}</b> total</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
   );
 }
 

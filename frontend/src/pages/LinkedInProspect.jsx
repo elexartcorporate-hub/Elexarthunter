@@ -77,36 +77,57 @@ function daysSince(iso) { if (!iso) return null; const d=Math.floor((Date.now()-
 function SearchModal({ open, date, onClose, onAdded }) {
   const [kw, setKw] = useState("");
   const [country, setCountry] = useState("Indonesia");
-  const [linkedinOnly, setLinkedinOnly] = useState(false); // NEW: search hanya LinkedIn URLs
-  const [useSession, setUseSession] = useState(false);     // NEW: pakai LinkedIn cookie kalau ada
+  const [linkedinOnly, setLinkedinOnly] = useState(false);
+  const [useSession, setUseSession] = useState(false);
+  const [useScrapingdog, setUseScrapingdog] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [adding, setAdding] = useState(null);
-  const [resultMode, setResultMode] = useState(null);      // mode dari response
+  const [resultMode, setResultMode] = useState(null);
+  const [enrichingSlug, setEnrichingSlug] = useState(null);
   useEffect(() => { if (open) { setKw(""); setResults([]); setResultMode(null); } }, [open]);
   const doSearch = async () => {
     if (!kw.trim()) return;
     setLoading(true); setResults([]); setResultMode(null);
     try {
       const { data } = await api.post("/linkedin/search-companies", {
-        keyword: kw, country, limit: 20,
-        linkedin_only: linkedinOnly,
-        use_session: useSession && linkedinOnly,
+        keyword: kw, country, limit: 15,
+        linkedin_only: linkedinOnly || useScrapingdog,
+        use_session: useSession && linkedinOnly && !useScrapingdog,
+        use_scrapingdog: useScrapingdog,
       });
       setResults(data.results || []);
       setResultMode(data.mode || null);
-      if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain atau matikan filter LinkedIn-only.");
-      else if (data.stale) toast.warning(`${data.count} hasil dari cache lama (engine search lagi rate-limit, coba lagi nanti)`);
-      else if (data.cached) toast.success(`${data.count} hasil ⚡ dari cache (24 jam)`);
-      else toast.success(`${data.count} hasil baru${data.mode === "li-native" ? " · LinkedIn Native" : ""}`);
+      if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain.");
+      else if (data.stale) toast.warning(`${data.count} hasil dari cache lama`);
+      else if (data.cached) toast.success(`${data.count} hasil ⚡ dari cache`);
+      else toast.success(`${data.count} hasil baru${data.mode === "scrapingdog" ? " · Scrapingdog (Google SERP)" : data.mode === "li-native" ? " · LinkedIn Native" : ""}`);
     } catch (err) {
       if (err?.response?.status === 404) {
         toast.warning("Endpoint search belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
+      } else if (err?.response?.status === 400 && useScrapingdog) {
+        toast.error("Scrapingdog API key belum diset di Settings → API Keys");
       } else {
         toast.error(formatApiError(err));
       }
     }
     finally { setLoading(false); }
+  };
+
+  const enrichOne = async (r) => {
+    if (!r.linkedin_slug) return;
+    setEnrichingSlug(r.linkedin_slug);
+    try {
+      const { data } = await api.post("/linkedin/enrich-scrapingdog", { slug: r.linkedin_slug });
+      if (!data.ok) { toast.error(data.reason || "Enrich gagal"); return; }
+      setResults((prev) => prev.map((x) => x.linkedin_slug === r.linkedin_slug
+        ? { ...x, ...data, enriched: true, industry: data.industry, city: data.headquarters,
+            snippet: data.description || x.snippet, company_size: data.company_size,
+            tagline: data.tagline, employees: data.employees, scrapingdog_enriched: true }
+        : x));
+      toast.success(`✓ ${r.company_name} di-enrich${data.cached ? " (cache)" : " (10 credits)"}`);
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setEnrichingSlug(null); }
   };
   const addOne = async (r) => {
     setAdding(r.domain || r.website);
@@ -117,14 +138,31 @@ function SearchModal({ open, date, onClose, onAdded }) {
         website: r.website,
         country: r.country,
         industry: r.industry || null,
-        city: r.city || null,
+        city: r.city || r.headquarters || null,
       };
-      // If this is a LinkedIn URL, also save as company_linkedin_url
       if (r.website && r.website.includes("linkedin.com/company")) {
         payload.company_linkedin_url = r.website;
       }
+      // Include enriched data if available
+      if (r.scrapingdog_enriched) {
+        payload.tagline = r.tagline;
+        payload.company_size = r.company_size;
+        payload.description = r.description;
+      }
       const { data } = await api.post("/linkedin/prospects", payload);
-      toast.success(`✅ ${r.company_name} ditambahkan`);
+      // Auto-add decision makers from Scrapingdog enrichment
+      if (r.employees && r.employees.length > 0 && data?.id) {
+        for (const emp of r.employees.slice(0, 5).filter(e => e.name)) {
+          try {
+            await api.post(`/linkedin/prospects/${data.id}/decision-makers`, {
+              full_name: emp.name,
+              job_title: emp.title || null,
+              linkedin_url: emp.linkedin_url || null,
+            });
+          } catch (_) { /* ignore individual dm errors */ }
+        }
+      }
+      toast.success(`✅ ${r.company_name} ditambahkan${r.employees?.length ? ` + ${Math.min(r.employees.length, 5)} contacts` : ""}`);
       onAdded?.(data);
       setResults((prev) => prev.filter((x) => (x.domain || x.website) !== (r.domain || r.website)));
     } catch (err) { toast.error(formatApiError(err)); }
@@ -167,27 +205,34 @@ function SearchModal({ open, date, onClose, onAdded }) {
           {/* Mode toggles */}
           <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
             <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={linkedinOnly} onChange={(e) => setLinkedinOnly(e.target.checked)}
-                className="accent-[#0A66C2]" data-testid="li-search-linkedin-only"/>
-              <LinkedinLogo size={12} weight="fill" className="text-[#0A66C2]" />
-              <span className="font-semibold text-slate-700">LinkedIn-only</span>
-              <span className="text-slate-400">(filter URL linkedin.com/company)</span>
+              <input type="checkbox" checked={useScrapingdog} onChange={(e) => { setUseScrapingdog(e.target.checked); if (e.target.checked) setLinkedinOnly(true); }}
+                className="accent-purple-600" data-testid="li-search-use-scrapingdog"/>
+              <span className="font-semibold text-purple-700">🟣 Scrapingdog</span>
+              <span className="text-slate-400">(Google SERP → LinkedIn URLs, 1 credit)</span>
             </label>
-            {linkedinOnly && (
+            {!useScrapingdog && (
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={linkedinOnly} onChange={(e) => setLinkedinOnly(e.target.checked)}
+                  className="accent-[#0A66C2]" data-testid="li-search-linkedin-only"/>
+                <LinkedinLogo size={12} weight="fill" className="text-[#0A66C2]" />
+                <span className="font-semibold text-slate-700">LinkedIn-only (web)</span>
+              </label>
+            )}
+            {linkedinOnly && !useScrapingdog && (
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input type="checkbox" checked={useSession} onChange={(e) => setUseSession(e.target.checked)}
                   className="accent-amber-600" data-testid="li-search-use-session"/>
-                <span className="font-semibold text-amber-700">Native mode</span>
-                <span className="text-slate-400">(pakai cookie LinkedIn — data lebih lengkap)</span>
+                <span className="font-semibold text-amber-700">+ Cookie native</span>
               </label>
             )}
             {resultMode && (
               <span className={`ml-auto text-[10px] font-bold px-2 py-0.5 rounded ${
+                resultMode === "scrapingdog" ? "bg-purple-100 text-purple-800" :
                 resultMode === "li-native" ? "bg-amber-100 text-amber-800" :
                 resultMode === "li-only" ? "bg-blue-100 text-blue-800" :
                 "bg-slate-100 text-slate-600"
               }`}>
-                Mode: {resultMode === "li-native" ? "LinkedIn Native" : resultMode === "li-only" ? "LinkedIn URLs" : "Web Search"}
+                Mode: {resultMode === "scrapingdog" ? "Scrapingdog" : resultMode === "li-native" ? "LinkedIn Native" : resultMode === "li-only" ? "LinkedIn URLs" : "Web Search"}
               </span>
             )}
           </div>
@@ -206,29 +251,49 @@ function SearchModal({ open, date, onClose, onAdded }) {
           {results.map((r) => (
             <Card key={r.domain || r.website} className="p-3 hover:shadow-sm transition" data-testid={`li-search-result-${r.domain || r.website}`}>
               <div className="flex items-start gap-3">
-                {r.linkedin_native ? (
+                {(r.linkedin_native || r.scrapingdog_serp || r.scrapingdog_enriched) ? (
                   <LinkedinLogo size={18} weight="fill" className="text-[#0A66C2] mt-0.5 shrink-0"/>
                 ) : (
                   <Buildings size={18} weight="duotone" className="text-[#0A66C2] mt-0.5 shrink-0"/>
                 )}
                 <div className="min-w-0 flex-1">
-                  <div className="font-semibold text-sm text-slate-900 flex items-center gap-1.5">
+                  <div className="font-semibold text-sm text-slate-900 flex items-center gap-1.5 flex-wrap">
                     {r.company_name}
-                    {r.linkedin_native && <Badge tone="info" className="!text-[9px] !px-1.5 !py-0">LinkedIn</Badge>}
+                    {r.linkedin_native && <Badge tone="info" className="!text-[9px] !px-1.5 !py-0">LinkedIn Native</Badge>}
+                    {r.scrapingdog_serp && !r.scrapingdog_enriched && <Badge tone="info" className="!text-[9px] !px-1.5 !py-0">Scrapingdog</Badge>}
+                    {r.scrapingdog_enriched && <Badge tone="success" className="!text-[9px] !px-1.5 !py-0">✓ Enriched</Badge>}
+                    {r.company_size && <Badge tone="neutral" className="!text-[9px] !px-1.5 !py-0">{r.company_size}</Badge>}
                   </div>
                   <div className="text-[11px] text-slate-500 font-mono truncate">{r.domain}</div>
-                  {(r.industry || r.city) && (
+                  {(r.industry || r.city || r.headquarters) && (
                     <div className="text-[11px] text-slate-600 mt-0.5">
                       {r.industry && <span>{r.industry}</span>}
-                      {r.industry && r.city && <span> · </span>}
-                      {r.city && <span>📍 {r.city}</span>}
+                      {r.industry && (r.city || r.headquarters) && <span> · </span>}
+                      {(r.city || r.headquarters) && <span>📍 {r.city || r.headquarters}</span>}
                     </div>
                   )}
+                  {r.tagline && <div className="text-[11px] italic text-slate-500 mt-0.5">&ldquo;{r.tagline}&rdquo;</div>}
                   {r.snippet && <div className="text-xs text-slate-600 mt-1 line-clamp-2">{r.snippet}</div>}
+                  {r.employees && r.employees.length > 0 && (
+                    <div className="text-[11px] text-slate-600 mt-1.5 flex items-center gap-1">
+                      <span className="font-semibold">{r.employees.length} contacts</span>
+                      <span className="text-slate-400">·</span>
+                      <span className="text-slate-500 truncate">{r.employees.slice(0,2).map(e => e.name).filter(Boolean).join(", ")}{r.employees.length > 2 ? ` +${r.employees.length - 2}` : ""}</span>
+                    </div>
+                  )}
                 </div>
-                <PrimaryButton onClick={()=>addOne(r)} disabled={adding===(r.domain||r.website)} className="!text-xs shrink-0">
-                  <Plus size={12} weight="bold"/> Add to Today
-                </PrimaryButton>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <PrimaryButton onClick={()=>addOne(r)} disabled={adding===(r.domain||r.website)} className="!text-xs">
+                    <Plus size={12} weight="bold"/> Add
+                  </PrimaryButton>
+                  {r.scrapingdog_serp && !r.scrapingdog_enriched && (
+                    <button onClick={() => enrichOne(r)} disabled={enrichingSlug === r.linkedin_slug}
+                      className="text-[10px] px-2 py-1 rounded bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-50 font-semibold"
+                      data-testid={`li-enrich-${r.linkedin_slug}`}>
+                      {enrichingSlug === r.linkedin_slug ? "..." : "Enrich (10c)"}
+                    </button>
+                  )}
+                </div>
               </div>
             </Card>
           ))}

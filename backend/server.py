@@ -498,6 +498,7 @@ class SettingsUpdate(BaseModel):
     smtp_from_email: Optional[EmailStr] = None
     smtp_from_name: Optional[str] = None
     hunter_api_key: Optional[str] = None
+    scrapingdog_api_key: Optional[str] = None  # LinkedIn search via Google SERP
 
 
 # ────────────────────────────────────────────────────────────
@@ -5063,26 +5064,66 @@ class LICompanySearch(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
     linkedin_only: bool = False
     use_session: bool = False  # If True & user has li_session, do native enrichment
+    use_scrapingdog: bool = False  # If True & tenant has scrapingdog key, use Google SERP
 
 
 @api.post("/linkedin/search-companies")
 async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(get_current_user)):
-    """Aggregator: search companies by keyword. Cached in MongoDB for 24 hours
-    to avoid rate-limit issues from search engines & speed up repeat queries.
-    If linkedin_only=True, filters to LinkedIn company URLs only.
-    If use_session=True & user's sub_company has li_session, enriches with native data."""
-    mode = "li-native" if (payload.use_session and payload.linkedin_only) else ("li-only" if payload.linkedin_only else "web")
+    """Aggregator: search companies by keyword. Cached in MongoDB for 24 hours.
+    Modes (priority): scrapingdog → li-native → li-only → web."""
+    if payload.use_scrapingdog:
+        mode = "scrapingdog"
+    elif payload.use_session and payload.linkedin_only:
+        mode = "li-native"
+    elif payload.linkedin_only:
+        mode = "li-only"
+    else:
+        mode = "web"
     cache_key = f"{(payload.keyword or '').strip().lower()}|{(payload.country or '').strip().lower()}|{payload.limit}|{mode}"
     now_dt = datetime.now(timezone.utc)
     cache = await db.li_search_cache.find_one({"key": cache_key}, {"_id": 0})
     if cache:
         try:
             cached_at = datetime.fromisoformat(cache["cached_at"])
-            if (now_dt - cached_at).total_seconds() < 86400:  # 24h
+            # Scrapingdog cache 7 days (paid), others 24h
+            max_age = 86400 * 7 if mode == "scrapingdog" else 86400
+            if (now_dt - cached_at).total_seconds() < max_age:
                 return {"keyword": payload.keyword, "count": len(cache["results"]),
                         "results": cache["results"], "cached": True, "mode": mode}
         except Exception:
             pass
+
+    # Scrapingdog Google SERP mode
+    if payload.use_scrapingdog:
+        tenant = await db.tenants.find_one({"id": user["tenant_id"]}, {"_id": 0, "scrapingdog_api_key": 1})
+        api_key = (tenant or {}).get("scrapingdog_api_key", "").strip()
+        if not api_key:
+            raise HTTPException(400, "Scrapingdog API key belum diset. Set di Settings → API Keys.")
+        from scrapingdog_service import search_linkedin_companies as sd_search
+        try:
+            sd_res = await sd_search(api_key=api_key, keyword=payload.keyword,
+                                       country=payload.country, limit=payload.limit)
+            rows = [{**r, "country": payload.country or None} for r in sd_res["results"]]
+            # Track usage
+            await db.scrapingdog_usage.insert_one({
+                "tenant_id": user["tenant_id"], "user_id": user["id"],
+                "type": "search", "credits": sd_res.get("credits_used", 1),
+                "keyword": payload.keyword, "country": payload.country,
+                "results_count": len(rows), "ts": now_iso(),
+            })
+        except Exception as e:
+            if cache and cache.get("results"):
+                return {"keyword": payload.keyword, "count": len(cache["results"]),
+                        "results": cache["results"], "cached": True, "stale": True, "mode": mode}
+            raise HTTPException(502, f"Scrapingdog error: {e}")
+        if rows:
+            await db.li_search_cache.update_one(
+                {"key": cache_key},
+                {"$set": {"key": cache_key, "keyword": payload.keyword, "country": payload.country,
+                          "results": rows, "cached_at": now_dt.isoformat(), "mode": mode}},
+                upsert=True,
+            )
+        return {"keyword": payload.keyword, "count": len(rows), "results": rows, "cached": False, "mode": mode}
 
     # Load LinkedIn session from sub_company if requested
     li_session = None
@@ -5111,6 +5152,87 @@ async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(
             upsert=True,
         )
     return {"keyword": payload.keyword, "count": len(rows), "results": rows, "cached": False, "mode": mode}
+
+
+@api.post("/linkedin/enrich-scrapingdog")
+async def enrich_via_scrapingdog(payload: dict, user: dict = Depends(get_current_user)):
+    """Deep-enrich a LinkedIn company via Scrapingdog LinkedIn Scraper API.
+    Body: {linkedin_url: str | slug: str}. Cost: ~10 credits."""
+    slug = (payload.get("slug") or payload.get("linkedin_url") or "").strip()
+    if not slug:
+        raise HTTPException(400, "slug or linkedin_url required")
+    tenant = await db.tenants.find_one({"id": user["tenant_id"]}, {"_id": 0, "scrapingdog_api_key": 1})
+    api_key = (tenant or {}).get("scrapingdog_api_key", "").strip()
+    if not api_key:
+        raise HTTPException(400, "Scrapingdog API key belum diset")
+    # Cache enrichment 30 days
+    cache_key = f"sd-enrich|{slug}"
+    cached = await db.li_search_cache.find_one({"key": cache_key}, {"_id": 0})
+    if cached:
+        try:
+            cached_at = datetime.fromisoformat(cached["cached_at"])
+            if (datetime.now(timezone.utc) - cached_at).total_seconds() < 86400 * 30:
+                return {**cached["results"][0], "cached": True}
+        except Exception:
+            pass
+    from scrapingdog_service import enrich_linkedin_company as sd_enrich
+    try:
+        data = await sd_enrich(api_key=api_key, slug_or_url=slug)
+    except Exception as e:
+        raise HTTPException(502, f"Scrapingdog enrich error: {e}")
+    await db.scrapingdog_usage.insert_one({
+        "tenant_id": user["tenant_id"], "user_id": user["id"],
+        "type": "enrich", "credits": data.get("credits_used", 10),
+        "slug": slug, "ts": now_iso(),
+    })
+    if data.get("ok"):
+        await db.li_search_cache.update_one(
+            {"key": cache_key},
+            {"$set": {"key": cache_key, "results": [data],
+                      "cached_at": datetime.now(timezone.utc).isoformat(), "mode": "sd-enrich"}},
+            upsert=True,
+        )
+    return {**data, "cached": False}
+
+
+@api.post("/scrapingdog/validate")
+async def validate_scrapingdog_key(payload: dict, user: dict = Depends(require_role("Owner", "Admin"))):
+    """Test if Scrapingdog API key works. Body: {api_key?}. Uses key from payload or tenant settings."""
+    api_key = (payload.get("api_key") or "").strip()
+    if not api_key:
+        tenant = await db.tenants.find_one({"id": user["tenant_id"]}, {"_id": 0, "scrapingdog_api_key": 1})
+        api_key = (tenant or {}).get("scrapingdog_api_key", "").strip()
+    if not api_key:
+        raise HTTPException(400, "API key kosong")
+    from scrapingdog_service import validate_api_key
+    res = await validate_api_key(api_key)
+    return res
+
+
+@api.get("/scrapingdog/usage")
+async def scrapingdog_usage_stats(user: dict = Depends(require_role("Owner", "Admin"))):
+    """Aggregated credits used per day (last 30 days) per type."""
+    pipeline = [
+        {"$match": {"tenant_id": user["tenant_id"]}},
+        {"$group": {
+            "_id": {"date": {"$substr": ["$ts", 0, 10]}, "type": "$type"},
+            "credits": {"$sum": "$credits"},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id.date": -1}},
+        {"$limit": 60},
+    ]
+    rows = await db.scrapingdog_usage.aggregate(pipeline).to_list(60)
+    by_day = {}
+    total_credits = 0
+    for r in rows:
+        day = r["_id"]["date"]
+        kind = r["_id"]["type"]
+        by_day.setdefault(day, {"search": 0, "enrich": 0, "total": 0})
+        by_day[day][kind] = r["credits"]
+        by_day[day]["total"] += r["credits"]
+        total_credits += r["credits"]
+    return {"by_day": by_day, "total_30d": total_credits}
 
 
 @api.get("/linkedin/reminders")
