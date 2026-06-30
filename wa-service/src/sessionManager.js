@@ -455,16 +455,54 @@ export async function stopSession(db, sessionId, deleteAuth = true) {
   }
 }
 
-export async function sendText(sessionId, jid, text) {
+export async function sendText(db, sessionId, jid, text) {
   const sock = getSock(sessionId);
   if (!sock) throw new Error("Session not started");
   if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
   const targetJid = await normJidWithLid(jid, sock);
   const res = await sock.sendMessage(targetJid, { text });
+  // Persist immediately so the message survives refresh — even if Baileys' messages.upsert
+  // event arrives late or never fires for outgoing-from-this-device.
+  try {
+    const ts = res?.messageTimestamp
+      ? new Date(Number(res.messageTimestamp) * 1000)
+      : new Date();
+    const msgId = res?.key?.id || `local-${Date.now()}`;
+    await db.collection("wa_messages").updateOne(
+      { session_id: sessionId, message_id: msgId, jid: targetJid },
+      {
+        $set: {
+          session_id: sessionId,
+          message_id: msgId,
+          jid: targetJid,
+          from_me: true,
+          text,
+          timestamp: ts,
+        },
+      },
+      { upsert: true }
+    );
+    await db.collection("wa_chats").updateOne(
+      { session_id: sessionId, jid: targetJid },
+      {
+        $set: {
+          session_id: sessionId,
+          jid: targetJid,
+          last_message: text,
+          last_message_ts: ts,
+          last_from_me: true,
+          updated_at: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.error("[sendText] persist failed (non-fatal):", e.message);
+  }
   return res;
 }
 
-export async function sendMedia(sessionId, jid, { buffer, mimetype, fileName, caption, kind }) {
+export async function sendMedia(db, sessionId, jid, { buffer, mimetype, fileName, caption, kind }) {
   const sock = getSock(sessionId);
   if (!sock) throw new Error("Session not started");
   if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
@@ -485,6 +523,55 @@ export async function sendMedia(sessionId, jid, { buffer, mimetype, fileName, ca
     };
   }
   const res = await sock.sendMessage(targetJid, payload);
+  // Persist immediately for refresh-safety
+  try {
+    const ts = res?.messageTimestamp
+      ? new Date(Number(res.messageTimestamp) * 1000)
+      : new Date();
+    const msgId = res?.key?.id || `local-${Date.now()}`;
+    const previewLabel =
+      kind === "image" ? "🖼️ Gambar"
+      : kind === "video" ? "🎬 Video"
+      : kind === "audio" ? "🎵 Audio"
+      : `📎 ${fileName || "Dokumen"}`;
+    await db.collection("wa_messages").updateOne(
+      { session_id: sessionId, message_id: msgId, jid: targetJid },
+      {
+        $set: {
+          session_id: sessionId,
+          message_id: msgId,
+          jid: targetJid,
+          from_me: true,
+          text: caption || "",
+          timestamp: ts,
+          media: {
+            media_type: kind,
+            mimetype: mimetype || null,
+            file_name: fileName || null,
+            caption: caption || null,
+            file_length: buffer.length,
+          },
+        },
+      },
+      { upsert: true }
+    );
+    await db.collection("wa_chats").updateOne(
+      { session_id: sessionId, jid: targetJid },
+      {
+        $set: {
+          session_id: sessionId,
+          jid: targetJid,
+          last_message: caption || previewLabel,
+          last_message_ts: ts,
+          last_from_me: true,
+          updated_at: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.error("[sendMedia] persist failed (non-fatal):", e.message);
+  }
   return res;
 }
 

@@ -159,7 +159,7 @@ app.post("/sessions/:sid/chats/:jid/messages", async (req, res) => {
   try {
     const { text } = req.body || {};
     if (!text) return res.status(400).json({ error: "text required" });
-    await sendText(req.params.sid, req.params.jid, text);
+    await sendText(db, req.params.sid, req.params.jid, text);
     res.json({ ok: true });
   } catch (e) {
     console.error("send error:", e);
@@ -177,7 +177,7 @@ app.post("/sessions/:sid/chats/:jid/media", async (req, res) => {
     const buffer = Buffer.from(base64, "base64");
     if (buffer.length === 0) return res.status(400).json({ error: "empty buffer" });
     if (buffer.length > 50 * 1024 * 1024) return res.status(400).json({ error: "file too large (max 50MB)" });
-    await sendMedia(req.params.sid, req.params.jid, { buffer, mimetype, fileName, caption, kind });
+    await sendMedia(db, req.params.sid, req.params.jid, { buffer, mimetype, fileName, caption, kind });
     res.json({ ok: true, size: buffer.length });
   } catch (e) {
     console.error("send media error:", e);
