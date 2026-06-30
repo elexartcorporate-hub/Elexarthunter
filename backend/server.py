@@ -4808,6 +4808,99 @@ async def root():
     return {"name": "Lead Hunter CRM API", "ok": True, "version": "2.0-crm"}
 
 
+# ─── Version / Deploy diagnostic endpoint ──────────────────────────────────
+# Sekali curl, langsung tahu backend di VPS pakai git commit mana + apakah
+# endpoint terbaru (PATCH /whatsapp/accounts, assign, dll) ter-register.
+@api.get("/version")
+async def version_endpoint(request: Request):
+    """Return git sha, build time, and a sample of registered routes.
+    Useful to verify which code is actually running after deploy.
+    """
+    import subprocess
+    from datetime import datetime, timezone as _tz
+    # Try to get git sha — backend file path → find .git
+    git_sha = None
+    git_branch = None
+    git_msg = None
+    git_dirty = False
+    try:
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_dir = os.path.dirname(backend_dir)  # parent (project root usually has .git)
+        sha = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if sha.returncode == 0:
+            git_sha = sha.stdout.strip()
+        br = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if br.returncode == 0:
+            git_branch = br.stdout.strip()
+        msg = subprocess.run(
+            ["git", "-C", repo_dir, "log", "-1", "--pretty=%s"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if msg.returncode == 0:
+            git_msg = msg.stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", repo_dir, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            git_dirty = True
+    except Exception:
+        pass
+
+    # File mtime — confirms when the deployed file was actually written
+    try:
+        mtime = datetime.fromtimestamp(
+            os.path.getmtime(os.path.abspath(__file__)),
+            tz=_tz.utc,
+        ).isoformat()
+    except Exception:
+        mtime = None
+
+    # Sample of key new endpoints — if list is empty for one of these, deploy is incomplete
+    key_endpoints = [
+        "PATCH /whatsapp/accounts/{sid}",
+        "POST /whatsapp/accounts/{sid}/chats/{jid}/assign",
+        "DELETE /whatsapp/accounts/{sid}/chats/{jid}/assign",
+    ]
+    registered_routes = []
+    try:
+        for r in request.app.routes:
+            path = getattr(r, "path", None)
+            methods = getattr(r, "methods", None)
+            if path and methods and "/whatsapp/accounts" in path:
+                for m in methods:
+                    if m in ("GET", "POST", "PATCH", "DELETE", "PUT"):
+                        registered_routes.append(f"{m} {path}")
+    except Exception:
+        pass
+
+    has_patch_account = any("PATCH" in r and "/whatsapp/accounts/{sid}" in r and not r.endswith("/chats") for r in registered_routes)
+    has_assign = any("/assign" in r and "POST" in r for r in registered_routes)
+
+    return {
+        "ok": True,
+        "service": "lead-hunter-backend",
+        "git_sha": git_sha,
+        "git_branch": git_branch,
+        "git_last_commit": git_msg,
+        "git_dirty": git_dirty,
+        "server_file_mtime": mtime,
+        "server_time": datetime.now(_tz.utc).isoformat(),
+        "key_endpoints_required": key_endpoints,
+        "key_endpoints_status": {
+            "patch_whatsapp_account": "ok" if has_patch_account else "MISSING",
+            "assign_chat": "ok" if has_assign else "MISSING",
+        },
+        "whatsapp_routes_registered": sorted(set(registered_routes)),
+    }
+
+
 
 
 

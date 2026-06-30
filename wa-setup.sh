@@ -100,6 +100,27 @@ if [[ -f "$BACKEND_DIR/requirements.txt" ]]; then
 fi
 
 if [[ -n "$BACKEND_PROGRAMS" ]]; then
+  # ─── Kill stale processes hogging port 8001 BEFORE restart ───
+  # This prevents the recurring "Address already in use" / supervisor "spawn error"
+  # bug where an orphaned uvicorn process holds the port even after supervisor restart.
+  log "Cleaning up stale processes on port 8001 (preventing zombie bug) …"
+  if command -v fuser >/dev/null 2>&1; then
+    sudo fuser -k 8001/tcp 2>/dev/null || true
+  fi
+  # Fallback / extra safety: kill any uvicorn/server:app process
+  sudo pkill -9 -f "uvicorn.*server:app" 2>/dev/null || true
+  sudo pkill -9 -f "python.*uvicorn" 2>/dev/null || true
+  sleep 1
+  # Verify port 8001 actually free
+  if command -v ss >/dev/null 2>&1; then
+    if sudo ss -tlnp 2>/dev/null | grep -q ":8001 "; then
+      warn "Port 8001 masih dipakai setelah cleanup — force kill semua python di port 8001"
+      sudo ss -tlnp 2>/dev/null | grep ":8001 " | grep -oP 'pid=\K[0-9]+' | xargs -r sudo kill -9 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+  ok "Port 8001 cleared"
+
   for prog in $BACKEND_PROGRAMS; do
     log "Restarting backend program: $prog …"
     sudo supervisorctl restart "$prog" 2>&1 | tail -2 || true
@@ -229,6 +250,15 @@ elif echo "$BACKEND_HEALTH" | grep -q '"detail":"Not Found"'; then
 else
   warn "Backend tidak respond di port 8001 (mungkin port lain)"
   warn "Test manual: curl https://hunter.elexart.com/api/whatsapp/health"
+fi
+
+# C. Backend /api/version — confirms which git sha is actually loaded by uvicorn
+VERSION_RESP="$(curl -fsS --max-time 5 http://localhost:8001/api/version 2>&1 || true)"
+if echo "$VERSION_RESP" | grep -q '"git_sha"'; then
+  ok "Backend /api/version OK:"
+  echo "    $VERSION_RESP" | head -1
+else
+  warn "Backend /api/version belum tersedia (endpoint baru — perlu re-deploy backend)"
 fi
 
 echo
