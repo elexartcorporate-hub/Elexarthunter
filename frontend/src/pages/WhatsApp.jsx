@@ -459,11 +459,39 @@ export default function WhatsAppPage() {
           setMessages((prev) => {
             const seen = new Set(prev.map((m) => m.message_id));
             const newOnes = data.filter((m) => !seen.has(m.message_id));
-            return [...prev, ...newOnes];
+            // Drop optimistic messages whose real persisted counterpart has just arrived
+            // (same text, same from_me, within 60s window).
+            const pruned = prev.filter((m) => {
+              if (!m._optimistic) return true;
+              const realMatch = newOnes.find(
+                (n) =>
+                  n.from_me &&
+                  (n.text || "").trim() === (m.text || "").trim() &&
+                  Math.abs(new Date(n.timestamp).getTime() - new Date(m.timestamp).getTime()) < 60000
+              );
+              return !realMatch;
+            });
+            return [...pruned, ...newOnes];
           });
         }
       } else {
-        setMessages(data || []);
+        // Full load — preserve any optimistic messages still pending (not yet persisted)
+        setMessages((prev) => {
+          const pendingOptimistic = prev.filter((m) => m._optimistic);
+          if (!pendingOptimistic.length) return data || [];
+          // Drop pending optimistic that already has a real counterpart in the fresh data
+          const dataList = data || [];
+          const stillPending = pendingOptimistic.filter((m) => {
+            const realMatch = dataList.find(
+              (n) =>
+                n.from_me &&
+                (n.text || "").trim() === (m.text || "").trim() &&
+                Math.abs(new Date(n.timestamp).getTime() - new Date(m.timestamp).getTime()) < 60000
+            );
+            return !realMatch;
+          });
+          return [...dataList, ...stillPending];
+        });
       }
       // Update last sync timestamp from the latest message we've seen
       const latestTs = (data && data.length > 0)
@@ -585,11 +613,9 @@ export default function WhatsAppPage() {
         `/whatsapp/accounts/${activeSid}/chats/${encodeURIComponent(activeJid)}/messages`,
         { text }
       );
-      // Re-fetch full list (will replace optimistic with real persisted message via same JID)
-      setTimeout(() => {
-        // Full reload (not delta) so we drop optimistic & get the real persisted row with proper id
-        loadMessages(activeSid, activeJid);
-      }, 800);
+      // Delta polling (every 2.5s) will fetch the persisted real message and dedupe
+      // our optimistic entry. No forced full-reload here — that was wiping the
+      // optimistic message before Baileys had finished persisting.
     } catch (err) {
       // Roll back optimistic on failure
       setMessages((prev) => prev.filter((m) => m.message_id !== optimisticId));
@@ -639,7 +665,7 @@ export default function WhatsAppPage() {
       );
       setDraft("");
       toast.success(`📎 ${kind} terkirim: ${file.name}`);
-      setTimeout(() => loadMessages(activeSid, activeJid, { delta: true }), 800);
+      // Delta polling will fetch the real persisted media message shortly.
     } catch (err) {
       toast.error(formatApiError(err));
     } finally {
