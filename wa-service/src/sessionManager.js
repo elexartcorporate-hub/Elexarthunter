@@ -472,18 +472,27 @@ async function persistMessage(db, sessionId, sock, msg) {
       );
     }
   }
-  // upsert chat last message — using CANONICAL jid so outgoing/incoming converge
+  // upsert chat last message — using CANONICAL jid so outgoing/incoming converge.
+  // Also keep `name` field synced with the latest push_name so LID chats can show
+  // a human-friendly name instead of the anonymous "LID#xxx" identifier.
+  const pushName = msg.pushName || null;
+  const chatUpdate = {
+    session_id: sessionId,
+    jid,
+    last_message: text,
+    last_message_ts: ts,
+    last_from_me: fromMe,
+    updated_at: new Date(),
+  };
+  // Only set `name` from push_name for incoming messages (from_me=false), and only
+  // when we actually have a push_name. Outgoing messages don't carry the contact's name.
+  if (!fromMe && pushName && pushName.trim()) {
+    chatUpdate.name = pushName.trim();
+  }
   await db.collection("wa_chats").updateOne(
     { session_id: sessionId, jid },
     {
-      $set: {
-        session_id: sessionId,
-        jid,
-        last_message: text,
-        last_message_ts: ts,
-        last_from_me: fromMe,
-        updated_at: new Date(),
-      },
+      $set: chatUpdate,
       $inc: !fromMe ? { unread_count: 1 } : {},
     },
     { upsert: true }

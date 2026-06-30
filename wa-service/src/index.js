@@ -135,6 +135,29 @@ app.get("/sessions/:sid/chats", async (req, res) => {
     .sort({ updated_at: -1 })
     .limit(limit)
     .toArray();
+
+  // Backfill name from latest push_name for chats that don't have one yet.
+  // Useful for legacy chats (LID#xxx) that came in before we synced push_name to wa_chats.
+  const missingNameChats = chats.filter((c) => !c.name && (c.jid || "").includes("@lid"));
+  if (missingNameChats.length > 0) {
+    for (const c of missingNameChats) {
+      try {
+        const recent = await db.collection("wa_messages").findOne(
+          { session_id: req.params.sid, jid: c.jid, from_me: false, push_name: { $ne: null, $ne: "" } },
+          { sort: { timestamp: -1 }, projection: { push_name: 1 } }
+        );
+        if (recent && recent.push_name) {
+          c.name = recent.push_name;
+          // Persist for future requests so we don't re-query every time
+          await db.collection("wa_chats").updateOne(
+            { session_id: req.params.sid, jid: c.jid },
+            { $set: { name: recent.push_name } }
+          );
+        }
+      } catch (_) { /* ignore — backfill is best-effort */ }
+    }
+  }
+
   res.json(chats.map(({ _id, ...c }) => c));
 });
 
