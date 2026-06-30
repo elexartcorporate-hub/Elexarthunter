@@ -454,42 +454,44 @@ export default function WhatsAppPage() {
       const params = { limit: 100 };
       if (delta && lastMsgSyncRef.current[jid]) params.since_ts = lastMsgSyncRef.current[jid];
       const { data } = await api.get(`/whatsapp/accounts/${sid}/chats/${encodeURIComponent(jid)}/messages`, { params });
+      // Optimistic messages must NEVER vanish until their real counterpart actually arrives.
+      // Strategy: always keep optimistic in state; only swap when a real persisted message
+      // with matching text + from_me + within 90s window appears.
+      const matchesOptimistic = (real, opt) =>
+        real.from_me &&
+        (real.text || "").trim() === (opt.text || "").trim() &&
+        Math.abs(new Date(real.timestamp).getTime() - new Date(opt.timestamp).getTime()) < 90000;
+
       if (delta && Array.isArray(data)) {
         if (data.length > 0) {
           setMessages((prev) => {
             const seen = new Set(prev.map((m) => m.message_id));
             const newOnes = data.filter((m) => !seen.has(m.message_id));
-            // Drop optimistic messages whose real persisted counterpart has just arrived
-            // (same text, same from_me, within 60s window).
-            const pruned = prev.filter((m) => {
-              if (!m._optimistic) return true;
-              const realMatch = newOnes.find(
-                (n) =>
-                  n.from_me &&
-                  (n.text || "").trim() === (m.text || "").trim() &&
-                  Math.abs(new Date(n.timestamp).getTime() - new Date(m.timestamp).getTime()) < 60000
-              );
-              return !realMatch;
+            // Replace optimistic in place when matching real arrives
+            const merged = prev.map((m) => {
+              if (!m._optimistic) return m;
+              const real = newOnes.find((n) => matchesOptimistic(n, m));
+              return real ? real : m;
             });
-            return [...pruned, ...newOnes];
+            // Append remaining new messages that didn't replace any optimistic
+            const replacedIds = new Set(
+              merged.filter((m) => !m._optimistic && data.find((d) => d.message_id === m.message_id))
+                .map((m) => m.message_id)
+            );
+            const toAppend = newOnes.filter((n) => !replacedIds.has(n.message_id));
+            return [...merged, ...toAppend];
           });
         }
       } else {
-        // Full load — preserve any optimistic messages still pending (not yet persisted)
+        // Full load — preserve any optimistic messages still pending
         setMessages((prev) => {
-          const pendingOptimistic = prev.filter((m) => m._optimistic);
-          if (!pendingOptimistic.length) return data || [];
-          // Drop pending optimistic that already has a real counterpart in the fresh data
+          const pending = prev.filter((m) => m._optimistic);
           const dataList = data || [];
-          const stillPending = pendingOptimistic.filter((m) => {
-            const realMatch = dataList.find(
-              (n) =>
-                n.from_me &&
-                (n.text || "").trim() === (m.text || "").trim() &&
-                Math.abs(new Date(n.timestamp).getTime() - new Date(m.timestamp).getTime()) < 60000
-            );
-            return !realMatch;
-          });
+          if (!pending.length) return dataList;
+          // Drop optimistic whose real counterpart appears in fresh data
+          const stillPending = pending.filter(
+            (m) => !dataList.find((n) => matchesOptimistic(n, m))
+          );
           return [...dataList, ...stillPending];
         });
       }
@@ -595,7 +597,6 @@ export default function WhatsAppPage() {
   const handleSend = async () => {
     if (!draft.trim() || !activeSid || !activeJid) return;
     const text = draft.trim();
-    // Optimistic UI — show message immediately so user sees it without waiting for poll
     const optimisticId = `optimistic-${Date.now()}`;
     const optimisticMsg = {
       message_id: optimisticId,
@@ -604,6 +605,7 @@ export default function WhatsAppPage() {
       text,
       timestamp: new Date().toISOString(),
       _optimistic: true,
+      _sending: true,
     };
     setMessages((prev) => [...prev, optimisticMsg]);
     setDraft("");
@@ -613,16 +615,31 @@ export default function WhatsAppPage() {
         `/whatsapp/accounts/${activeSid}/chats/${encodeURIComponent(activeJid)}/messages`,
         { text }
       );
-      // Delta polling (every 2.5s) will fetch the persisted real message and dedupe
-      // our optimistic entry. No forced full-reload here — that was wiping the
-      // optimistic message before Baileys had finished persisting.
+      // Mark as 'sent to server' — real persisted message will replace this via delta polling
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.message_id === optimisticId ? { ...m, _sending: false } : m
+        )
+      );
     } catch (err) {
-      // Roll back optimistic on failure
-      setMessages((prev) => prev.filter((m) => m.message_id !== optimisticId));
+      // Mark as failed (keep visible so user knows it didn't go through)
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.message_id === optimisticId ? { ...m, _sending: false, _failed: true } : m
+        )
+      );
       setDraft(text);
       toast.error(formatApiError(err));
     }
     finally { setSending(false); }
+  };
+
+  const retrySend = async (msg) => {
+    // Remove the failed optimistic and re-send via handleSend
+    setMessages((prev) => prev.filter((m) => m.message_id !== msg.message_id));
+    setDraft(msg.text);
+    // Defer to next tick so draft state updates first
+    setTimeout(() => handleSend(), 0);
   };
 
   const handleFilePick = () => fileInputRef.current?.click();
@@ -847,11 +864,11 @@ sudo supervisorctl restart hunter-backend`}
                       </div>
                     )}
                   </div>
-                  <div className="opacity-0 group-hover:opacity-100 transition flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 shrink-0">
                     {(acc.live_status === "qr" || acc.live_status === "logged_out") && acc.is_own && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleScanAgain(acc); }}
-                        className="p-1 rounded hover:bg-emerald-100 text-emerald-600"
+                        className="p-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200"
                         title="Scan QR"
                         data-testid={`wa-rescan-${acc.session_id}`}
                       >
@@ -861,7 +878,7 @@ sudo supervisorctl restart hunter-backend`}
                     {(acc.is_own || showAdmin) && (
                       <button
                         onClick={(e) => { e.stopPropagation(); setRenameAccount(acc); setRenameOpen(true); }}
-                        className="p-1 rounded hover:bg-indigo-100 text-indigo-600"
+                        className="p-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-200"
                         title="Setting / Rename koneksi"
                         data-testid={`wa-gear-${acc.session_id}`}
                       >
@@ -871,7 +888,7 @@ sudo supervisorctl restart hunter-backend`}
                     {!isOther && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDelete(acc); }}
-                        className="p-1 rounded hover:bg-rose-100 text-rose-600"
+                        className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-500 border border-rose-200"
                         title="Hapus akun"
                         data-testid={`wa-delete-${acc.session_id}`}
                       >
@@ -1059,8 +1076,25 @@ sudo supervisorctl restart hunter-backend`}
                                 {m.text || m.media?.caption}
                               </div>
                             )}
-                            <div className={`text-[9px] mt-0.5 text-right ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
+                            <div className={`text-[9px] mt-0.5 text-right flex items-center justify-end gap-1 ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
                               {fmtTime(m.timestamp)}
+                              {m._optimistic && m._sending && (
+                                <span className="inline-flex items-center gap-0.5" title="Mengirim…">
+                                  <ArrowsClockwise size={9} weight="bold" className="animate-spin" />
+                                </span>
+                              )}
+                              {m._optimistic && !m._sending && !m._failed && (
+                                <span title="Terkirim ke server, menunggu konfirmasi">✓</span>
+                              )}
+                              {m._failed && (
+                                <button
+                                  onClick={() => retrySend(m)}
+                                  className="text-rose-200 hover:text-white underline ml-1"
+                                  title="Klik untuk kirim ulang"
+                                >
+                                  ✗ Gagal — kirim ulang
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
