@@ -26,7 +26,15 @@ function formatPhone(jid) {
 function jidName(jid, fallback) {
   if (!jid) return fallback || "Unknown";
   if (jid.includes("@g.us")) return fallback || "Group";
-  // For private chats: ALWAYS show phone or LID marker — never alias/push name as primary.
+  // For LID (Anonymous WhatsApp privacy ID) — real number tersembunyi.
+  // Prefer push_name (nama profil WhatsApp lawan bicara) sebagai display utama.
+  // Fallback ke LID#xxx kalau push_name tidak ada.
+  if (jid.includes("@lid")) {
+    if (fallback && fallback.trim()) return fallback.trim();
+    const lidId = jid.split("@")[0].split(":")[0];
+    return `🔒 LID#${lidId.slice(-6)}`;
+  }
+  // For regular private chats: ALWAYS show phone (push_name shown sebagai secondary).
   return formatPhone(jid);
 }
 // Is this JID an anonymous LID (no real PN resolved)?
@@ -1074,10 +1082,17 @@ sudo supervisorctl restart hunter-backend`}
                         </div>
                         <span className="text-[10px] text-slate-500 shrink-0">{fmtTime(c.last_message_ts)}</span>
                       </div>
-                      {/* Show push-name / alias as secondary, smaller, italic — never primary */}
-                      {!c.is_group && !c.jid?.includes("@g.us") && c.name && (
+                      {/* Secondary alias only for NON-LID chats — for LID chats, push_name
+                          is already used as primary (in jidName), so don't duplicate. */}
+                      {!c.is_group && !c.jid?.includes("@g.us") && !c.jid?.includes("@lid") && c.name && (
                         <div className="text-[10px] text-slate-500 italic truncate -mt-0.5" data-testid={`wa-chat-alias-${c.jid}`}>
                           ~{c.name}
+                        </div>
+                      )}
+                      {/* For LID chats: show the anonymous ID as small secondary so admin still has reference */}
+                      {!c.is_group && c.jid?.includes("@lid") && c.name && (
+                        <div className="text-[10px] text-amber-600 italic truncate -mt-0.5" data-testid={`wa-chat-lid-${c.jid}`}>
+                          🔒 LID#{c.jid.split("@")[0].split(":")[0].slice(-6)} (anonim)
                         </div>
                       )}
                       {c.assignment && (
@@ -1139,10 +1154,12 @@ sudo supervisorctl restart hunter-backend`}
                     <User size={14} weight="bold" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-slate-900 truncate font-mono" data-testid="wa-active-header">{jidName(activeJid)}</div>
+                    <div className="font-semibold text-slate-900 truncate font-mono" data-testid="wa-active-header">
+                      {jidName(activeJid, chats.find((x) => x.jid === activeJid)?.name)}
+                    </div>
                     {isLidOnly(activeJid) && (
                       <div className="text-[10px] text-amber-700 italic -mt-0.5">
-                        Nomor asli disembunyikan (WhatsApp privacy) — reply mereka akan masuk ke chat thread baru otomatis bila sudah pernah balas
+                        🔒 Nama dari profil WhatsApp — nomor asli disembunyikan (privacy)
                       </div>
                     )}
                     {(() => {
