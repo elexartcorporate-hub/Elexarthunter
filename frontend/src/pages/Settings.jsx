@@ -306,7 +306,7 @@ function CompaniesSection() {
   const load = async () => { try { const { data } = await api.get("/sub-companies"); setList(data); } catch (e) { toast.error(formatApiError(e)); } };
   useEffect(() => { load(); }, []);
 
-  const blankLinkedin = () => ({ profile_url: "", profile_name: "", signature: "", default_connection_template: "" });
+  const blankLinkedin = () => ({ profile_url: "", profile_name: "", signature: "", default_connection_template: "", li_session_configured: false, li_session_status: "none", li_at_masked: "", jsessionid_masked: "", li_session_validated_at: null });
 
   const startNew = () => { setForm({ name: "", legal_name: "", phone: "", email_provider: "other", smtp_host: "", smtp_port: 587, smtp_user: "", smtp_password: "", smtp_from_email: "", smtp_from_name: "", smtp_use_tls: true, imap_host: "", imap_port: 993, imap_ssl: true, imap_user: "", imap_password: "" }); setLinkedin(blankLinkedin()); setLinkedinDirty(false); setEditing("new"); };
   const startEdit = async (sc) => {
@@ -323,6 +323,11 @@ function CompaniesSection() {
         profile_name: ls.profile_name || "",
         signature: ls.signature || "",
         default_connection_template: ls.default_connection_template || "",
+        li_session_configured: !!ls.li_session_configured,
+        li_session_status: ls.li_session_status || "none",
+        li_at_masked: ls.li_at_masked || "",
+        jsessionid_masked: ls.jsessionid_masked || "",
+        li_session_validated_at: ls.li_session_validated_at || null,
       });
       setLinkedinAvailable(true);
     } catch (err) {
@@ -369,10 +374,16 @@ function CompaniesSection() {
         if (!payload.smtp_password) delete payload.smtp_password;
         await api.patch(`/sub-companies/${editing}`, payload);
       }
-      // Save LinkedIn settings if dirty and we have an id
+      // Save LinkedIn settings if dirty and we have an id (only the editable fields)
       if (linkedinDirty && scId && linkedinAvailable) {
         try {
-          await api.patch(`/companies/${scId}/linkedin-settings`, linkedin);
+          const liPayload = {
+            profile_url: linkedin.profile_url,
+            profile_name: linkedin.profile_name,
+            signature: linkedin.signature,
+            default_connection_template: linkedin.default_connection_template,
+          };
+          await api.patch(`/companies/${scId}/linkedin-settings`, liPayload);
         } catch (err) {
           if (err?.response?.status === 404) {
             setLinkedinAvailable(false);
@@ -650,6 +661,161 @@ function LinkedInIdentityFields({ scId, linkedin, setLinkedin }) {
           </div>
         )}
       </div>
+
+      {/* LinkedIn Session — Native Mode (ADVANCED, RISKY) */}
+      <LinkedInSessionPanel scId={scId} linkedin={linkedin} setLinkedin={setLinkedin} />
+    </div>
+  );
+}
+
+/* ──────────── LinkedIn Session Panel (cookie auth — ADVANCED) ──────────── */
+function LinkedInSessionPanel({ scId, linkedin, setLinkedin }) {
+  const [showCookies, setShowCookies] = useState(false);
+  const [liAt, setLiAt] = useState("");
+  const [jsess, setJsess] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  const configured = linkedin?.li_session_configured;
+  const status = linkedin?.li_session_status || (configured ? "configured" : "none");
+  const validatedAt = linkedin?.li_session_validated_at;
+
+  const saveAndTest = async () => {
+    if (!liAt.trim()) { toast.error("li_at cookie wajib"); return; }
+    setTesting(true);
+    try {
+      // Save cookies first
+      await api.patch(`/companies/${scId}/linkedin-settings`, { li_at: liAt.trim(), jsessionid: jsess.trim() });
+      // Then validate
+      const { data } = await api.post(`/companies/${scId}/linkedin-settings/validate-session`, {
+        li_at: liAt.trim(), jsessionid: jsess.trim(),
+      });
+      if (data.ok) {
+        toast.success(`✓ Session aktif — ${data.page_title || "OK"}`);
+        setLinkedin({ ...linkedin, li_session_configured: true, li_session_status: "active", li_session_validated_at: data.checked_at });
+        setLiAt(""); setJsess(""); setShowCookies(false);
+      } else {
+        toast.error(`Session invalid: ${data.reason || data.status}`);
+      }
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        toast.warning("Endpoint validate-session belum tersedia. Jalankan: bash wa-setup.sh");
+      } else {
+        toast.error(formatApiError(err));
+      }
+    } finally { setTesting(false); }
+  };
+
+  const reTest = async () => {
+    setTesting(true);
+    try {
+      const { data } = await api.post(`/companies/${scId}/linkedin-settings/validate-session`, {});
+      if (data.ok) {
+        toast.success(`✓ Session masih aktif`);
+        setLinkedin({ ...linkedin, li_session_status: "active", li_session_validated_at: data.checked_at });
+      } else {
+        toast.error(`Session expired — re-input cookie`);
+        setLinkedin({ ...linkedin, li_session_status: data.status });
+      }
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setTesting(false); }
+  };
+
+  const disconnect = async () => {
+    if (!window.confirm("Hapus LinkedIn session dari company ini? Native search jadi mati.")) return;
+    setDisconnecting(true);
+    try {
+      await api.post(`/companies/${scId}/linkedin-settings/disconnect-session`, {});
+      toast.success("Session di-disconnect");
+      setLinkedin({ ...linkedin, li_session_configured: false, li_session_status: "none", li_at_masked: "", jsessionid_masked: "" });
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setDisconnecting(false); }
+  };
+
+  return (
+    <div className="border border-dashed border-amber-300 rounded-xl p-3 bg-amber-50/50">
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs font-bold text-amber-800 flex items-center gap-1.5">
+          <LinkedinLogo size={12} weight="fill" /> LinkedIn Native Session — ADVANCED MODE
+        </div>
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+          status === "active" ? "bg-emerald-100 text-emerald-700" :
+          status === "configured" ? "bg-blue-100 text-blue-700" :
+          status === "invalid" || status === "error" ? "bg-red-100 text-red-700" :
+          "bg-slate-100 text-slate-500"
+        }`} data-testid="li-session-status">
+          {status === "active" ? "✓ Active" : status === "configured" ? "Not Tested" : status === "invalid" ? "✗ Invalid" : status === "error" ? "✗ Error" : "Not Connected"}
+        </span>
+      </div>
+      <div className="text-[11px] text-amber-700 bg-amber-100/60 border border-amber-200 rounded p-2 mb-2 leading-relaxed">
+        <b>⚠️ RISIKO: Akun LinkedIn bisa di-restrict / banned.</b><br/>
+        Mode ini mengakses LinkedIn lewat cookie session Anda untuk dapat data company asli (industry, location, followers) seperti search di LinkedIn langsung. Tips aman:
+        <ul className="list-disc ml-4 mt-1 space-y-0.5">
+          <li>Gunakan akun LinkedIn <b>khusus untuk prospecting</b> — bukan akun utama.</li>
+          <li>Limit search: <b>max 30-50 query/hari per akun</b>.</li>
+          <li>Cookie expired tiap ~30 hari. Re-test berkala.</li>
+        </ul>
+      </div>
+
+      {configured && !showCookies ? (
+        <div className="space-y-2">
+          <div className="text-[11px] text-slate-700">
+            <div>Cookie tersimpan: <code className="text-[10px] bg-white px-1 py-0.5 rounded border">li_at = {linkedin.li_at_masked || "(set)"}</code></div>
+            {linkedin.jsessionid_masked && <div className="mt-1">JSESSIONID: <code className="text-[10px] bg-white px-1 py-0.5 rounded border">{linkedin.jsessionid_masked}</code></div>}
+            {validatedAt && <div className="mt-1 text-slate-500">Last check: {new Date(validatedAt).toLocaleString("id-ID")}</div>}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={reTest} disabled={testing} className="text-[11px] px-2.5 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50" data-testid="li-session-retest">
+              {testing ? "Testing…" : "Test Connection"}
+            </button>
+            <button onClick={() => { setShowCookies(true); setLiAt(""); setJsess(""); }} className="text-[11px] px-2.5 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200" data-testid="li-session-replace">
+              Replace Cookie
+            </button>
+            <button onClick={disconnect} disabled={disconnecting} className="text-[11px] px-2.5 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 ml-auto" data-testid="li-session-disconnect">
+              {disconnecting ? "..." : "Disconnect"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <details className="text-[11px] text-slate-600 mb-1">
+            <summary className="cursor-pointer font-semibold text-blue-700 hover:underline">📖 Cara dapatkan li_at cookie (klik untuk lihat)</summary>
+            <ol className="list-decimal ml-5 mt-1 space-y-0.5">
+              <li>Buka <b>linkedin.com</b> di Chrome/Edge, login.</li>
+              <li>Tekan <kbd className="px-1 py-0.5 bg-slate-200 rounded text-[10px]">F12</kbd> → tab <b>Application</b> → <b>Cookies</b> → <b>https://www.linkedin.com</b>.</li>
+              <li>Cari row <b>li_at</b> → copy &quot;Value&quot;-nya. (Long string ~150 char)</li>
+              <li>Cari row <b>JSESSIONID</b> → copy &quot;Value&quot;-nya. (Format: <code>ajax:1234567890</code>)</li>
+              <li>Paste keduanya di bawah → klik &quot;Save &amp; Test&quot;.</li>
+            </ol>
+          </details>
+          <div>
+            <label className="text-[11px] font-semibold text-slate-700">li_at cookie <span className="text-red-500">*</span></label>
+            <input type="password" value={liAt} onChange={(e) => setLiAt(e.target.value)}
+              placeholder="AQEDAR... (150+ char dari Cookies → li_at)"
+              className="w-full font-mono text-[11px] border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:border-amber-400"
+              data-testid="li-session-li-at"/>
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-slate-700">JSESSIONID cookie (recommended)</label>
+            <input type="password" value={jsess} onChange={(e) => setJsess(e.target.value)}
+              placeholder='ajax:1234567890 (dari Cookies → JSESSIONID, hilangkan tanda kutip)'
+              className="w-full font-mono text-[11px] border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:border-amber-400"
+              data-testid="li-session-jsessionid"/>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={saveAndTest} disabled={testing || !liAt.trim()}
+              className="text-[11px] px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 font-semibold"
+              data-testid="li-session-save-test">
+              {testing ? "Testing…" : "💾 Save & Test Connection"}
+            </button>
+            {configured && (
+              <button onClick={() => setShowCookies(false)} className="text-[11px] px-2.5 py-1 rounded bg-slate-100 text-slate-700 hover:bg-slate-200">
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

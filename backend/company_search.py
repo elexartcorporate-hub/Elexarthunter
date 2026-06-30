@@ -63,37 +63,116 @@ async def search_companies(
     *,
     country: Optional[str] = None,
     limit: int = 20,
+    linkedin_only: bool = False,
+    li_session: Optional[dict] = None,
 ) -> List[dict]:
-    """Search via Yahoo → fallback DDG → Bing. Returns list of company candidates."""
+    """Search companies. If linkedin_only=True with valid li_session, uses LinkedIn
+    Voyager API directly (returns real LinkedIn company pages). Otherwise web search."""
     if not keyword or not keyword.strip():
         return []
     query = keyword.strip()
     if country and country.lower() not in query.lower():
         query = f"{query} {country}"
 
-    # Try Yahoo first (most reliable from VPS/cloud IPs — DDG/Bing often blocked)
+    # LinkedIn Native Mode — Voyager API requires cookie
+    if linkedin_only and li_session and li_session.get("li_at"):
+        try:
+            rows = await _search_linkedin_voyager(query, limit, li_session)
+            if rows:
+                return [{**r, "country": country or None} for r in rows]
+        except Exception:
+            pass  # Fall through to web search
+
+    rows: List[dict] = []
+    # Yahoo first (most reliable from VPS/cloud IPs)
     try:
-        results = await _search_yahoo(query, limit)
-        if results:
-            return [{**r, "country": country or None} for r in results]
+        rows = await _search_yahoo(query, limit, linkedin_only=linkedin_only)
     except Exception:
-        pass
+        rows = []
     # Fallback to DuckDuckGo
-    try:
-        results = await _search_ddg(query, limit)
-        if results:
-            return [{**r, "country": country or None} for r in results]
-    except Exception:
-        pass
+    if not rows:
+        try:
+            rows = await _search_ddg(query, limit)
+            if linkedin_only:
+                rows = [r for r in rows if "linkedin.com/company" in r.get("website", "")]
+        except Exception:
+            pass
     # Final fallback: Bing
+    if not rows:
+        try:
+            rows = await _search_bing(query, limit)
+            if linkedin_only:
+                rows = [r for r in rows if "linkedin.com/company" in r.get("website", "")]
+        except Exception as e:
+            if not rows:
+                raise RuntimeError(f"All search engines failed: {e}")
+
+    rows = [{**r, "country": country or None} for r in rows]
+    return rows
+
+
+async def _search_linkedin_voyager(query: str, limit: int, li_session: dict) -> List[dict]:
+    """LinkedIn Voyager API native company typeahead search. Returns real LinkedIn
+    company pages with proper names, industry, location. REQUIRES valid li_at + JSESSIONID."""
+    li_at = (li_session.get("li_at") or "").strip()
+    jsess_raw = (li_session.get("jsessionid") or "").strip().strip('"')
+    if not li_at or not jsess_raw:
+        raise RuntimeError("li_at + JSESSIONID required for LinkedIn Native mode")
+    csrf = jsess_raw  # csrf-token MUST equal JSESSIONID value (without quotes)
+    cookies = {"li_at": li_at, "JSESSIONID": f'"{jsess_raw}"'}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "application/vnd.linkedin.normalized+json+2.1",
+        "Accept-Language": "en-US,en;q=0.9",
+        "csrf-token": csrf,
+        "x-li-lang": "en_US",
+        "x-restli-protocol-version": "2.0.0",
+        "Referer": "https://www.linkedin.com/search/results/companies/",
+    }
+    url = "https://www.linkedin.com/voyager/api/typeahead/hitsV2"
+    params = {"keywords": query, "q": "type", "type": "COMPANY", "count": str(min(limit, 20))}
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, cookies=cookies, headers=headers) as cx:
+        r = await cx.get(url, params=params)
+    if r.status_code in (401, 403):
+        raise RuntimeError(f"LinkedIn session expired or invalid (HTTP {r.status_code})")
+    if r.status_code != 200:
+        raise RuntimeError(f"LinkedIn voyager returned {r.status_code}")
+    import json as _json
     try:
-        results = await _search_bing(query, limit)
-        return [{**r, "country": country or None} for r in results]
-    except Exception as e:
-        raise RuntimeError(f"All search engines failed: {e}")
+        data = _json.loads(r.text)
+    except Exception:
+        raise RuntimeError("LinkedIn returned non-JSON response")
+    results = []
+    elements = data.get("elements") or (data.get("data") or {}).get("elements") or []
+    for el in elements[:limit]:
+        title = ((el.get("title") or {}).get("text") or "").strip()
+        subtitle = ((el.get("subtitle") or {}).get("text") or "").strip()
+        nav = el.get("navigationUrl") or ""
+        urn = el.get("trackingUrn") or el.get("targetUrn") or ""
+        # Build LinkedIn URL from urn if navigationUrl missing
+        if not nav and "urn:li:company:" in urn:
+            company_id = urn.split(":")[-1]
+            nav = f"https://www.linkedin.com/company/{company_id}/"
+        if not title or "linkedin.com" not in nav:
+            continue
+        # Subtitle usually contains "Industry • Location"
+        industry = subtitle.split("•")[0].strip() if "•" in subtitle else ""
+        location = subtitle.split("•", 1)[1].strip() if "•" in subtitle else ""
+        slug_m = re.search(r"linkedin\.com/company/([^/?#]+)", nav)
+        slug = slug_m.group(1) if slug_m else title.lower().replace(" ", "-")
+        results.append({
+            "company_name": title[:80],
+            "website": nav,
+            "domain": f"linkedin.com/company/{slug}",
+            "snippet": subtitle[:300],
+            "industry": industry[:80] if industry else None,
+            "city": location[:80] if location else None,
+            "linkedin_native": True,
+        })
+    return results
 
 
-async def _search_yahoo(query: str, limit: int) -> List[dict]:
+async def _search_yahoo(query: str, limit: int, *, linkedin_only: bool = False) -> List[dict]:
     """Yahoo Search HTML scraping — most reliable from cloud IPs."""
     url = "https://search.yahoo.com/search"
     params = {"p": query, "n": str(limit * 3)}
@@ -141,9 +220,19 @@ async def _search_yahoo(query: str, limit: int) -> List[dict]:
         sn = div.select_one("p, .compText, span.fc-9th")
         snippet = ((sn.get_text() if sn else "") or "").strip()[:300]
         domain = _domain(href)
-        if not _is_company_site(href, domain) or domain in seen_domains:
-            continue
-        seen_domains.add(domain)
+        # When linkedin_only mode, keep LinkedIn URLs (default SKIP_DOMAINS excludes it)
+        if linkedin_only:
+            if "linkedin.com/company" not in href:
+                continue
+            slug_m = re.search(r"linkedin\.com/company/([^/?#]+)", href)
+            dedup_key = slug_m.group(1).lower() if slug_m else href
+            if dedup_key in seen_domains:
+                continue
+            seen_domains.add(dedup_key)
+        else:
+            if not _is_company_site(href, domain) or domain in seen_domains:
+                continue
+            seen_domains.add(domain)
         # Final company name cleanup: prefer text before pipe/dash separator
         company_name = re.sub(r"\s*[\|\-–—]\s*.*$", "", title).strip()
         # Fallback: capitalize domain

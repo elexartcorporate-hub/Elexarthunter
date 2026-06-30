@@ -77,20 +77,28 @@ function daysSince(iso) { if (!iso) return null; const d=Math.floor((Date.now()-
 function SearchModal({ open, date, onClose, onAdded }) {
   const [kw, setKw] = useState("");
   const [country, setCountry] = useState("Indonesia");
+  const [linkedinOnly, setLinkedinOnly] = useState(false); // NEW: search hanya LinkedIn URLs
+  const [useSession, setUseSession] = useState(false);     // NEW: pakai LinkedIn cookie kalau ada
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [adding, setAdding] = useState(null);
-  useEffect(() => { if (open) { setKw(""); setResults([]); } }, [open]);
+  const [resultMode, setResultMode] = useState(null);      // mode dari response
+  useEffect(() => { if (open) { setKw(""); setResults([]); setResultMode(null); } }, [open]);
   const doSearch = async () => {
     if (!kw.trim()) return;
-    setLoading(true); setResults([]);
+    setLoading(true); setResults([]); setResultMode(null);
     try {
-      const { data } = await api.post("/linkedin/search-companies", { keyword: kw, country, limit: 20 });
+      const { data } = await api.post("/linkedin/search-companies", {
+        keyword: kw, country, limit: 20,
+        linkedin_only: linkedinOnly,
+        use_session: useSession && linkedinOnly,
+      });
       setResults(data.results || []);
-      if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain.");
+      setResultMode(data.mode || null);
+      if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain atau matikan filter LinkedIn-only.");
       else if (data.stale) toast.warning(`${data.count} hasil dari cache lama (engine search lagi rate-limit, coba lagi nanti)`);
       else if (data.cached) toast.success(`${data.count} hasil ⚡ dari cache (24 jam)`);
-      else toast.success(`${data.count} hasil baru`);
+      else toast.success(`${data.count} hasil baru${data.mode === "li-native" ? " · LinkedIn Native" : ""}`);
     } catch (err) {
       if (err?.response?.status === 404) {
         toast.warning("Endpoint search belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
@@ -101,15 +109,24 @@ function SearchModal({ open, date, onClose, onAdded }) {
     finally { setLoading(false); }
   };
   const addOne = async (r) => {
-    setAdding(r.domain);
+    setAdding(r.domain || r.website);
     try {
-      const { data } = await api.post("/linkedin/prospects", {
-        date, company_name: r.company_name, website: r.website,
-        country: r.country, industry: null, city: null,
-      });
+      const payload = {
+        date,
+        company_name: r.company_name,
+        website: r.website,
+        country: r.country,
+        industry: r.industry || null,
+        city: r.city || null,
+      };
+      // If this is a LinkedIn URL, also save as company_linkedin_url
+      if (r.website && r.website.includes("linkedin.com/company")) {
+        payload.company_linkedin_url = r.website;
+      }
+      const { data } = await api.post("/linkedin/prospects", payload);
       toast.success(`✅ ${r.company_name} ditambahkan`);
       onAdded?.(data);
-      setResults((prev) => prev.filter((x) => x.domain !== r.domain));
+      setResults((prev) => prev.filter((x) => (x.domain || x.website) !== (r.domain || r.website)));
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setAdding(null); }
   };
@@ -147,25 +164,69 @@ function SearchModal({ open, date, onClose, onAdded }) {
           {!kw.trim() && (
             <p className="text-[11px] text-slate-500 mt-2">💡 Isi <b>Keyword</b> dulu (industry/jenis bisnis). Country boleh <b>Worldwide</b> kalau cari di semua negara.</p>
           )}
+          {/* Mode toggles */}
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={linkedinOnly} onChange={(e) => setLinkedinOnly(e.target.checked)}
+                className="accent-[#0A66C2]" data-testid="li-search-linkedin-only"/>
+              <LinkedinLogo size={12} weight="fill" className="text-[#0A66C2]" />
+              <span className="font-semibold text-slate-700">LinkedIn-only</span>
+              <span className="text-slate-400">(filter URL linkedin.com/company)</span>
+            </label>
+            {linkedinOnly && (
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={useSession} onChange={(e) => setUseSession(e.target.checked)}
+                  className="accent-amber-600" data-testid="li-search-use-session"/>
+                <span className="font-semibold text-amber-700">Native mode</span>
+                <span className="text-slate-400">(pakai cookie LinkedIn — data lebih lengkap)</span>
+              </label>
+            )}
+            {resultMode && (
+              <span className={`ml-auto text-[10px] font-bold px-2 py-0.5 rounded ${
+                resultMode === "li-native" ? "bg-amber-100 text-amber-800" :
+                resultMode === "li-only" ? "bg-blue-100 text-blue-800" :
+                "bg-slate-100 text-slate-600"
+              }`}>
+                Mode: {resultMode === "li-native" ? "LinkedIn Native" : resultMode === "li-only" ? "LinkedIn URLs" : "Web Search"}
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {loading && <div className="text-center text-sm text-slate-500 py-10">Mencari…</div>}
           {!loading && results.length === 0 && (
             <div className="text-center text-xs text-slate-400 py-10 px-4">
               Tip: keyword spesifik = hasil lebih relevan.<br/>
-              Contoh: &quot;Hotel Bintang 4 Bali&quot;, &quot;Travel Agency Singapore&quot;, &quot;Manufacturing Surabaya&quot;.
+              Contoh: &quot;Hotel Bintang 4 Bali&quot;, &quot;Travel Agency Singapore&quot;, &quot;Manufacturing Surabaya&quot;.<br/>
+              <span className="text-[10px] text-slate-500 mt-2 inline-block">
+                💡 <b>LinkedIn-only + Native</b> mode butuh cookie LinkedIn diset di Settings → Companies → LinkedIn Identity.
+              </span>
             </div>
           )}
           {results.map((r) => (
-            <Card key={r.domain} className="p-3 hover:shadow-sm transition" data-testid={`li-search-result-${r.domain}`}>
+            <Card key={r.domain || r.website} className="p-3 hover:shadow-sm transition" data-testid={`li-search-result-${r.domain || r.website}`}>
               <div className="flex items-start gap-3">
-                <Buildings size={18} weight="duotone" className="text-[#0A66C2] mt-0.5 shrink-0"/>
+                {r.linkedin_native ? (
+                  <LinkedinLogo size={18} weight="fill" className="text-[#0A66C2] mt-0.5 shrink-0"/>
+                ) : (
+                  <Buildings size={18} weight="duotone" className="text-[#0A66C2] mt-0.5 shrink-0"/>
+                )}
                 <div className="min-w-0 flex-1">
-                  <div className="font-semibold text-sm text-slate-900">{r.company_name}</div>
+                  <div className="font-semibold text-sm text-slate-900 flex items-center gap-1.5">
+                    {r.company_name}
+                    {r.linkedin_native && <Badge tone="info" className="!text-[9px] !px-1.5 !py-0">LinkedIn</Badge>}
+                  </div>
                   <div className="text-[11px] text-slate-500 font-mono truncate">{r.domain}</div>
+                  {(r.industry || r.city) && (
+                    <div className="text-[11px] text-slate-600 mt-0.5">
+                      {r.industry && <span>{r.industry}</span>}
+                      {r.industry && r.city && <span> · </span>}
+                      {r.city && <span>📍 {r.city}</span>}
+                    </div>
+                  )}
                   {r.snippet && <div className="text-xs text-slate-600 mt-1 line-clamp-2">{r.snippet}</div>}
                 </div>
-                <PrimaryButton onClick={()=>addOne(r)} disabled={adding===r.domain} className="!text-xs shrink-0">
+                <PrimaryButton onClick={()=>addOne(r)} disabled={adding===(r.domain||r.website)} className="!text-xs shrink-0">
                   <Plus size={12} weight="bold"/> Add to Today
                 </PrimaryButton>
               </div>

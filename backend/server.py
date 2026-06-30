@@ -5061,13 +5061,18 @@ class LICompanySearch(BaseModel):
     keyword: str
     country: Optional[str] = None
     limit: int = Field(default=20, ge=1, le=50)
+    linkedin_only: bool = False
+    use_session: bool = False  # If True & user has li_session, do native enrichment
 
 
 @api.post("/linkedin/search-companies")
 async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(get_current_user)):
     """Aggregator: search companies by keyword. Cached in MongoDB for 24 hours
-    to avoid rate-limit issues from search engines & speed up repeat queries."""
-    cache_key = f"{(payload.keyword or '').strip().lower()}|{(payload.country or '').strip().lower()}|{payload.limit}"
+    to avoid rate-limit issues from search engines & speed up repeat queries.
+    If linkedin_only=True, filters to LinkedIn company URLs only.
+    If use_session=True & user's sub_company has li_session, enriches with native data."""
+    mode = "li-native" if (payload.use_session and payload.linkedin_only) else ("li-only" if payload.linkedin_only else "web")
+    cache_key = f"{(payload.keyword or '').strip().lower()}|{(payload.country or '').strip().lower()}|{payload.limit}|{mode}"
     now_dt = datetime.now(timezone.utc)
     cache = await db.li_search_cache.find_one({"key": cache_key}, {"_id": 0})
     if cache:
@@ -5075,27 +5080,37 @@ async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(
             cached_at = datetime.fromisoformat(cache["cached_at"])
             if (now_dt - cached_at).total_seconds() < 86400:  # 24h
                 return {"keyword": payload.keyword, "count": len(cache["results"]),
-                        "results": cache["results"], "cached": True}
+                        "results": cache["results"], "cached": True, "mode": mode}
         except Exception:
             pass
 
+    # Load LinkedIn session from sub_company if requested
+    li_session = None
+    if payload.use_session and payload.linkedin_only:
+        sender_ctx = await _li_get_user_sender_context(user)
+        ls = sender_ctx or {}
+        if ls.get("li_at"):
+            li_session = {"li_at": ls.get("li_at"), "jsessionid": ls.get("jsessionid")}
+
     try:
-        rows = await li_search_companies(payload.keyword, country=payload.country, limit=payload.limit)
+        rows = await li_search_companies(
+            payload.keyword, country=payload.country, limit=payload.limit,
+            linkedin_only=payload.linkedin_only, li_session=li_session,
+        )
     except Exception as e:
-        # If we have stale cache (>24h), serve it as last-resort to avoid total failure
         if cache and cache.get("results"):
             return {"keyword": payload.keyword, "count": len(cache["results"]),
-                    "results": cache["results"], "cached": True, "stale": True}
+                    "results": cache["results"], "cached": True, "stale": True, "mode": mode}
         raise HTTPException(502, f"Search engine error: {e}")
 
     if rows:
         await db.li_search_cache.update_one(
             {"key": cache_key},
             {"$set": {"key": cache_key, "keyword": payload.keyword, "country": payload.country,
-                      "results": rows, "cached_at": now_dt.isoformat()}},
+                      "results": rows, "cached_at": now_dt.isoformat(), "mode": mode}},
             upsert=True,
         )
-    return {"keyword": payload.keyword, "count": len(rows), "results": rows, "cached": False}
+    return {"keyword": payload.keyword, "count": len(rows), "results": rows, "cached": False, "mode": mode}
 
 
 @api.get("/linkedin/reminders")
@@ -5369,6 +5384,77 @@ class LICompanySettings(BaseModel):
     profile_name: Optional[str] = None
     signature: Optional[str] = None
     default_connection_template: Optional[str] = None
+    # LinkedIn Session (optional, RISKY — for native search/enrichment)
+    li_at: Optional[str] = None
+    jsessionid: Optional[str] = None
+
+
+@api.post("/companies/{sc_id}/linkedin-settings/validate-session")
+async def validate_li_session(sc_id: str, payload: LICompanySettings,
+                                user: dict = Depends(get_current_user)):
+    """Test if the provided li_at cookie is valid. Returns {ok, name, headline}.
+    Hits ONE LinkedIn page with the cookie & parses meta. Persists validation status."""
+    if user["role"] not in ("Owner", "Admin"):
+        raise HTTPException(403, "Hanya Owner / Admin")
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1, "linkedin_settings": 1})
+    if not sc:
+        raise HTTPException(404, "Company tidak ditemukan")
+    # Use provided cookies, or fallback to stored ones
+    li_at = (payload.li_at or "").strip() or (sc.get("linkedin_settings") or {}).get("li_at", "").strip()
+    if not li_at:
+        raise HTTPException(400, "li_at cookie required")
+    jsess = (payload.jsessionid or "").strip().strip('"') or (sc.get("linkedin_settings") or {}).get("jsessionid", "").strip().strip('"')
+    cookies = {"li_at": li_at}
+    if jsess:
+        cookies["JSESSIONID"] = f'"{jsess}"'
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    import httpx as _httpx
+    status = "invalid"
+    page_title = ""
+    try:
+        async with _httpx.AsyncClient(timeout=12.0, follow_redirects=True, cookies=cookies, headers=headers) as cx:
+            r = await cx.get("https://www.linkedin.com/feed/")
+        if r.status_code == 200 and "login" not in str(r.url).lower() and "authwall" not in r.text.lower():
+            from bs4 import BeautifulSoup as _BS
+            soup = _BS(r.text, "lxml")
+            title_tag = soup.find("title")
+            page_title = title_tag.get_text() if title_tag else ""
+            status = "active"
+    except Exception as e:
+        await db.sub_companies.update_one(
+            {"id": sc_id},
+            {"$set": {"linkedin_settings.li_session_status": "error",
+                       "linkedin_settings.li_session_validated_at": now_iso()}},
+        )
+        raise HTTPException(502, f"LinkedIn check failed: {e}")
+    # Persist status
+    await db.sub_companies.update_one(
+        {"id": sc_id},
+        {"$set": {"linkedin_settings.li_session_status": status,
+                   "linkedin_settings.li_session_validated_at": now_iso()}},
+    )
+    return {"ok": status == "active", "status": status, "page_title": page_title[:120],
+            "checked_at": now_iso()}
+
+
+@api.post("/companies/{sc_id}/linkedin-settings/disconnect-session")
+async def disconnect_li_session(sc_id: str, user: dict = Depends(get_current_user)):
+    """Remove stored LinkedIn cookies from sub_company. Identity (name, signature) stays."""
+    if user["role"] not in ("Owner", "Admin"):
+        raise HTTPException(403, "Hanya Owner / Admin")
+    sc = await db.sub_companies.find_one({"id": sc_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1})
+    if not sc:
+        raise HTTPException(404, "Company tidak ditemukan")
+    await db.sub_companies.update_one(
+        {"id": sc_id},
+        {"$unset": {"linkedin_settings.li_at": "", "linkedin_settings.jsessionid": "",
+                     "linkedin_settings.li_session_status": "", "linkedin_settings.li_session_validated_at": ""}},
+    )
+    return {"ok": True, "sub_company_id": sc_id}
 
 
 @api.patch("/companies/{sc_id}/linkedin-settings")
@@ -5382,11 +5468,22 @@ async def set_company_linkedin_settings(sc_id: str, payload: LICompanySettings,
     if not sc:
         raise HTTPException(404, "Company tidak ditemukan")
     settings = payload.model_dump(exclude_unset=True)
+    # Merge with existing — don't overwrite cookies with empty strings (user just editing other fields)
+    existing = sc.get("linkedin_settings") or {}
+    for k in ("li_at", "jsessionid"):
+        if k in settings and not settings[k]:
+            settings.pop(k, None)
+    merged = {**existing, **settings}
+    # If cookies changed, reset validation status
+    if settings.get("li_at") and settings["li_at"] != existing.get("li_at"):
+        merged["li_session_status"] = "configured"
+        merged["li_session_validated_at"] = None
     await db.sub_companies.update_one(
         {"id": sc_id, "tenant_id": user["tenant_id"]},
-        {"$set": {"linkedin_settings": settings, "updated_at": now_iso()}},
+        {"$set": {"linkedin_settings": merged, "updated_at": now_iso()}},
     )
-    return {"sub_company_id": sc_id, "linkedin_settings": settings}
+    # Return masked response
+    return {"sub_company_id": sc_id, "li_session_configured": bool(merged.get("li_at"))}
 
 
 @api.get("/companies/{sc_id}/linkedin-settings")
@@ -5397,7 +5494,22 @@ async def get_company_linkedin_settings(sc_id: str, user: dict = Depends(get_cur
     )
     if not sc:
         raise HTTPException(404, "Company tidak ditemukan")
-    return {"sub_company_id": sc["id"], "name": sc["name"], "linkedin_settings": sc.get("linkedin_settings") or {}}
+    ls = sc.get("linkedin_settings") or {}
+    # Mask sensitive cookies — only show first 4 + last 4 chars
+    li_at = ls.get("li_at") or ""
+    jsess = ls.get("jsessionid") or ""
+    safe_ls = {
+        "profile_url": ls.get("profile_url"),
+        "profile_name": ls.get("profile_name"),
+        "signature": ls.get("signature"),
+        "default_connection_template": ls.get("default_connection_template"),
+        "li_at_masked": (f"{li_at[:4]}…{li_at[-4:]}" if len(li_at) > 12 else ("•" * len(li_at) if li_at else "")),
+        "jsessionid_masked": (f"{jsess[:4]}…{jsess[-4:]}" if len(jsess) > 12 else ("•" * len(jsess) if jsess else "")),
+        "li_session_configured": bool(li_at),
+        "li_session_validated_at": ls.get("li_session_validated_at"),
+        "li_session_status": ls.get("li_session_status") or ("configured" if li_at else "none"),
+    }
+    return {"sub_company_id": sc["id"], "name": sc["name"], "linkedin_settings": safe_ls}
 
 
 class LITestGenerateReq(BaseModel):
