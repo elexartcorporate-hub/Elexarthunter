@@ -66,9 +66,12 @@ export default function Settings() {
 /* ──────────── TARGETS (Daily Target per user) ──────────── */
 function TargetsSection({ currentUser }) {
   const [users, setUsers] = useState([]);
-  const [myTarget, setMyTarget] = useState("");
-  const [savingMy, setSavingMy] = useState(false);
-  const [edits, setEdits] = useState({});
+  const [myEmailTarget, setMyEmailTarget] = useState("");
+  const [myLiTarget, setMyLiTarget] = useState("");
+  const [savingEmail, setSavingEmail] = useState(false);
+  const [savingLi, setSavingLi] = useState(false);
+  const [emailEdits, setEmailEdits] = useState({});
+  const [liEdits, setLiEdits] = useState({});
 
   const canManageTeam = currentUser?.role === "Owner" ||
     (currentUser?.permissions || []).includes("set_team_targets");
@@ -76,7 +79,8 @@ function TargetsSection({ currentUser }) {
   const load = async () => {
     try {
       const me = await api.get("/auth/me");
-      setMyTarget(String(me.data.user.daily_target ?? 0));
+      setMyEmailTarget(String(me.data.user.daily_target ?? 0));
+      setMyLiTarget(String(me.data.user.linkedin_daily_target ?? 15));
       if (canManageTeam) {
         const { data } = await api.get("/team");
         setUsers(data);
@@ -85,96 +89,159 @@ function TargetsSection({ currentUser }) {
   };
   useEffect(() => { load(); }, []);
 
-  const saveMy = async () => {
-    const n = parseInt(myTarget, 10);
+  const saveMyEmail = async () => {
+    const n = parseInt(myEmailTarget, 10);
     if (Number.isNaN(n) || n < 0) return toast.error("Target harus angka >= 0");
-    setSavingMy(true);
+    setSavingEmail(true);
     try {
       await api.patch("/me/target", { daily_target: n });
-      toast.success(`Target Anda di-set ke ${n}`);
+      toast.success(`Target Email Anda di-set ke ${n}`);
     } catch (err) { toast.error(formatApiError(err)); }
-    finally { setSavingMy(false); }
+    finally { setSavingEmail(false); }
   };
 
-  const saveUser = async (uid) => {
-    const v = edits[uid];
+  const saveMyLi = async () => {
+    const n = parseInt(myLiTarget, 10);
+    if (Number.isNaN(n) || n < 0) return toast.error("Target harus angka >= 0");
+    setSavingLi(true);
+    try {
+      await api.patch("/me/linkedin-target", { linkedin_daily_target: n });
+      toast.success(`Target LinkedIn Anda di-set ke ${n}`);
+    } catch (err) {
+      if (err?.response?.status === 404) toast.warning("Endpoint LinkedIn target belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
+      else toast.error(formatApiError(err));
+    }
+    finally { setSavingLi(false); }
+  };
+
+  const saveUserTarget = async (uid, kind) => {
+    const v = (kind === "email" ? emailEdits : liEdits)[uid];
     const n = parseInt(v, 10);
     if (Number.isNaN(n) || n < 0) return toast.error("Target harus angka >= 0");
     try {
-      await api.patch(`/team/${uid}/target`, { daily_target: n });
-      toast.success("Target di-update");
-      setEdits((e) => { const c = { ...e }; delete c[uid]; return c; });
+      const path = kind === "email" ? `/team/${uid}/target` : `/team/${uid}/linkedin-target`;
+      const body = kind === "email" ? { daily_target: n } : { linkedin_daily_target: n };
+      await api.patch(path, body);
+      toast.success(`Target ${kind} di-update`);
+      if (kind === "email") setEmailEdits((e) => { const c = { ...e }; delete c[uid]; return c; });
+      else setLiEdits((e) => { const c = { ...e }; delete c[uid]; return c; });
       load();
-    } catch (err) { toast.error(formatApiError(err)); }
+    } catch (err) {
+      if (err?.response?.status === 404 && kind === "linkedin") {
+        toast.warning("Endpoint LinkedIn target belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
+      } else toast.error(formatApiError(err));
+    }
   };
 
   return (
     <div className="space-y-5">
-      <Card className="p-6">
-        <h2 className="font-display text-xl text-slate-900">Target Harian Saya</h2>
-        <p className="text-sm text-slate-500 mb-4">Berapa <b>prospect (domain)</b> yang harus Anda tambahkan per hari kerja. Email per domain bebas berapa pun — yang dihitung di target adalah jumlah domain. Email outreach terkunci sampai target tercapai.</p>
-        <div className="flex items-end gap-3 max-w-md">
-          <div className="flex-1">
-            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-1">Daily target (domain count)</label>
-            <input
-              type="number"
-              min="0"
-              max="1000"
-              value={myTarget}
-              onChange={(e) => setMyTarget(e.target.value)}
-              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-base focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
-              data-testid="my-target-input"
-            />
+      {/* My targets — two cards side by side on desktop */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* EMAIL TARGET */}
+        <Card className="p-6 border-l-4 border-l-indigo-500">
+          <div className="flex items-center gap-2 mb-2">
+            <EnvelopeSimple size={20} weight="fill" className="text-indigo-600"/>
+            <h2 className="font-display text-lg font-bold text-slate-900">Target Harian — Email</h2>
           </div>
-          <PrimaryButton onClick={saveMy} disabled={savingMy} data-testid="save-my-target-btn">
-            <Target size={14} weight="bold" /> {savingMy ? "Saving..." : "Simpan"}
-          </PrimaryButton>
-        </div>
-        <div className="text-[11px] text-slate-500 mt-2">Set ke 0 untuk menonaktifkan daily-quest mode.</div>
-      </Card>
+          <p className="text-sm text-slate-500 mb-4">Jumlah <b>prospect (domain)</b> per hari untuk email outreach. Email outreach terkunci sampai target tercapai.</p>
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-1">Daily target (domain)</label>
+              <input type="number" min="0" max="1000" value={myEmailTarget} onChange={(e) => setMyEmailTarget(e.target.value)}
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-base focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                data-testid="my-target-input" />
+            </div>
+            <PrimaryButton onClick={saveMyEmail} disabled={savingEmail} data-testid="save-my-target-btn">
+              <Target size={14} weight="bold" /> {savingEmail ? "..." : "Simpan"}
+            </PrimaryButton>
+          </div>
+          <div className="text-[11px] text-slate-500 mt-2">Set 0 untuk disable daily-quest.</div>
+        </Card>
 
+        {/* LINKEDIN TARGET */}
+        <Card className="p-6 border-l-4 border-l-[#0A66C2]">
+          <div className="flex items-center gap-2 mb-2">
+            <LinkedinLogo size={20} weight="fill" className="text-[#0A66C2]"/>
+            <h2 className="font-display text-lg font-bold text-slate-900">Target Harian — LinkedIn</h2>
+          </div>
+          <p className="text-sm text-slate-500 mb-4">Jumlah <b>prospect LinkedIn</b> yang harus di-Add per hari. Tab <b>3 · Connect</b> terkunci sampai target tercapai.</p>
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-1">Daily target (prospect)</label>
+              <input type="number" min="0" max="500" value={myLiTarget} onChange={(e) => setMyLiTarget(e.target.value)}
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-base focus:border-[#0A66C2] focus:ring-2 focus:ring-[#0A66C2]/20"
+                data-testid="my-li-target-input" />
+            </div>
+            <PrimaryButton onClick={saveMyLi} disabled={savingLi} data-testid="save-my-li-target-btn"
+              className="!bg-[#0A66C2] hover:!bg-[#084d92]">
+              <LinkedinLogo size={14} weight="bold" /> {savingLi ? "..." : "Simpan"}
+            </PrimaryButton>
+          </div>
+          <div className="text-[11px] text-slate-500 mt-2">Default: 15. Setiap prospect yang di-Add di tab Add Prospect bertambah ke counter.</div>
+        </Card>
+      </div>
+
+      {/* Team targets table — combined view */}
       {canManageTeam && (
         <Card className="p-6">
           <h2 className="font-display text-xl text-slate-900">Target Tim</h2>
-          <p className="text-sm text-slate-500 mb-4">Atur target harian untuk setiap anggota tim. Hanya Owner/Admin yang bisa mengubah.</p>
+          <p className="text-sm text-slate-500 mb-4">Atur target harian Email & LinkedIn untuk setiap anggota tim. Hanya Owner/Admin yang bisa mengubah.</p>
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-slate-500 text-[11px] font-medium">
                 <tr>
                   <th className="text-left p-3">Nama</th>
-                  <th className="text-left p-3">Email</th>
                   <th className="text-left p-3">Role</th>
-                  <th className="text-left p-3 w-32">Target Harian</th>
-                  <th className="text-right p-3 w-28"></th>
+                  <th className="text-left p-3 w-40">
+                    <span className="inline-flex items-center gap-1"><EnvelopeSimple size={12} weight="fill" className="text-indigo-600"/> Target Email</span>
+                  </th>
+                  <th className="text-left p-3 w-40">
+                    <span className="inline-flex items-center gap-1"><LinkedinLogo size={12} weight="fill" className="text-[#0A66C2]"/> Target LinkedIn</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {users.map((u) => {
-                  const draft = edits[u.id];
-                  const cur = u.daily_target ?? 0;
-                  const isEditing = draft !== undefined;
+                  const emailDraft = emailEdits[u.id];
+                  const liDraft = liEdits[u.id];
+                  const emailCur = u.daily_target ?? 0;
+                  const liCur = u.linkedin_daily_target ?? 15;
+                  const emailIsEditing = emailDraft !== undefined;
+                  const liIsEditing = liDraft !== undefined;
                   return (
                     <tr key={u.id} className="border-t border-slate-100">
-                      <td className="p-3 font-medium text-slate-900">{u.name}</td>
-                      <td className="p-3 text-xs text-slate-500">{u.email}</td>
+                      <td className="p-3">
+                        <div className="font-medium text-slate-900">{u.name}</div>
+                        <div className="text-[11px] text-slate-500">{u.email}</div>
+                      </td>
                       <td className="p-3 text-xs"><Badge tone="info">{u.role}</Badge></td>
                       <td className="p-3">
-                        <input
-                          type="number"
-                          min="0"
-                          max="1000"
-                          value={isEditing ? draft : cur}
-                          onChange={(e) => setEdits({ ...edits, [u.id]: e.target.value })}
-                          className="w-20 px-2 py-1 border border-slate-200 rounded text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20"
-                          data-testid={`target-input-${u.id}`}
-                        />
+                        <div className="flex gap-1">
+                          <input type="number" min="0" max="1000"
+                            value={emailIsEditing ? emailDraft : emailCur}
+                            onChange={(e) => setEmailEdits({ ...emailEdits, [u.id]: e.target.value })}
+                            className="w-20 px-2 py-1 border border-slate-200 rounded text-sm focus:border-indigo-500"
+                            data-testid={`target-input-${u.id}`} />
+                          {emailIsEditing && (
+                            <button onClick={() => saveUserTarget(u.id, "email")}
+                              className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 font-semibold"
+                              data-testid={`save-target-${u.id}`}>Save</button>
+                          )}
+                        </div>
                       </td>
-                      <td className="p-3 text-right">
-                        {isEditing && (
-                          <PrimaryButton onClick={() => saveUser(u.id)} data-testid={`save-target-${u.id}`}>
-                            Save
-                          </PrimaryButton>
-                        )}
+                      <td className="p-3">
+                        <div className="flex gap-1">
+                          <input type="number" min="0" max="500"
+                            value={liIsEditing ? liDraft : liCur}
+                            onChange={(e) => setLiEdits({ ...liEdits, [u.id]: e.target.value })}
+                            className="w-20 px-2 py-1 border border-slate-200 rounded text-sm focus:border-[#0A66C2]"
+                            data-testid={`li-target-input-${u.id}`} />
+                          {liIsEditing && (
+                            <button onClick={() => saveUserTarget(u.id, "linkedin")}
+                              className="px-2 py-1 text-xs bg-[#0A66C2] text-white rounded hover:bg-[#084d92] font-semibold"
+                              data-testid={`save-li-target-${u.id}`}>Save</button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

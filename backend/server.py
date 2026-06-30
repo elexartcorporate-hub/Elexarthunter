@@ -617,11 +617,19 @@ async def logout(response: Response):
 async def me(user: dict = Depends(get_current_user)):
     tenant = await db.tenants.find_one({"id": user["tenant_id"]})
     perms = await get_user_permissions(user)
+    # Fetch fresh target fields from DB (user dict from auth dep may not have them)
+    fresh = await db.users.find_one(
+        {"id": user["id"]},
+        {"_id": 0, "daily_target": 1, "linkedin_daily_target": 1, "sub_company_ids": 1},
+    ) or {}
     return {
         "user": {
             "id": user["id"], "name": user["name"], "email": user["email"],
             "role": user["role"], "tenant_id": user["tenant_id"],
             "permissions": perms,
+            "daily_target": fresh.get("daily_target"),
+            "linkedin_daily_target": fresh.get("linkedin_daily_target"),
+            "sub_company_ids": fresh.get("sub_company_ids"),
         },
         "tenant": strip_id(tenant) if tenant else None,
     }
