@@ -415,6 +415,9 @@ async function persistMessage(db, sessionId, sock, msg) {
         sender_jid: senderJid,
         timestamp: ts,
         ...(media ? { media } : {}),
+        // Persist the raw Baileys message envelope so we can decrypt & download the
+        // media later on-demand (Baileys downloadMediaMessage needs mediaKey + directPath).
+        ...(media ? { raw_msg_key: msg.key, raw_msg_message: msg.message } : {}),
       },
     },
     { upsert: true }

@@ -1196,11 +1196,11 @@ sudo supervisorctl restart hunter-backend`}
                         : mt === "document" ? `📎 ${m.media?.file_name || "Dokumen"}`
                         : mt === "sticker" ? "🎟️ Sticker"
                         : null;
-                      // Media URL — only available for messages where wa-service has
-                      // successfully downloaded the file to GridFS.
-                      const mediaReady = m.media?.downloaded || m.media?.file_id || m._optimistic;
+                      // Media URL — selalu tersedia kalau ada `media` object. wa-service akan
+                      // on-demand download (decrypt via Baileys) kalau belum di GridFS.
+                      // Fall-back ke "Memproses…" hanya untuk optimistic outgoing.
                       const _authToken = typeof window !== "undefined" ? localStorage.getItem("lh_token") : "";
-                      const mediaUrl = mediaReady
+                      const mediaUrl = (mt && !m._optimistic)
                         ? `${process.env.REACT_APP_BACKEND_URL}/api/whatsapp/accounts/${activeSid}/messages/${encodeURIComponent(m.message_id)}/media?token=${encodeURIComponent(_authToken || "")}`
                         : null;
                       const mediaDlUrl = mediaUrl ? `${mediaUrl}&download=1` : null;

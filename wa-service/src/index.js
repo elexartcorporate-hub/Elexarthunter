@@ -1,5 +1,7 @@
 import express from "express";
-import { MongoClient } from "mongodb";
+import { MongoClient, GridFSBucket } from "mongodb";
+import baileysPkg from "@whiskeysockets/baileys";
+const { downloadMediaMessage } = baileysPkg;
 import {
   startSession,
   stopSession,
@@ -189,9 +191,8 @@ app.post("/sessions/:sid/chats/:jid/media", async (req, res) => {
   }
 });
 
-// Download persisted media (auto-downloaded from incoming, or saved when sending).
-// Stream from GridFS so even large files (videos, big docs) work without loading
-// everything into memory.
+// Download persisted media. If not yet in GridFS, fetch on-demand from Baileys
+// using the raw message envelope we persisted. Streams large files efficiently.
 app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
   try {
     const { sid, msgid } = req.params;
@@ -201,13 +202,54 @@ app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
     });
     if (!msg || !msg.media) return res.status(404).json({ error: "Message or media not found" });
 
-    const { GridFSBucket } = await import("mongodb");
     const bucket = new GridFSBucket(db, { bucketName: "wa_media" });
-
-    // Find file by filename pattern OR file_id stored on message
     const filename = `${sid}/${msgid}`;
-    const file = await db.collection("wa_media.files").findOne({ filename });
-    if (!file) return res.status(404).json({ error: "Media file not yet downloaded", media: msg.media });
+    let file = await db.collection("wa_media.files").findOne({ filename });
+
+    // ON-DEMAND DOWNLOAD: if file is not in GridFS yet, decrypt+download via Baileys.
+    if (!file && msg.raw_msg_message && msg.raw_msg_key) {
+      const sock = getSock(sid);
+      if (!sock) {
+        return res.status(503).json({ error: "Session WA tidak aktif. Scan QR ulang lalu coba lagi." });
+      }
+      try {
+        const fullMsg = { key: msg.raw_msg_key, message: msg.raw_msg_message };
+        const buffer = await downloadMediaMessage(
+          fullMsg,
+          "buffer",
+          {},
+          { reuploadRequest: sock.updateMediaMessage }
+        );
+        if (buffer && buffer.length > 0) {
+          await new Promise((resolve, reject) => {
+            const upload = bucket.openUploadStream(filename, {
+              metadata: {
+                session_id: sid,
+                message_id: msgid,
+                jid: msg.jid,
+                media_type: msg.media.media_type,
+                mimetype: msg.media.mimetype,
+                file_name: msg.media.file_name,
+              },
+            });
+            upload.on("error", reject);
+            upload.on("finish", resolve);
+            upload.end(buffer);
+          });
+          await db.collection("wa_messages").updateOne(
+            { session_id: sid, message_id: msgid },
+            { $set: { "media.downloaded": true, "media.file_size": buffer.length } }
+          );
+          file = await db.collection("wa_media.files").findOne({ filename });
+        }
+      } catch (e) {
+        console.error("[on-demand media] download failed:", e.message);
+        return res.status(502).json({ error: `Gagal download dari WhatsApp: ${e.message}` });
+      }
+    }
+    if (!file) {
+      return res.status(404).json({ error: "Media tidak tersedia (chat lama sebelum fitur ini ada — tidak punya encryption key)" });
+    }
 
     res.setHeader("Content-Type", msg.media.mimetype || "application/octet-stream");
     res.setHeader("Content-Length", file.length);
@@ -215,7 +257,6 @@ app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
     if (req.query.download === "1") {
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadAs)}"`);
     } else {
-      // Inline so images/videos render in browser preview
       res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(downloadAs)}"`);
     }
     res.setHeader("Cache-Control", "private, max-age=86400");
