@@ -817,7 +817,10 @@ sudo supervisorctl restart hunter-backend`}
             ) : visibleAccounts.map((acc) => {
               const sb = statusBadge(acc.live_status || acc.status);
               const isOther = acc.user_id !== user?.id;
-              const showAdmin = isAdmin && acc.is_own;
+              // Fallback: if backend doesn't return is_own field (old backend), derive from user_id
+              const isOwn = acc.is_own !== undefined ? acc.is_own : (acc.user_id === user?.id);
+              // Owner can edit any account in tenant; others only their own
+              const canEdit = isOwn || user?.role === "Owner";
               return (
                 <div
                   key={acc.session_id}
@@ -857,7 +860,7 @@ sudo supervisorctl restart hunter-backend`}
                         </span>
                       )}
                     </div>
-                    {acc.is_own && acc.default_assigned_user_name && (
+                    {isOwn && acc.default_assigned_user_name && (
                       <div className="mt-1 text-[10px] text-indigo-700 bg-indigo-50 rounded px-1.5 py-0.5 inline-flex items-center gap-1 max-w-full">
                         <UserPlus size={9} weight="bold" />
                         <span className="truncate">Auto → {acc.default_assigned_user_name}</span>
@@ -865,7 +868,7 @@ sudo supervisorctl restart hunter-backend`}
                     )}
                   </div>
                   <div className="flex flex-col gap-1 shrink-0">
-                    {(acc.live_status === "qr" || acc.live_status === "logged_out") && acc.is_own && (
+                    {(acc.live_status === "qr" || acc.live_status === "logged_out") && isOwn && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleScanAgain(acc); }}
                         className="p-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200"
@@ -875,7 +878,7 @@ sudo supervisorctl restart hunter-backend`}
                         <Phone size={14} weight="bold" />
                       </button>
                     )}
-                    {(acc.is_own || showAdmin) && (
+                    {canEdit && (
                       <button
                         onClick={(e) => { e.stopPropagation(); setRenameAccount(acc); setRenameOpen(true); }}
                         className="p-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-200"
