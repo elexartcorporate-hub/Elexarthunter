@@ -640,9 +640,10 @@ sudo supervisorctl restart hunter-backend`}
                           <div className={`max-w-[75%] rounded-lg px-3 py-2 text-sm shadow-sm ${
                             m.from_me ? "bg-emerald-500 text-white" : "bg-white text-slate-900 border border-slate-200"
                           }`}>
-                            {!m.from_me && m.push_name && (
-                              <div className={`text-[10px] font-bold mb-0.5 ${m.from_me ? "text-emerald-100" : "text-emerald-600"}`}>
-                                {m.push_name}
+                            {/* For GROUP chats only: show sender phone (not push_name alias) */}
+                            {!m.from_me && (activeJid?.includes("@g.us")) && m.sender_jid && (
+                              <div className={`text-[10px] font-bold mb-0.5 font-mono ${m.from_me ? "text-emerald-100" : "text-emerald-600"}`} data-testid={`wa-msg-sender-${m.message_id}`}>
+                                {formatPhone(m.sender_jid)}
                               </div>
                             )}
                             {mediaLabel && (

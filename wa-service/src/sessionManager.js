@@ -6,6 +6,7 @@ const {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   Browsers,
+  jidNormalizedUser,
 } = baileysPkg;
 import pino from "pino";
 import qrcode from "qrcode";
@@ -199,13 +200,14 @@ async function connectSession(db, sessionId) {
 
   sock.ev.on("chats.upsert", async (chats) => {
     for (const c of chats) {
-      const isGroup = c.id?.endsWith("@g.us");
+      const jid = normJid(c.id);
+      const isGroup = jid?.endsWith("@g.us");
       await db.collection("wa_chats").updateOne(
-        { session_id: sessionId, jid: c.id },
+        { session_id: sessionId, jid },
         {
           $set: {
             session_id: sessionId,
-            jid: c.id,
+            jid,
             name: c.name || c.subject || null,
             is_group: isGroup,
             unread_count: c.unreadCount || 0,
@@ -214,9 +216,8 @@ async function connectSession(db, sessionId) {
         },
         { upsert: true }
       );
-      // For groups, fetch metadata async (don't block)
       if (isGroup) {
-        fetchGroupMetadata(db, sessionId, sock, c.id).catch(() => {});
+        fetchGroupMetadata(db, sessionId, sock, jid).catch(() => {});
       }
     }
   });
@@ -224,12 +225,13 @@ async function connectSession(db, sessionId) {
   sock.ev.on("chats.update", async (updates) => {
     for (const u of updates) {
       if (!u.id) continue;
+      const jid = normJid(u.id);
       const set = { updated_at: new Date() };
       if (u.name !== undefined) set.name = u.name;
       if (u.unreadCount !== undefined) set.unread_count = u.unreadCount;
       await db.collection("wa_chats").updateOne(
-        { session_id: sessionId, jid: u.id },
-        { $set: set, $setOnInsert: { session_id: sessionId, jid: u.id } },
+        { session_id: sessionId, jid },
+        { $set: set, $setOnInsert: { session_id: sessionId, jid } },
         { upsert: true }
       );
     }
@@ -238,6 +240,7 @@ async function connectSession(db, sessionId) {
   sock.ev.on("contacts.upsert", async (contacts) => {
     for (const c of contacts) {
       if (!c.id) continue;
+      const jid = normJid(c.id);
       // Distinguish: saved name (from user's contact list) vs push name (alias set by other user)
       // Address-book/saved name is what user explicitly saved → reliable.
       // Push name (`notify`) is what the OTHER person set as their own display → unreliable/alias.
@@ -245,11 +248,11 @@ async function connectSession(db, sessionId) {
       const pushName  = c.notify || null;                        // alias — keep separate
       const displayName = savedName || pushName || null;         // best-effort for legacy field
       await db.collection("wa_contacts").updateOne(
-        { session_id: sessionId, jid: c.id },
+        { session_id: sessionId, jid },
         {
           $set: {
             session_id: sessionId,
-            jid: c.id,
+            jid,
             name: displayName,
             saved_name: savedName,
             push_name: pushName,
@@ -349,16 +352,28 @@ function getMediaInfo(message) {
   return null;
 }
 
+// Helper: normalize JID to canonical form (strips device suffix, handles LID/PN mapping).
+// Falls back to raw if normalization throws (e.g. for status@broadcast etc).
+export function normJid(jid) {
+  if (!jid || typeof jid !== "string") return jid;
+  if (jid.endsWith("@g.us") || jid.endsWith("@broadcast")) return jid;
+  try { return jidNormalizedUser(jid) || jid; }
+  catch { return jid.split(":")[0].includes("@") ? jid.split(":")[0] : jid; }
+}
+
 async function persistMessage(db, sessionId, sock, msg) {
   if (!msg.message) return;
-  const jid = msg.key.remoteJid;
-  if (!jid || jid === "status@broadcast") return;
+  const rawJid = msg.key.remoteJid;
+  if (!rawJid || rawJid === "status@broadcast") return;
+  const jid = normJid(rawJid);  // canonical JID — same for outgoing & incoming
   const text = getMsgText(msg.message);
   const fromMe = !!msg.key.fromMe;
   const ts = msg.messageTimestamp
     ? new Date(Number(msg.messageTimestamp) * 1000)
     : new Date();
   const media = getMediaInfo(msg.message);
+  // Sender JID (for group chats — who in group sent it). Normalize too.
+  const senderJid = msg.key.participant ? normJid(msg.key.participant) : (fromMe ? null : jid);
   await db.collection("wa_messages").updateOne(
     { session_id: sessionId, message_id: msg.key.id, jid },
     {
@@ -369,6 +384,7 @@ async function persistMessage(db, sessionId, sock, msg) {
         from_me: fromMe,
         text,
         push_name: msg.pushName || null,
+        sender_jid: senderJid,
         timestamp: ts,
         ...(media ? { media } : {}),
       },
@@ -417,7 +433,8 @@ export async function sendText(sessionId, jid, text) {
   const sock = getSock(sessionId);
   if (!sock) throw new Error("Session not started");
   if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
-  const res = await sock.sendMessage(jid, { text });
+  const targetJid = normJid(jid); // ensure canonical so outgoing matches future incoming
+  const res = await sock.sendMessage(targetJid, { text });
   return res;
 }
 
@@ -425,6 +442,7 @@ export async function sendMedia(sessionId, jid, { buffer, mimetype, fileName, ca
   const sock = getSock(sessionId);
   if (!sock) throw new Error("Session not started");
   if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
+  const targetJid = normJid(jid);
   let payload;
   if (kind === "image") {
     payload = { image: buffer, caption: caption || "", mimetype };
@@ -440,7 +458,7 @@ export async function sendMedia(sessionId, jid, { buffer, mimetype, fileName, ca
       caption: caption || undefined,
     };
   }
-  const res = await sock.sendMessage(jid, payload);
+  const res = await sock.sendMessage(targetJid, payload);
   return res;
 }
 

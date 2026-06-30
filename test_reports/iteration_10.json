@@ -1,0 +1,64 @@
+{
+  "summary": "Iteration 10 — frontend-only verification of WA bug fixes A (group-only phone-number sender label on message bubbles) & B (JID normalization for two-way chat sync). Pod has no real Baileys socket so chat/message rendering verified via (1) code review of /app/frontend/src/pages/WhatsApp.jsx + /app/wa-service/src/sessionManager.js + /app/wa-service/src/index.js and (2) Playwright execution of the actual exported helper functions (formatPhone, jidName) in the browser context against representative JID inputs. Regression checks performed for Settings, LinkedIn Prospect tabs, and /whatsapp empty state.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "bug_fix_verification": {
+    "bug_fix_A_message_bubble_sender_label": {
+      "status": "VERIFIED in code",
+      "evidence": "WhatsApp.jsx lines 644-648: sender label rendered ONLY when `!m.from_me && activeJid?.includes('@g.us') && m.sender_jid`. Uses `formatPhone(m.sender_jid)` (not push_name). Wrapped in `font-mono` and `data-testid=wa-msg-sender-{message_id}`. Private chats receive NO sender label above bubble (condition fails). Group chats render the normalized phone number (e.g. `+6281234567890`). Cannot exercise runtime path: pod has 0 connected accounts (empty state shown)."
+    },
+    "bug_fix_B_jid_normalization": {
+      "status": "VERIFIED in code",
+      "evidence": "sessionManager.js line 9 imports `jidNormalizedUser`; lines 357-362 export `normJid()` helper (skips @g.us/@broadcast, falls back on error). `persistMessage` (line 368) normalizes both wa_messages.jid and wa_chats.jid via normJid. `chats.upsert` (203), `chats.update` (228), `contacts.upsert` (243) all normalize. `sendText` (436) and `sendMedia` (445) normalize target JID before `sock.sendMessage`. index.js line 11 imports `normJid`; messages GET endpoint (lines 137-141) uses `$in: [normalized, raw]` for backward compat with legacy rows."
+    },
+    "chat_list_phone_primary": {
+      "status": "VERIFIED in code",
+      "evidence": "WhatsApp.jsx line 565 uses font-mono + data-testid=wa-chat-name-{jid} rendering `jidName(c.jid, c.name)`. Lines 574-578 render italic secondary alias with data-testid=wa-chat-alias-{jid}, prefixed with `~`, only for non-group chats with c.name set."
+    },
+    "chat_header": {
+      "status": "VERIFIED in code",
+      "evidence": "WhatsApp.jsx line 613: header div uses font-mono + data-testid=wa-active-header showing `jidName(activeJid)`. Lines 614-620 render italic `~alias` secondary line for private chats where alias exists."
+    },
+    "helper_function_runtime_tests": {
+      "status": "9/9 PASSED in browser",
+      "results": {
+        "formatPhone(jid_basic)": "+6281234567890 ✓",
+        "formatPhone(jid_with_device_:12)": "+6281234567890 ✓ (device suffix stripped)",
+        "formatPhone(jid_with_plus_prefix)": "+6281234567890 ✓ (no double +)",
+        "formatPhone(group_jid_@g.us)": "'' ✓ (groups return empty)",
+        "formatPhone(null)": "'' ✓",
+        "jidName(private_jid, 'AliasFromOther')": "+6281234567890 ✓ (alias IGNORED for private)",
+        "jidName(private_jid, null)": "+6281234567890 ✓",
+        "jidName(group_jid, 'Family Group')": "Family Group ✓",
+        "jidName(group_jid, null)": "Group ✓"
+      }
+    }
+  },
+  "regression_checks": {
+    "whatsapp_page_loads": "PASS — /whatsapp shows empty state 'Belum ada akun WhatsApp' with Add WhatsApp button visible (data-testid=wa-add-account count=1). No console errors.",
+    "settings_target_harian": "PASS — Settings page renders with sidebar tabs: Companies, Users, Roles, Target Harian, Working Days, Categories, Locations, Hunter.io API. Did NOT click into Target Harian tab to confirm Email/LinkedIn split panels rendered (basic regression only).",
+    "linkedin_prospect_tabs": "PASS — /linkedin renders all 5 tabs found in DOM: 1·Jadwal, 2·Add Prospect (1/20), 3·Connect, 4·Analitik, Prospect List. Pipeline distribution chart + filter UI working.",
+    "scrapingdog_search": "NOT TESTED — would require business action; out of scope for bug verification scope."
+  },
+  "critical_code_review_comments": [
+    "normJid() in sessionManager.js correctly falls back to raw JID when jidNormalizedUser throws, and short-circuits for @g.us/@broadcast — sound design.",
+    "GET messages endpoint uses $in:[normalized, raw] only when normalized != raw — efficient, avoids unnecessary index scan.",
+    "Minor: persistMessage uses upsert key `{session_id, message_id, jid}`. If a single message_id arrives once with raw JID (legacy) and again with normalized JID (post-fix), MongoDB unique index `{session_id:1, message_id:1, jid:1}` could create a duplicate row. Risk is bounded (only during the transition window), but worth noting for migration.",
+    "Sender label in group chats relies on `m.sender_jid` which is set in persistMessage from `msg.key.participant`. For Baileys, this is correct — participant is the actual sender's JID in groups, distinct from chat JID. Good.",
+    "Frontend `jidName` deliberately discards alias for private chats — per product requirement (push_name is set by the OTHER user and untrustworthy). Comment in lines 23-25 documents intent clearly."
+  ],
+  "test_report_links": [],
+  "action_items": [],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (frontend-only test)", "frontend": "100%" },
+  "test_credentials": "demo@test.com / demo1234 — verified working, lands on dashboard.",
+  "seed_data_creation": "None. Pod has no Baileys WA socket so no chat/message rows can be created. All helper logic verified by executing the same JS in browser context against synthetic JID inputs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Bug fixes A & B are code-verified. To do a live end-to-end test you would need: (1) a real WhatsApp account scanned via QR on a host that can reach WA servers (pod cannot), (2) two devices to exchange messages and confirm: same canonical JID in wa_messages docs for inbound + outbound, and (3) a group chat to confirm the wa-msg-sender-{id} label shows + the sender phone (not push_name). All helper math + selectors are correct per static review.",
+  "rca of the issue": "N/A — this iteration was a verification pass for fixes already merged. No new bug RCA needed. Original RCA (per request): outbound messages were being stored with un-normalized JID (e.g. `62812...@s.whatsapp.net`) while inbound from the same contact sometimes arrived with device suffix (`62812...:12@s.whatsapp.net`) or LID form, causing them to land in different wa_chats rows. Mitigation: normalize every JID at every write site (persistMessage, chats.upsert/update, contacts.upsert) and every send (sendText, sendMedia). Read site (GET messages) tolerates legacy raw JIDs via $in lookup."
+}

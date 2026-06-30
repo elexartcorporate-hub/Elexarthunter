@@ -8,6 +8,7 @@ import {
   sendMedia,
   markChatRead,
   listGroups,
+  normJid,
 } from "./sessionManager.js";
 
 const PORT = parseInt(process.env.WA_SERVICE_PORT || "3002", 10);
@@ -133,7 +134,11 @@ app.get("/sessions/:sid/chats", async (req, res) => {
 app.get("/sessions/:sid/chats/:jid/messages", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
   const sinceTs = req.query.since_ts ? new Date(req.query.since_ts) : null;
-  const q = { session_id: req.params.sid, jid: req.params.jid };
+  const normalizedJid = normJid(req.params.jid);
+  // Look up both normalized AND raw (handles legacy rows stored with device suffix)
+  const jidsToCheck = [normalizedJid];
+  if (normalizedJid !== req.params.jid) jidsToCheck.push(req.params.jid);
+  const q = { session_id: req.params.sid, jid: { $in: jidsToCheck } };
   if (sinceTs && !isNaN(sinceTs.getTime())) {
     q.timestamp = { $gt: sinceTs };
   }
