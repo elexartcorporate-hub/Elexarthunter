@@ -4881,16 +4881,51 @@ def _wa_scope_query(user: dict) -> dict:
     return q
 
 
+async def _wa_user_has_assignment(session_id: str, user_id: str, tenant_id: str) -> bool:
+    """Check if user has any chat assigned to them on this session (team inbox access)."""
+    cnt = await db.wa_chat_assignments.count_documents({
+        "session_id": session_id,
+        "assigned_user_id": user_id,
+        "tenant_id": tenant_id,
+    })
+    return cnt > 0
+
+
 async def _wa_check_account_access(session_id: str, user: dict) -> dict:
-    """Return account doc if user has access, else 404/403."""
+    """Return account doc if user has access, else 404/403.
+
+    Access rules:
+      - Owner: any account in tenant
+      - Account owner: own account
+      - Other users: only if they have at least one chat assigned from this connection (team inbox)
+    """
+    # First check ownership / Owner scope
     acc = await db.wa_accounts.find_one({"session_id": session_id, **_wa_scope_query(user)})
-    if not acc:
-        # Also check existence outside scope to disambiguate 403 vs 404
-        exists = await db.wa_accounts.find_one({"session_id": session_id}, {"_id": 0, "user_id": 1})
-        if exists:
-            raise HTTPException(403, "Anda tidak punya akses ke akun WA ini")
-        raise HTTPException(404, "Akun WA tidak ditemukan")
-    return acc
+    if acc:
+        return acc
+    # Then check team-inbox access (any assignment grants visibility of the account)
+    exists = await db.wa_accounts.find_one({"session_id": session_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if exists and await _wa_user_has_assignment(session_id, user["id"], user["tenant_id"]):
+        return exists
+    if exists:
+        raise HTTPException(403, "Anda tidak punya akses ke akun WA ini")
+    raise HTTPException(404, "Akun WA tidak ditemukan")
+
+
+async def _wa_user_can_send_on_chat(session_id: str, jid: str, user: dict, acc: dict) -> bool:
+    """User can send on a chat if:
+       - They own the account, OR
+       - They have this specific JID assigned to them (team inbox).
+    """
+    if acc["user_id"] == user["id"]:
+        return True
+    a = await db.wa_chat_assignments.find_one({
+        "session_id": session_id,
+        "jid": jid,
+        "assigned_user_id": user["id"],
+        "tenant_id": user["tenant_id"],
+    })
+    return a is not None
 
 
 class WAAccountCreate(BaseModel):
@@ -4926,18 +4961,83 @@ async def wa_health():
 
 @api.get("/whatsapp/accounts")
 async def wa_list_accounts(user: dict = Depends(get_current_user)):
-    """List WA accounts. Owner sees all in tenant (sales monitoring), others see own."""
-    rows = await db.wa_accounts.find(_wa_scope_query(user), {"_id": 0}).sort("created_at", -1).to_list(50)
-    # Enrich with live status from sidecar (best-effort)
+    """List WA accounts.
+       - Owner: all accounts in tenant (sales monitoring).
+       - Others: own accounts + accounts where they have at least 1 chat assigned (team inbox).
+       Each row gets `is_assigned_inbox: true` if it's not owned by this user (team inbox view).
+    """
+    own_q = _wa_scope_query(user)
+    own_rows = await db.wa_accounts.find(own_q, {"_id": 0}).sort("created_at", -1).to_list(50)
+    own_ids = {r["session_id"] for r in own_rows}
+
+    # Find sessions where this user has assignments (team inbox)
+    assigned_sessions = []
+    if user.get("role") != "Owner":
+        sids = await db.wa_chat_assignments.distinct(
+            "session_id",
+            {"tenant_id": user["tenant_id"], "assigned_user_id": user["id"]},
+        )
+        sids = [s for s in sids if s not in own_ids]
+        if sids:
+            assigned_sessions = await db.wa_accounts.find(
+                {"session_id": {"$in": sids}, "tenant_id": user["tenant_id"]},
+                {"_id": 0},
+            ).to_list(50)
+
+    # Enrich with live status from sidecar (best-effort) + mark assigned inbox
     out = []
-    for r in rows:
+    for r in own_rows:
         live = None
         try:
             live = await _wa_call("GET", f"/sessions/{r['session_id']}")
         except HTTPException:
             live = None
-        out.append({**r, "live_status": (live or {}).get("status"), "qr": (live or {}).get("qr")})
+        out.append({
+            **r,
+            "live_status": (live or {}).get("status"),
+            "qr": (live or {}).get("qr"),
+            "is_assigned_inbox": False,
+            "is_own": r["user_id"] == user["id"],
+        })
+    for r in assigned_sessions:
+        live = None
+        try:
+            live = await _wa_call("GET", f"/sessions/{r['session_id']}")
+        except HTTPException:
+            live = None
+        # Count assignments for this user on this session
+        n_assigned = await db.wa_chat_assignments.count_documents({
+            "session_id": r["session_id"], "assigned_user_id": user["id"], "tenant_id": user["tenant_id"],
+        })
+        out.append({
+            **r,
+            "live_status": (live or {}).get("status"),
+            "qr": (live or {}).get("qr"),
+            "is_assigned_inbox": True,
+            "is_own": False,
+            "assigned_chat_count": n_assigned,
+        })
     return out
+
+
+class WAAccountUpdate(BaseModel):
+    label: Optional[str] = None
+
+
+@api.patch("/whatsapp/accounts/{sid}")
+async def wa_update_account(sid: str, payload: WAAccountUpdate, user: dict = Depends(get_current_user)):
+    """Rename a WA connection (gear icon). Only owner of the account or tenant Owner can rename."""
+    acc = await db.wa_accounts.find_one({"session_id": sid, "tenant_id": user["tenant_id"]})
+    if not acc:
+        raise HTTPException(404, "Akun WA tidak ditemukan")
+    if acc["user_id"] != user["id"] and user.get("role") != "Owner":
+        raise HTTPException(403, "Hanya pemilik akun atau Owner yang bisa rename koneksi")
+    label = (payload.label or "").strip() or None
+    await db.wa_accounts.update_one(
+        {"session_id": sid},
+        {"$set": {"label": label}},
+    )
+    return {"ok": True, "session_id": sid, "label": label}
 
 
 @api.post("/whatsapp/accounts")
@@ -4975,17 +5075,110 @@ async def wa_account_status(sid: str, user: dict = Depends(get_current_user)):
 @api.delete("/whatsapp/accounts/{sid}")
 async def wa_delete_account(sid: str, user: dict = Depends(get_current_user)):
     """Logout + delete WA account. Non-Owner only deletes own; Owner can delete any in tenant."""
-    await _wa_check_account_access(sid, user)
+    acc = await _wa_check_account_access(sid, user)
+    # Only account owner or Owner can delete (not team-inbox users)
+    if acc["user_id"] != user["id"] and user.get("role") != "Owner":
+        raise HTTPException(403, "Hanya Owner atau pemilik akun yang bisa menghapus")
+    # Cleanup assignments first
+    await db.wa_chat_assignments.delete_many({"session_id": sid, "tenant_id": user["tenant_id"]})
     return await _wa_call("DELETE", f"/sessions/{sid}")
 
 
 @api.get("/whatsapp/accounts/{sid}/chats")
 async def wa_list_chats(sid: str, limit: int = 100, since_ts: Optional[str] = None, user: dict = Depends(get_current_user)):
-    await _wa_check_account_access(sid, user)
+    acc = await _wa_check_account_access(sid, user)
     params = {"limit": limit}
     if since_ts:
         params["since_ts"] = since_ts
-    return await _wa_call("GET", f"/sessions/{sid}/chats", params=params)
+    chats = await _wa_call("GET", f"/sessions/{sid}/chats", params=params)
+
+    # Build assignment map (jid -> {assigned_user_id, assigned_user_name})
+    assignments = await db.wa_chat_assignments.find(
+        {"session_id": sid, "tenant_id": user["tenant_id"]}
+    ).to_list(2000)
+    assigned_user_ids = list({a["assigned_user_id"] for a in assignments})
+    user_name_map = {}
+    if assigned_user_ids:
+        users = await db.users.find(
+            {"id": {"$in": assigned_user_ids}, "tenant_id": user["tenant_id"]},
+            {"_id": 0, "id": 1, "name": 1, "email": 1},
+        ).to_list(200)
+        user_name_map = {u["id"]: u.get("name") or u.get("email") for u in users}
+    a_by_jid = {a["jid"]: a for a in assignments}
+
+    is_owner_or_admin = user.get("role") in ("Owner", "Admin")
+    is_account_owner = acc["user_id"] == user["id"]
+
+    enriched = []
+    for c in chats or []:
+        a = a_by_jid.get(c["jid"])
+        c["assignment"] = (
+            {
+                "assigned_user_id": a["assigned_user_id"],
+                "assigned_user_name": user_name_map.get(a["assigned_user_id"]),
+                "assigned_at": a.get("assigned_at"),
+                "is_mine": a["assigned_user_id"] == user["id"],
+            }
+            if a
+            else None
+        )
+        enriched.append(c)
+
+    # Filter for users coming in via team inbox (not account owner, not Owner/Admin):
+    # show only chats assigned to them.
+    if not is_account_owner and not is_owner_or_admin:
+        enriched = [c for c in enriched if c.get("assignment") and c["assignment"]["is_mine"]]
+
+    return enriched
+
+
+class WAAssignChat(BaseModel):
+    user_id: str  # target user_id to assign chat to
+
+
+@api.post("/whatsapp/accounts/{sid}/chats/{jid}/assign")
+async def wa_assign_chat(sid: str, jid: str, payload: WAAssignChat, user: dict = Depends(get_current_user)):
+    """Assign a chat (jid) on a connection to a specific tenant user (team inbox).
+       Allowed: Owner or Admin or account owner.
+    """
+    acc = await db.wa_accounts.find_one({"session_id": sid, "tenant_id": user["tenant_id"]})
+    if not acc:
+        raise HTTPException(404, "Akun WA tidak ditemukan")
+    is_admin = user.get("role") in ("Owner", "Admin")
+    if not is_admin and acc["user_id"] != user["id"]:
+        raise HTTPException(403, "Hanya Owner/Admin atau pemilik akun yang bisa assign chat")
+    target = await db.users.find_one({"id": payload.user_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1, "name": 1, "email": 1})
+    if not target:
+        raise HTTPException(404, "User target tidak ditemukan")
+    doc = {
+        "session_id": sid,
+        "jid": jid,
+        "tenant_id": user["tenant_id"],
+        "assigned_user_id": payload.user_id,
+        "assigned_by": user["id"],
+        "assigned_at": now_iso(),
+    }
+    await db.wa_chat_assignments.update_one(
+        {"session_id": sid, "jid": jid, "tenant_id": user["tenant_id"]},
+        {"$set": doc},
+        upsert=True,
+    )
+    return {"ok": True, **doc, "assigned_user_name": target.get("name") or target.get("email")}
+
+
+@api.delete("/whatsapp/accounts/{sid}/chats/{jid}/assign")
+async def wa_unassign_chat(sid: str, jid: str, user: dict = Depends(get_current_user)):
+    """Remove an assignment. Allowed: Owner/Admin or account owner."""
+    acc = await db.wa_accounts.find_one({"session_id": sid, "tenant_id": user["tenant_id"]})
+    if not acc:
+        raise HTTPException(404, "Akun WA tidak ditemukan")
+    is_admin = user.get("role") in ("Owner", "Admin")
+    if not is_admin and acc["user_id"] != user["id"]:
+        raise HTTPException(403, "Hanya Owner/Admin atau pemilik akun yang bisa unassign")
+    await db.wa_chat_assignments.delete_one(
+        {"session_id": sid, "jid": jid, "tenant_id": user["tenant_id"]}
+    )
+    return {"ok": True}
 
 
 @api.get("/whatsapp/accounts/{sid}/chats/{jid}/messages")
@@ -5003,10 +5196,11 @@ class WASendText(BaseModel):
 
 @api.post("/whatsapp/accounts/{sid}/chats/{jid}/messages")
 async def wa_send_text(sid: str, jid: str, payload: WASendText, user: dict = Depends(get_current_user)):
-    """Send text. Owner has read-only access for monitoring → only sender can send."""
+    """Send text. Account owner OR assigned user can send.
+    Owner/Admin without assignment is view-only on others' chats."""
     acc = await _wa_check_account_access(sid, user)
-    if acc["user_id"] != user["id"]:
-        raise HTTPException(403, "Hanya pemilik akun WA yang bisa mengirim pesan")
+    if not await _wa_user_can_send_on_chat(sid, jid, user, acc):
+        raise HTTPException(403, "Anda tidak punya akses untuk mengirim pesan di chat ini")
     return await _wa_call("POST", f"/sessions/{sid}/chats/{jid}/messages", json={"text": payload.text})
 
 
@@ -5020,10 +5214,10 @@ class WASendMedia(BaseModel):
 
 @api.post("/whatsapp/accounts/{sid}/chats/{jid}/media")
 async def wa_send_media(sid: str, jid: str, payload: WASendMedia, user: dict = Depends(get_current_user)):
-    """Send image/video/document/audio. Max 50MB."""
+    """Send image/video/document/audio. Max 50MB. Account owner OR assigned user can send."""
     acc = await _wa_check_account_access(sid, user)
-    if acc["user_id"] != user["id"]:
-        raise HTTPException(403, "Hanya pemilik akun WA yang bisa mengirim media")
+    if not await _wa_user_can_send_on_chat(sid, jid, user, acc):
+        raise HTTPException(403, "Anda tidak punya akses untuk mengirim media di chat ini")
     # Sanity check base64 length (~ 1.37x raw size)
     if len(payload.base64) > 70 * 1024 * 1024:
         raise HTTPException(400, "File terlalu besar (max ~50MB)")
@@ -5049,9 +5243,9 @@ async def wa_list_groups(sid: str, user: dict = Depends(get_current_user)):
 @api.post("/whatsapp/accounts/{sid}/chats/{jid}/read")
 async def wa_mark_read(sid: str, jid: str, user: dict = Depends(get_current_user)):
     acc = await _wa_check_account_access(sid, user)
-    if acc["user_id"] != user["id"]:
-        # Owner viewing — don't mark read on someone else's behalf
-        return {"ok": True, "skipped": "owner_view_only"}
+    if not await _wa_user_can_send_on_chat(sid, jid, user, acc):
+        # Owner/Admin viewing — don't mark read on someone else's behalf
+        return {"ok": True, "skipped": "viewer_only"}
     return await _wa_call("POST", f"/sessions/{sid}/chats/{jid}/read")
 
 

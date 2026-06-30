@@ -5,7 +5,7 @@ import { PageHeader, Card, PrimaryButton, GhostButton, Badge, EmptyState } from 
 import {
   WhatsappLogo, Plus, Trash, Eye, ArrowsClockwise, X, PaperPlaneRight,
   ChatCircleDots, Phone, User, ShieldCheck, Warning, CheckCircle,
-  Paperclip, UsersThree,
+  Paperclip, UsersThree, Gear, UserPlus, Users, Tag,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -137,6 +137,155 @@ function QrModal({ open, onClose, account, onConnected }) {
   );
 }
 
+// ─── Rename Connection Modal ───
+function RenameModal({ open, onClose, account, onSaved }) {
+  const [label, setLabel] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open) setLabel(account?.label || "");
+  }, [open, account?.session_id]); // eslint-disable-line
+  if (!open || !account) return null;
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.patch(`/whatsapp/accounts/${account.session_id}`, { label: label.trim() || null });
+      toast.success("Nama koneksi disimpan");
+      onSaved?.();
+      onClose();
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-start sm:items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl max-w-md w-full my-auto" onClick={(e) => e.stopPropagation()} data-testid="wa-rename-modal">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <div className="flex items-center gap-2">
+            <Gear size={20} weight="bold" className="text-indigo-500" />
+            <h3 className="font-bold text-slate-900">Setting Koneksi WhatsApp</h3>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <div className="text-xs text-slate-500">
+            Nomor: <span className="font-mono font-semibold text-slate-700">+{account.phone || "—"}</span>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Nama / Label Koneksi</label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Contoh: CS Bali, Sales Jakarta, Admin Pusat"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
+              maxLength={64}
+              data-testid="wa-rename-input"
+            />
+            <div className="text-[10px] text-slate-400 mt-1">Label ini memudahkan tim mengenali fungsi koneksi.</div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200 bg-slate-50 rounded-b-xl">
+          <GhostButton onClick={onClose} disabled={saving}>Batal</GhostButton>
+          <PrimaryButton onClick={handleSave} disabled={saving} data-testid="wa-rename-save">
+            {saving ? "Menyimpan…" : "Simpan"}
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Assign Chat to User Modal ───
+function AssignChatModal({ open, onClose, sessionId, jid, currentAssignment, teamMembers, onSaved }) {
+  const [targetUserId, setTargetUserId] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open) setTargetUserId(currentAssignment?.assigned_user_id || "");
+  }, [open, jid]); // eslint-disable-line
+  if (!open) return null;
+  const handleSave = async () => {
+    if (!targetUserId) { toast.error("Pilih user tujuan"); return; }
+    setSaving(true);
+    try {
+      await api.post(
+        `/whatsapp/accounts/${sessionId}/chats/${encodeURIComponent(jid)}/assign`,
+        { user_id: targetUserId }
+      );
+      toast.success("Chat berhasil di-assign");
+      onSaved?.();
+      onClose();
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setSaving(false); }
+  };
+  const handleUnassign = async () => {
+    setSaving(true);
+    try {
+      await api.delete(`/whatsapp/accounts/${sessionId}/chats/${encodeURIComponent(jid)}/assign`);
+      toast.success("Assignment dihapus");
+      onSaved?.();
+      onClose();
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-start sm:items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl max-w-md w-full my-auto" onClick={(e) => e.stopPropagation()} data-testid="wa-assign-modal">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <div className="flex items-center gap-2">
+            <UserPlus size={20} weight="bold" className="text-indigo-500" />
+            <h3 className="font-bold text-slate-900">Assign Chat ke User</h3>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <div className="text-xs text-slate-500">
+            Chat: <span className="font-mono font-semibold text-slate-700">{jid}</span>
+          </div>
+          {currentAssignment ? (
+            <div className="rounded-lg bg-indigo-50 border border-indigo-200 px-3 py-2 text-xs">
+              <div className="font-semibold text-indigo-900">Saat ini di-assign ke:</div>
+              <div className="text-indigo-700 mt-0.5">{currentAssignment.assigned_user_name}</div>
+            </div>
+          ) : null}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Pilih User Sales/CS</label>
+            <select
+              value={targetUserId}
+              onChange={(e) => setTargetUserId(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
+              data-testid="wa-assign-select"
+            >
+              <option value="">— Pilih user —</option>
+              {teamMembers.map((u) => (
+                <option key={u.id} value={u.id}>{u.name || u.email} ({u.role})</option>
+              ))}
+            </select>
+            <div className="text-[10px] text-slate-400 mt-1">
+              User akan melihat chat ini di tab <b>Inbox Tim</b> dan bisa membalas pakai koneksi ini.
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-between gap-2 px-5 py-3 border-t border-slate-200 bg-slate-50 rounded-b-xl">
+          {currentAssignment ? (
+            <button
+              onClick={handleUnassign}
+              disabled={saving}
+              className="text-xs px-3 py-1.5 rounded-lg text-rose-600 hover:bg-rose-50 font-semibold"
+              data-testid="wa-assign-remove"
+            >Hapus Assignment</button>
+          ) : <span />}
+          <div className="flex gap-2">
+            <GhostButton onClick={onClose} disabled={saving}>Batal</GhostButton>
+            <PrimaryButton onClick={handleSave} disabled={saving || !targetUserId} data-testid="wa-assign-save">
+              {saving ? "Menyimpan…" : "Assign"}
+            </PrimaryButton>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main ───
 export default function WhatsAppPage() {
   const { user } = useAuth();
@@ -154,21 +303,45 @@ export default function WhatsAppPage() {
   const [qrAccount, setQrAccount] = useState(null);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [health, setHealth] = useState(null);
+  const [tab, setTab] = useState("own"); // "own" | "inbox"
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameAccount, setRenameAccount] = useState(null);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignJid, setAssignJid] = useState("");
+  const [teamMembers, setTeamMembers] = useState([]);
   const messagesEnd = useRef(null);
   const lastChatSyncRef = useRef(null);
   const lastMsgSyncRef = useRef({});
   const fileInputRef = useRef(null);
 
   const activeAccount = useMemo(() => accounts.find((a) => a.session_id === activeSid), [accounts, activeSid]);
-  const isOwnerView = activeAccount && activeAccount.user_id !== user?.id;
+  const isAdmin = user?.role === "Owner" || user?.role === "Admin";
+  const isAccountOwner = activeAccount && activeAccount.user_id === user?.id;
+  const isAssignedInbox = activeAccount?.is_assigned_inbox;
+  // Read-only when viewing someone else's account without assigned chats (Owner/Admin monitoring)
+  const isMonitorView = activeAccount && !isAccountOwner && !isAssignedInbox;
+
+  // Partition accounts by tab
+  const ownAccounts = useMemo(() => accounts.filter((a) => !a.is_assigned_inbox), [accounts]);
+  const inboxAccounts = useMemo(() => accounts.filter((a) => a.is_assigned_inbox), [accounts]);
+  const visibleAccounts = tab === "own" ? ownAccounts : inboxAccounts;
 
   const loadAccounts = async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/whatsapp/accounts");
       setAccounts(data);
-      if (!activeSid && data.length > 0) {
-        setActiveSid(data[0].session_id);
+      // Auto-select first visible account based on current tab
+      const initialList = (tab === "own")
+        ? data.filter((a) => !a.is_assigned_inbox)
+        : data.filter((a) => a.is_assigned_inbox);
+      if (!activeSid && initialList.length > 0) {
+        setActiveSid(initialList[0].session_id);
+      } else if (activeSid && !data.find((a) => a.session_id === activeSid)) {
+        // Active account no longer accessible — reset
+        setActiveSid(initialList[0]?.session_id || "");
+        setActiveJid("");
+        setMessages([]);
       }
     } catch (err) {
       if (err?.response?.status === 404) {
@@ -181,6 +354,15 @@ export default function WhatsAppPage() {
       }
     }
     finally { setLoading(false); }
+  };
+
+  const loadTeamMembers = async () => {
+    if (!isAdmin) return;
+    try {
+      const { data } = await api.get("/team");
+      // Exclude self from the assign list (you can't assign to yourself meaningfully — but keep it for flexibility)
+      setTeamMembers(data || []);
+    } catch (_) { /* ignore */ }
   };
 
   const loadHealth = async () => {
@@ -257,7 +439,18 @@ export default function WhatsAppPage() {
     finally { if (!delta) setMessagesLoading(false); }
   };
 
-  useEffect(() => { loadAccounts(); loadHealth(); }, []); // eslint-disable-line
+  useEffect(() => { loadAccounts(); loadHealth(); loadTeamMembers(); }, []); // eslint-disable-line
+
+  // Reset active selection when switching tabs
+  useEffect(() => {
+    const list = tab === "own" ? ownAccounts : inboxAccounts;
+    const stillVisible = list.find((a) => a.session_id === activeSid);
+    if (!stillVisible) {
+      setActiveSid(list[0]?.session_id || "");
+      setActiveJid("");
+      setMessages([]);
+    }
+  }, [tab, accounts.length]); // eslint-disable-line
   useEffect(() => {
     if (activeSid) {
       lastChatSyncRef.current = null;
@@ -496,43 +689,94 @@ sudo supervisorctl restart hunter-backend`}
           description="Klik 'Add WhatsApp' untuk scan QR code dan hubungkan WA pertama Anda. Maks 3 akun per user."
         />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[260px,320px,1fr] gap-3">
+        <div className="grid grid-cols-1 lg:grid-cols-[280px,320px,1fr] gap-3">
           {/* Account list (left rail) */}
           <Card className="!p-2 lg:max-h-[78vh] lg:overflow-y-auto">
-            <div className="text-[11px] uppercase font-bold text-slate-500 px-2 py-1.5">Akun</div>
-            {accounts.map((acc) => {
+            {/* Tabs: Koneksi Saya vs Inbox Tim */}
+            <div className="flex border-b border-slate-200 mb-2" data-testid="wa-tabs">
+              <button
+                onClick={() => setTab("own")}
+                className={`flex-1 px-2 py-2 text-xs font-bold uppercase tracking-wide transition-colors ${
+                  tab === "own"
+                    ? "text-emerald-600 border-b-2 border-emerald-500"
+                    : "text-slate-500 hover:text-slate-700 border-b-2 border-transparent"
+                }`}
+                data-testid="wa-tab-own"
+              >
+                <WhatsappLogo size={12} weight="bold" className="inline mr-1" />
+                Koneksi Saya
+                {ownAccounts.length > 0 && <span className="ml-1 text-[10px] opacity-60">({ownAccounts.length})</span>}
+              </button>
+              <button
+                onClick={() => setTab("inbox")}
+                className={`flex-1 px-2 py-2 text-xs font-bold uppercase tracking-wide transition-colors ${
+                  tab === "inbox"
+                    ? "text-indigo-600 border-b-2 border-indigo-500"
+                    : "text-slate-500 hover:text-slate-700 border-b-2 border-transparent"
+                }`}
+                data-testid="wa-tab-inbox"
+              >
+                <Users size={12} weight="bold" className="inline mr-1" />
+                Inbox Tim
+                {inboxAccounts.length > 0 && (
+                  <span className="ml-1 text-[10px] bg-indigo-500 text-white rounded-full px-1.5 py-0.5">
+                    {inboxAccounts.length}
+                  </span>
+                )}
+              </button>
+            </div>
+            {visibleAccounts.length === 0 ? (
+              <div className="px-2 py-6 text-center text-xs text-slate-400">
+                {tab === "own"
+                  ? "Belum ada koneksi WA milik Anda"
+                  : "Belum ada chat yang di-assign Admin ke Anda"}
+              </div>
+            ) : visibleAccounts.map((acc) => {
               const sb = statusBadge(acc.live_status || acc.status);
               const isOther = acc.user_id !== user?.id;
+              const showAdmin = isAdmin && acc.is_own;
               return (
                 <div
                   key={acc.session_id}
                   className={`group rounded-lg p-2 mb-1 cursor-pointer flex items-start gap-2 transition-all ${
                     activeSid === acc.session_id
-                      ? "bg-emerald-50 border border-emerald-200"
+                      ? (acc.is_assigned_inbox ? "bg-indigo-50 border border-indigo-200" : "bg-emerald-50 border border-emerald-200")
                       : "hover:bg-slate-50 border border-transparent"
                   }`}
                   onClick={() => { setActiveSid(acc.session_id); setActiveJid(""); }}
                   data-testid={`wa-account-${acc.session_id}`}
                 >
-                  <WhatsappLogo size={20} weight="fill" className="text-emerald-500 mt-0.5 shrink-0" />
+                  <WhatsappLogo size={20} weight="fill" className={`${acc.is_assigned_inbox ? "text-indigo-500" : "text-emerald-500"} mt-0.5 shrink-0`} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1 flex-wrap">
                       <div className="text-sm font-semibold text-slate-900 truncate">
-                        {acc.phone ? `+${acc.phone}` : acc.label || "Pending"}
+                        {acc.label || (acc.phone ? `+${acc.phone}` : "Pending")}
                       </div>
-                      {isOther && (
+                      {acc.is_assigned_inbox && (
+                        <Badge tone="info" className="!text-[9px]" data-testid={`wa-badge-inbox-${acc.session_id}`}>
+                          <Tag size={9} weight="bold" /> Assign
+                        </Badge>
+                      )}
+                      {!acc.is_assigned_inbox && isOther && (
                         <Badge tone="warning" className="!text-[9px]">
                           <Eye size={9} weight="bold" /> {acc.user_id?.slice(0, 4)}
                         </Badge>
                       )}
                     </div>
-                    <div className="text-[11px] text-slate-500 truncate">{acc.name || acc.label || "—"}</div>
-                    <div className="mt-1">
+                    <div className="text-[11px] text-slate-500 truncate font-mono">
+                      {acc.phone ? `+${acc.phone}` : "—"}
+                    </div>
+                    <div className="mt-1 flex items-center gap-1 flex-wrap">
                       <Badge tone={sb.tone} className="!text-[10px]">{sb.label}</Badge>
+                      {acc.is_assigned_inbox && acc.assigned_chat_count > 0 && (
+                        <span className="text-[9px] text-indigo-600 font-semibold">
+                          {acc.assigned_chat_count} chat di-assign
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="opacity-0 group-hover:opacity-100 transition flex flex-col gap-1">
-                    {(acc.live_status === "qr" || acc.live_status === "logged_out") && (
+                    {(acc.live_status === "qr" || acc.live_status === "logged_out") && acc.is_own && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleScanAgain(acc); }}
                         className="p-1 rounded hover:bg-emerald-100 text-emerald-600"
@@ -540,6 +784,16 @@ sudo supervisorctl restart hunter-backend`}
                         data-testid={`wa-rescan-${acc.session_id}`}
                       >
                         <Phone size={14} weight="bold" />
+                      </button>
+                    )}
+                    {(acc.is_own || showAdmin) && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setRenameAccount(acc); setRenameOpen(true); }}
+                        className="p-1 rounded hover:bg-indigo-100 text-indigo-600"
+                        title="Setting / Rename koneksi"
+                        data-testid={`wa-gear-${acc.session_id}`}
+                      >
+                        <Gear size={14} weight="bold" />
                       </button>
                     )}
                     {!isOther && (
@@ -565,7 +819,8 @@ sudo supervisorctl restart hunter-backend`}
           <Card className="!p-0 lg:max-h-[78vh] flex flex-col">
             <div className="px-4 py-2 border-b border-slate-200 bg-slate-50 text-xs text-slate-600 flex items-center justify-between">
               <span className="font-semibold">Chats</span>
-              {isOwnerView && <Badge tone="warning" className="!text-[9px]"><ShieldCheck size={9} weight="bold" /> Monitoring</Badge>}
+              {isMonitorView && <Badge tone="warning" className="!text-[9px]"><ShieldCheck size={9} weight="bold" /> Monitoring</Badge>}
+              {isAssignedInbox && <Badge tone="info" className="!text-[9px]"><Users size={9} weight="bold" /> Inbox Tim</Badge>}
             </div>
             <div className="flex-1 overflow-y-auto">
               {chatsLoading ? (
@@ -580,7 +835,7 @@ sudo supervisorctl restart hunter-backend`}
                     key={c.jid}
                     onClick={() => setActiveJid(c.jid)}
                     data-testid={`wa-chat-${c.jid}`}
-                    className={`w-full text-left p-3 hover:bg-slate-50 flex items-start gap-2 transition-colors border-b border-slate-100 ${
+                    className={`group w-full text-left p-3 hover:bg-slate-50 flex items-start gap-2 transition-colors border-b border-slate-100 ${
                       activeJid === c.jid ? "bg-emerald-50" : (c.unread_count > 0 ? "bg-emerald-50/30" : "")
                     }`}
                   >
@@ -605,7 +860,22 @@ sudo supervisorctl restart hunter-backend`}
                           ~{c.name}
                         </div>
                       )}
-                      <div className="flex items-center gap-2">
+                      {c.assignment && (
+                        <div
+                          className={`text-[10px] mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold ${
+                            c.assignment.is_mine
+                              ? "bg-indigo-100 text-indigo-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
+                          data-testid={`wa-chat-assignment-${c.jid}`}
+                        >
+                          <Tag size={9} weight="bold" />
+                          {c.assignment.is_mine
+                            ? "Di-assign ke saya"
+                            : `→ ${c.assignment.assigned_user_name}`}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2 mt-0.5">
                         <div className="text-xs text-slate-600 truncate flex-1">
                           {c.last_from_me ? <span className="text-slate-400">✓ </span> : null}
                           {c.last_message || "(no preview)"}
@@ -617,6 +887,16 @@ sudo supervisorctl restart hunter-backend`}
                         )}
                       </div>
                     </div>
+                    {isAdmin && isAccountOwner && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setAssignJid(c.jid); setAssignOpen(true); }}
+                        className="opacity-0 group-hover:opacity-100 transition p-1 rounded hover:bg-indigo-100 text-indigo-600 shrink-0"
+                        title={c.assignment ? "Edit assignment" : "Assign chat ke user"}
+                        data-testid={`wa-assign-btn-${c.jid}`}
+                      >
+                        <UserPlus size={14} weight="bold" />
+                      </button>
+                    )}
                   </button>
                 ))
               )}
@@ -653,7 +933,17 @@ sudo supervisorctl restart hunter-backend`}
                       return <div className="text-[10px] text-slate-500 italic truncate -mt-0.5">~{alias}</div>;
                     })()}
                   </div>
-                  {isOwnerView && <Badge tone="warning" className="!text-[9px]">View-only</Badge>}
+                  {isMonitorView && <Badge tone="warning" className="!text-[9px]">View-only</Badge>}
+                  {isAdmin && isAccountOwner && (
+                    <button
+                      onClick={() => { setAssignJid(activeJid); setAssignOpen(true); }}
+                      className="text-[10px] px-2 py-1 rounded-md bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold flex items-center gap-1"
+                      title="Assign chat ini ke user"
+                      data-testid="wa-assign-btn-header"
+                    >
+                      <UserPlus size={11} weight="bold" /> Assign
+                    </button>
+                  )}
                 </div>
                 <div className="flex-1 overflow-y-auto p-4 bg-slate-50/50 space-y-2">
                   {messagesLoading && messages.length === 0 ? (
@@ -707,7 +997,7 @@ sudo supervisorctl restart hunter-backend`}
                   )}
                   <div ref={messagesEnd} />
                 </div>
-                {!isOwnerView ? (
+                {!isMonitorView ? (
                   <div className="border-t border-slate-200 p-2 flex items-end gap-2 bg-white">
                     <input
                       ref={fileInputRef}
@@ -763,6 +1053,27 @@ sudo supervisorctl restart hunter-backend`}
         account={qrAccount}
         onClose={() => setQrOpen(false)}
         onConnected={loadAccounts}
+      />
+
+      <RenameModal
+        open={renameOpen}
+        account={renameAccount}
+        onClose={() => setRenameOpen(false)}
+        onSaved={loadAccounts}
+      />
+
+      <AssignChatModal
+        open={assignOpen}
+        sessionId={activeSid}
+        jid={assignJid}
+        currentAssignment={chats.find((c) => c.jid === assignJid)?.assignment || null}
+        teamMembers={teamMembers}
+        onClose={() => setAssignOpen(false)}
+        onSaved={() => {
+          // Reload chats so new/updated assignment shows up immediately
+          if (activeSid) loadChats(activeSid);
+          loadAccounts();
+        }}
       />
     </div>
   );
