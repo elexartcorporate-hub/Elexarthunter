@@ -137,6 +137,45 @@ function QrModal({ open, onClose, account, onConnected }) {
   );
 }
 
+// ─── Confirm Delete Modal (replaces browser confirm() that gets blocked on some platforms) ───
+function ConfirmDeleteModal({ open, onClose, account, onConfirm }) {
+  const [deleting, setDeleting] = useState(false);
+  if (!open || !account) return null;
+  const handleConfirm = async () => {
+    setDeleting(true);
+    try { await onConfirm(account); } finally { setDeleting(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-start sm:items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl max-w-sm w-full my-auto" onClick={(e) => e.stopPropagation()} data-testid="wa-confirm-delete-modal">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center gap-2">
+          <Warning size={20} weight="fill" className="text-rose-500" />
+          <h3 className="font-bold text-slate-900">Hapus Koneksi WhatsApp?</h3>
+        </div>
+        <div className="p-5 space-y-2 text-sm">
+          <div className="text-slate-700">
+            Yakin hapus koneksi <b>{account.label || (account.phone ? `+${account.phone}` : "Pending")}</b>?
+          </div>
+          <div className="text-xs text-rose-700 bg-rose-50 rounded p-2">
+            ⚠️ Akun akan <b>logout dari HP</b>, semua chat & history terhapus, dan assignment ke user lain juga dibatalkan.
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200 bg-slate-50 rounded-b-xl">
+          <GhostButton onClick={onClose} disabled={deleting}>Batal</GhostButton>
+          <button
+            onClick={handleConfirm}
+            disabled={deleting}
+            className="bg-rose-500 hover:bg-rose-600 disabled:bg-slate-300 text-white text-sm font-semibold rounded-lg px-4 py-2"
+            data-testid="wa-confirm-delete-btn"
+          >
+            {deleting ? "Menghapus…" : "Hapus"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Connection Settings Modal (rename + default assignee) ───
 function ConnectionSettingsModal({ open, onClose, account, teamMembers, onSaved }) {
   const [label, setLabel] = useState("");
@@ -164,7 +203,15 @@ function ConnectionSettingsModal({ open, onClose, account, teamMembers, onSaved 
       onSaved?.();
       onClose();
     } catch (err) {
-      toast.error(formatApiError(err));
+      const status = err?.response?.status;
+      if (status === 405 || status === 404) {
+        toast.error(
+          "Backend di VPS belum punya endpoint setting koneksi ini. Jalankan `deploy` di VPS untuk update backend.",
+          { duration: 10000 }
+        );
+      } else {
+        toast.error(formatApiError(err));
+      }
     } finally { setSaving(false); }
   };
   return (
@@ -349,6 +396,8 @@ export default function WhatsAppPage() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignJid, setAssignJid] = useState("");
   const [teamMembers, setTeamMembers] = useState([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteAccount, setDeleteAccount] = useState(null);
   const messagesEnd = useRef(null);
   const lastChatSyncRef = useRef(null);
   const lastMsgSyncRef = useRef({});
@@ -581,7 +630,6 @@ export default function WhatsAppPage() {
   };
 
   const handleDelete = async (acc) => {
-    if (!confirm(`Hapus akun ${acc.phone || acc.label || "WA"} ini? Akan logout dari HP juga.`)) return;
     try {
       await api.delete(`/whatsapp/accounts/${acc.session_id}`);
       toast.success("Akun WA dihapus");
@@ -591,7 +639,14 @@ export default function WhatsAppPage() {
         setMessages([]);
       }
       await loadAccounts();
+      setDeleteOpen(false);
+      setDeleteAccount(null);
     } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  const askDelete = (acc) => {
+    setDeleteAccount(acc);
+    setDeleteOpen(true);
   };
 
   const handleSend = async () => {
@@ -890,7 +945,7 @@ sudo supervisorctl restart hunter-backend`}
                     )}
                     {!isOther && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleDelete(acc); }}
+                        onClick={(e) => { e.stopPropagation(); askDelete(acc); }}
                         className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-500 border border-rose-200"
                         title="Hapus akun"
                         data-testid={`wa-delete-${acc.session_id}`}
@@ -1184,6 +1239,13 @@ sudo supervisorctl restart hunter-backend`}
           if (activeSid) loadChats(activeSid);
           loadAccounts();
         }}
+      />
+
+      <ConfirmDeleteModal
+        open={deleteOpen}
+        account={deleteAccount}
+        onClose={() => { setDeleteOpen(false); setDeleteAccount(null); }}
+        onConfirm={handleDelete}
       />
     </div>
   );
