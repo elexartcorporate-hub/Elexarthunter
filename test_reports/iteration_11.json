@@ -1,0 +1,33 @@
+{
+  "summary": "Frontend-only verification of LID (WhatsApp Anonymous Privacy ID) bug fix. Verified (1) formatPhone() helper correctly emits '🔒 LID#xxxxxx' marker for @lid JIDs and proper '+phone' for @s.whatsapp.net JIDs via in-browser runtime tests on synthetic JIDs (including the user's exact bug case 125791522320393@lid → '🔒 LID#320393'); (2) sessionManager.js code review confirms async normJidWithLid() helper exists and uses sock.signalRepository.lidMapping.getPNForLID (async) with sync fallback getPNForLIDSync; (3) all 6 required call sites updated (persistMessage, chats.upsert, chats.update, contacts.upsert, sendText, sendMedia) plus bonus participant normalization in persistMessage; (4) chat header amber privacy hint code in place (lines 623-627) gated on isLidOnly(activeJid); (5) regression OK — LinkedIn Prospect tab present, Settings loads with daily_target, WhatsApp page loads cleanly, no fake '+125791522320393' phone string anywhere in DOM. POD has no live Baileys socket so actual runtime LID→PN mapping path cannot be exercised — that requires a connected VPS session.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_11.json"],
+  "action_items": [
+    "User must deploy to VPS (Baileys runtime required) to exercise the live LID→PN resolution path. Cannot validate end-to-end LID resolution from this POD because there is no real WhatsApp socket — only structural + helper verification is possible here.",
+    "Recommend adding wa-service unit tests (Jest) for normJidWithLid with a mocked sock.signalRepository.lidMapping so the async resolution can be regression-tested without a live Baileys session."
+  ],
+  "critical_code_review_comments": [
+    "normJidWithLid is well-structured with both async (getPNForLID) and sync (getPNForLIDSync) fallback paths, plus a final defensive call to normJid for non-LID inputs and unresolved LIDs — handles all edge cases gracefully.",
+    "persistMessage also normalizes msg.key.participant via normJidWithLid (line 400) — good defense-in-depth for group sender JIDs that may also be LID.",
+    "wa_messages stores raw_jid only when it differs from canonical jid (line 409) — preserves audit trail without data bloat. Good.",
+    "Frontend formatPhone strips device suffix via split(':')[0] BEFORE checking @lid — correct ordering; LID JIDs without device suffix still match.",
+    "Minor: isLidOnly relies on substring 'jid.includes(\"@lid\")' — would false-match '@lid_anything' but Baileys JID grammar makes this a non-issue. OK.",
+    "Minor: formatPhone for LID uses lidId.slice(-6) — for short LIDs (<6 chars, extremely rare) it would just return the full id; acceptable."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only)", "frontend": "100%"},
+  "test_credentials": "demo@test.com / demo1234 (from /app/memory/test_credentials.md) — verified working",
+  "seed_data_creation": "None — used in-browser page.evaluate for synthetic JID helper tests; no DB writes.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 11 verified LID fix via (a) page.evaluate runtime helper test on synthetic JIDs (all 9 assertions passed including user's exact 125791522320393@lid case → '🔒 LID#320393'), and (b) source code review of /app/wa-service/src/sessionManager.js (normJidWithLid exists, async, uses sock.signalRepository.lidMapping.getPNForLID + sync fallback; all 6 call sites verified). The chat header amber hint (lines 623-627 of /app/frontend/src/pages/WhatsApp.jsx) is conditional on isLidOnly(activeJid) and cannot be exercised in POD because there are no WA accounts (no Baileys runtime). The user must deploy + connect a WA account on VPS to exercise the live LID→PN resolution. Regression: LinkedIn Prospect tab + Settings page + WhatsApp empty-state all load cleanly; no console errors.",
+  "rca of the issue": "ROOT CAUSE: WhatsApp introduced an anonymous privacy feature called LID ('@lid' JIDs). When user sends to a contact who has privacy enabled, Baileys routes outgoing via the @lid JID. Without resolution, incoming replies (which Baileys delivers via the real @s.whatsapp.net PN JID) create a duplicate chat row, and the @lid id (15+ digits) shown as a phone number is misleading and fake. MITIGATION: (1) Backend: normJidWithLid(jid, sock) attempts to resolve @lid → real PN @s.whatsapp.net via Baileys' sock.signalRepository.lidMapping.getPNForLID. When resolution succeeds, all DB writes (wa_chats and wa_messages) use the canonical PN — outgoing/incoming converge. (2) Frontend: if a JID still ends with @lid (resolution unavailable), formatPhone returns '🔒 LID#xxxxxx' (last 6 of LID), and chat header shows amber Indonesian hint 'Nomor asli disembunyikan (WhatsApp privacy)'. REPRO STEPS (require VPS + connected WA): (a) send msg from your phone to a contact whose privacy makes Baileys route via @lid; (b) wait for their reply; (c) verify only ONE chat thread appears in inbox (no duplicate row) and the resolved PN is shown — this can ONLY be tested with a real Baileys session, not from this POD."
+}

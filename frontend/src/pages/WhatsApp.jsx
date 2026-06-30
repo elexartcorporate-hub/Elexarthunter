@@ -13,16 +13,25 @@ import { toast } from "sonner";
 function formatPhone(jid) {
   if (!jid) return "";
   if (jid.includes("@g.us")) return "";
+  // @lid = LID (Anonymous WhatsApp privacy ID) — NOT a real phone number.
+  // Show with explicit marker so user knows real number is hidden.
+  if (jid.includes("@lid")) {
+    const lidId = jid.split("@")[0].split(":")[0];
+    // Show last 4 digits only to make clear it's anonymous
+    return `🔒 LID#${lidId.slice(-6)}`;
+  }
   const num = jid.split("@")[0].split(":")[0]; // strip device part :12
   return num.startsWith("+") ? num : "+" + num;
 }
 function jidName(jid, fallback) {
-  // For groups: use saved group name
   if (!jid) return fallback || "Unknown";
   if (jid.includes("@g.us")) return fallback || "Group";
-  // For private chats: ALWAYS show the actual phone number — never alias/push name.
-  // Push name (`fallback` from wa_chats.name) is unreliable (set by OTHER user, can be anything).
+  // For private chats: ALWAYS show phone or LID marker — never alias/push name as primary.
   return formatPhone(jid);
+}
+// Is this JID an anonymous LID (no real PN resolved)?
+function isLidOnly(jid) {
+  return jid && jid.includes("@lid");
 }
 
 function fmtTime(ts) {
@@ -611,11 +620,16 @@ sudo supervisorctl restart hunter-backend`}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold text-slate-900 truncate font-mono" data-testid="wa-active-header">{jidName(activeJid)}</div>
+                    {isLidOnly(activeJid) && (
+                      <div className="text-[10px] text-amber-700 italic -mt-0.5">
+                        Nomor asli disembunyikan (WhatsApp privacy) — reply mereka akan masuk ke chat thread baru otomatis bila sudah pernah balas
+                      </div>
+                    )}
                     {(() => {
                       const c = chats.find((x) => x.jid === activeJid);
                       const alias = c?.name;
                       const isGroup = c?.is_group || activeJid?.includes("@g.us");
-                      if (!alias || isGroup) return null;
+                      if (!alias || isGroup || isLidOnly(activeJid)) return null;
                       return <div className="text-[10px] text-slate-500 italic truncate -mt-0.5">~{alias}</div>;
                     })()}
                   </div>

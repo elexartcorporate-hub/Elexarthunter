@@ -200,7 +200,7 @@ async function connectSession(db, sessionId) {
 
   sock.ev.on("chats.upsert", async (chats) => {
     for (const c of chats) {
-      const jid = normJid(c.id);
+      const jid = await normJidWithLid(c.id, sock);
       const isGroup = jid?.endsWith("@g.us");
       await db.collection("wa_chats").updateOne(
         { session_id: sessionId, jid },
@@ -225,7 +225,7 @@ async function connectSession(db, sessionId) {
   sock.ev.on("chats.update", async (updates) => {
     for (const u of updates) {
       if (!u.id) continue;
-      const jid = normJid(u.id);
+      const jid = await normJidWithLid(u.id, sock);
       const set = { updated_at: new Date() };
       if (u.name !== undefined) set.name = u.name;
       if (u.unreadCount !== undefined) set.unread_count = u.unreadCount;
@@ -240,7 +240,7 @@ async function connectSession(db, sessionId) {
   sock.ev.on("contacts.upsert", async (contacts) => {
     for (const c of contacts) {
       if (!c.id) continue;
-      const jid = normJid(c.id);
+      const jid = await normJidWithLid(c.id, sock);
       // Distinguish: saved name (from user's contact list) vs push name (alias set by other user)
       // Address-book/saved name is what user explicitly saved → reliable.
       // Push name (`notify`) is what the OTHER person set as their own display → unreliable/alias.
@@ -361,11 +361,34 @@ export function normJid(jid) {
   catch { return jid.split(":")[0].includes("@") ? jid.split(":")[0] : jid; }
 }
 
+// LID-aware normalization: if JID is @lid, try resolve to real PN via Baileys mapping.
+// LID = "Local ID" — WhatsApp's anonymous privacy feature. Different from phone number.
+// Without resolution, outgoing to @lid and incoming from @s.whatsapp.net create DUPLICATE chats.
+export async function normJidWithLid(jid, sock) {
+  if (!jid || typeof jid !== "string") return jid;
+  if (jid.endsWith("@g.us") || jid.endsWith("@broadcast")) return jid;
+  // Try LID → PN resolution if Baileys exposes the mapping
+  if (jid.includes("@lid") && sock?.signalRepository?.lidMapping?.getPNForLID) {
+    try {
+      const pn = await sock.signalRepository.lidMapping.getPNForLID(jid);
+      if (pn && typeof pn === "string" && pn.includes("@")) return normJid(pn);
+    } catch { /* mapping not available, fall through */ }
+  }
+  // Also try the synchronous variant in some Baileys versions
+  if (jid.includes("@lid") && sock?.signalRepository?.lidMapping?.getPNForLIDSync) {
+    try {
+      const pn = sock.signalRepository.lidMapping.getPNForLIDSync(jid);
+      if (pn && typeof pn === "string" && pn.includes("@")) return normJid(pn);
+    } catch { /* ignore */ }
+  }
+  return normJid(jid);
+}
+
 async function persistMessage(db, sessionId, sock, msg) {
   if (!msg.message) return;
   const rawJid = msg.key.remoteJid;
   if (!rawJid || rawJid === "status@broadcast") return;
-  const jid = normJid(rawJid);  // canonical JID — same for outgoing & incoming
+  const jid = await normJidWithLid(rawJid, sock);  // canonical JID (LID→PN resolved if possible)
   const text = getMsgText(msg.message);
   const fromMe = !!msg.key.fromMe;
   const ts = msg.messageTimestamp
@@ -373,7 +396,9 @@ async function persistMessage(db, sessionId, sock, msg) {
     : new Date();
   const media = getMediaInfo(msg.message);
   // Sender JID (for group chats — who in group sent it). Normalize too.
-  const senderJid = msg.key.participant ? normJid(msg.key.participant) : (fromMe ? null : jid);
+  const senderJid = msg.key.participant
+    ? await normJidWithLid(msg.key.participant, sock)
+    : (fromMe ? null : jid);
   await db.collection("wa_messages").updateOne(
     { session_id: sessionId, message_id: msg.key.id, jid },
     {
@@ -381,6 +406,7 @@ async function persistMessage(db, sessionId, sock, msg) {
         session_id: sessionId,
         message_id: msg.key.id,
         jid,
+        raw_jid: rawJid !== jid ? rawJid : undefined,
         from_me: fromMe,
         text,
         push_name: msg.pushName || null,
@@ -391,7 +417,7 @@ async function persistMessage(db, sessionId, sock, msg) {
     },
     { upsert: true }
   );
-  // upsert chat last message
+  // upsert chat last message — using CANONICAL jid so outgoing/incoming converge
   await db.collection("wa_chats").updateOne(
     { session_id: sessionId, jid },
     {
@@ -433,7 +459,7 @@ export async function sendText(sessionId, jid, text) {
   const sock = getSock(sessionId);
   if (!sock) throw new Error("Session not started");
   if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
-  const targetJid = normJid(jid); // ensure canonical so outgoing matches future incoming
+  const targetJid = await normJidWithLid(jid, sock);
   const res = await sock.sendMessage(targetJid, { text });
   return res;
 }
@@ -442,7 +468,7 @@ export async function sendMedia(sessionId, jid, { buffer, mimetype, fileName, ca
   const sock = getSock(sessionId);
   if (!sock) throw new Error("Session not started");
   if (!sock.user) throw new Error("Session not connected yet (scan QR first)");
-  const targetJid = normJid(jid);
+  const targetJid = await normJidWithLid(jid, sock);
   let payload;
   if (kind === "image") {
     payload = { image: buffer, caption: caption || "", mimetype };
