@@ -17,7 +17,7 @@ from typing import Optional, List, Literal, Dict, Any
 import bcrypt
 import jwt
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, Response, Query, BackgroundTasks
-from fastapi.responses import RedirectResponse, Response as FastAPIResponse
+from fastapi.responses import RedirectResponse, Response as FastAPIResponse, StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -5399,9 +5399,9 @@ async def wa_send_media(sid: str, jid: str, payload: WASendMedia, user: dict = D
     acc = await _wa_check_account_access(sid, user)
     if not await _wa_user_can_send_on_chat(sid, jid, user, acc):
         raise HTTPException(403, "Anda tidak punya akses untuk mengirim media di chat ini")
-    # Sanity check base64 length (~ 1.37x raw size)
-    if len(payload.base64) > 70 * 1024 * 1024:
-        raise HTTPException(400, "File terlalu besar (max ~50MB)")
+    # Sanity check base64 length (~ 1.37x raw size). Allow up to 100MB raw (~137MB base64).
+    if len(payload.base64) > 140 * 1024 * 1024:
+        raise HTTPException(400, "File terlalu besar (max ~100MB)")
     return await _wa_call(
         "POST", f"/sessions/{sid}/chats/{jid}/media",
         json={
@@ -5410,6 +5410,52 @@ async def wa_send_media(sid: str, jid: str, payload: WASendMedia, user: dict = D
             "mimetype": payload.mimetype,
             "fileName": payload.file_name,
             "caption": payload.caption,
+        },
+    )
+
+
+@api.get("/whatsapp/accounts/{sid}/messages/{msgid}/media")
+async def wa_get_media(sid: str, msgid: str, request: Request, download: int = 0, token: Optional[str] = None):
+    """Stream media bytes for a message (image/video/document/audio).
+    Auth: either standard Authorization header OR ?token=<jwt> query (so <img>, <video>,
+    <audio> tags can fetch media — they can't set headers).
+    """
+    # Manually resolve user — supports header OR query token
+    auth_header = request.headers.get("Authorization", "")
+    jwt_token = None
+    if auth_header.startswith("Bearer "):
+        jwt_token = auth_header[7:]
+    elif token:
+        jwt_token = token
+    if not jwt_token:
+        raise HTTPException(401, "Missing token")
+    try:
+        payload = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALG])
+        user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
+        if not user:
+            raise HTTPException(401, "User not found")
+    except Exception:
+        raise HTTPException(401, "Invalid token")
+
+    await _wa_check_account_access(sid, user)
+    import httpx
+    headers = {"X-WA-Secret": os.environ.get("WA_SERVICE_SECRET", "dev-secret")}
+    url = f"{WA_SERVICE_URL}/sessions/{sid}/messages/{msgid}/media"
+    params = {"download": "1"} if download else {}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        resp = await client.get(url, headers=headers, params=params)
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json().get("error", "Media tidak tersedia")
+        except Exception:
+            detail = resp.text or "Media tidak tersedia"
+        raise HTTPException(resp.status_code, detail)
+    return FastAPIResponse(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "application/octet-stream"),
+        headers={
+            "Content-Disposition": resp.headers.get("content-disposition", "inline"),
+            "Cache-Control": "private, max-age=86400",
         },
     )
 

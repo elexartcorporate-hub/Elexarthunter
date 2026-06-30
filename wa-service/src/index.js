@@ -46,7 +46,11 @@ for (const acc of existing) {
 }
 
 const app = express();
-app.use(express.json({ limit: "5mb" }));
+// Bump payload limit so users can send large images/videos/documents (up to ~100MB).
+// Base64 overhead is ~37%, so 100MB JSON = ~75MB raw file (well within WhatsApp's
+// own document limit of 100MB).
+app.use(express.json({ limit: "150mb" }));
+app.use(express.urlencoded({ extended: true, limit: "150mb" }));
 
 // Simple shared-secret auth between FastAPI and this sidecar
 const SHARED_SECRET = process.env.WA_SERVICE_SECRET || "dev-secret";
@@ -176,12 +180,54 @@ app.post("/sessions/:sid/chats/:jid/media", async (req, res) => {
     if (!allowed.includes(kind)) return res.status(400).json({ error: `kind must be ${allowed.join("|")}` });
     const buffer = Buffer.from(base64, "base64");
     if (buffer.length === 0) return res.status(400).json({ error: "empty buffer" });
-    if (buffer.length > 50 * 1024 * 1024) return res.status(400).json({ error: "file too large (max 50MB)" });
+    if (buffer.length > 100 * 1024 * 1024) return res.status(400).json({ error: "file too large (max 100MB)" });
     await sendMedia(db, req.params.sid, req.params.jid, { buffer, mimetype, fileName, caption, kind });
     res.json({ ok: true, size: buffer.length });
   } catch (e) {
     console.error("send media error:", e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Download persisted media (auto-downloaded from incoming, or saved when sending).
+// Stream from GridFS so even large files (videos, big docs) work without loading
+// everything into memory.
+app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
+  try {
+    const { sid, msgid } = req.params;
+    const msg = await db.collection("wa_messages").findOne({
+      session_id: sid,
+      message_id: msgid,
+    });
+    if (!msg || !msg.media) return res.status(404).json({ error: "Message or media not found" });
+
+    const { GridFSBucket } = await import("mongodb");
+    const bucket = new GridFSBucket(db, { bucketName: "wa_media" });
+
+    // Find file by filename pattern OR file_id stored on message
+    const filename = `${sid}/${msgid}`;
+    const file = await db.collection("wa_media.files").findOne({ filename });
+    if (!file) return res.status(404).json({ error: "Media file not yet downloaded", media: msg.media });
+
+    res.setHeader("Content-Type", msg.media.mimetype || "application/octet-stream");
+    res.setHeader("Content-Length", file.length);
+    const downloadAs = msg.media.file_name || `${msg.media.media_type}-${msgid}`;
+    if (req.query.download === "1") {
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadAs)}"`);
+    } else {
+      // Inline so images/videos render in browser preview
+      res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(downloadAs)}"`);
+    }
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    const stream = bucket.openDownloadStreamByName(filename);
+    stream.on("error", (e) => {
+      console.error("media stream err:", e);
+      if (!res.headersSent) res.status(500).json({ error: e.message });
+    });
+    stream.pipe(res);
+  } catch (e) {
+    console.error("get media error:", e);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
   }
 });
 

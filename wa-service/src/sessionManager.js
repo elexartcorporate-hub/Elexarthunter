@@ -7,9 +7,11 @@ const {
   makeCacheableSignalKeyStore,
   Browsers,
   jidNormalizedUser,
+  downloadMediaMessage,
 } = baileysPkg;
 import pino from "pino";
 import qrcode from "qrcode";
+import { GridFSBucket, ObjectId } from "mongodb";
 import { useMongoAuthState, deleteMongoAuthState } from "./mongoAuthState.js";
 
 const logger = pino({ level: "warn" });
@@ -417,6 +419,56 @@ async function persistMessage(db, sessionId, sock, msg) {
     },
     { upsert: true }
   );
+
+  // Auto-download incoming media so client can later open/download it from the inbox.
+  // We use GridFS to store binary safely (handles files >16MB MongoDB doc limit).
+  if (media && !fromMe) {
+    try {
+      const buffer = await downloadMediaMessage(msg, "buffer", {}, { logger, reuploadRequest: sock.updateMediaMessage });
+      if (buffer && buffer.length > 0) {
+        const bucket = new GridFSBucket(db, { bucketName: "wa_media" });
+        const filename = `${sessionId}/${msg.key.id}`;
+        // Remove any existing copy (idempotent)
+        const existing = await db.collection("wa_media.files").findOne({ filename });
+        if (existing) {
+          await bucket.delete(existing._id).catch(() => {});
+        }
+        const fileId = await new Promise((resolve, reject) => {
+          const upload = bucket.openUploadStream(filename, {
+            metadata: {
+              session_id: sessionId,
+              message_id: msg.key.id,
+              jid,
+              media_type: media.media_type,
+              mimetype: media.mimetype,
+              file_name: media.file_name,
+            },
+          });
+          upload.on("error", reject);
+          upload.on("finish", () => resolve(upload.id));
+          upload.end(buffer);
+        });
+        // Mark message as having downloaded media (file ready to serve)
+        await db.collection("wa_messages").updateOne(
+          { session_id: sessionId, message_id: msg.key.id, jid },
+          {
+            $set: {
+              "media.downloaded": true,
+              "media.file_id": String(fileId),
+              "media.file_size": buffer.length,
+            },
+          }
+        );
+      }
+    } catch (e) {
+      console.error(`[persistMessage] media auto-download failed for ${msg.key.id}:`, e.message);
+      // Mark as failed so frontend can show a retry button instead of indefinite spinner
+      await db.collection("wa_messages").updateOne(
+        { session_id: sessionId, message_id: msg.key.id, jid },
+        { $set: { "media.download_error": e.message } }
+      );
+    }
+  }
   // upsert chat last message — using CANONICAL jid so outgoing/incoming converge
   await db.collection("wa_chats").updateOne(
     { session_id: sessionId, jid },

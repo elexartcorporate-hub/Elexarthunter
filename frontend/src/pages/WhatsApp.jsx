@@ -1179,25 +1179,73 @@ sudo supervisorctl restart hunter-backend`}
                         : mt === "document" ? `📎 ${m.media?.file_name || "Dokumen"}`
                         : mt === "sticker" ? "🎟️ Sticker"
                         : null;
+                      // Media URL — only available for messages where wa-service has
+                      // successfully downloaded the file to GridFS.
+                      const mediaReady = m.media?.downloaded || m.media?.file_id || m._optimistic;
+                      const _authToken = typeof window !== "undefined" ? localStorage.getItem("lh_token") : "";
+                      const mediaUrl = mediaReady
+                        ? `${process.env.REACT_APP_BACKEND_URL}/api/whatsapp/accounts/${activeSid}/messages/${encodeURIComponent(m.message_id)}/media?token=${encodeURIComponent(_authToken || "")}`
+                        : null;
+                      const mediaDlUrl = mediaUrl ? `${mediaUrl}&download=1` : null;
                       return (
                         <div key={m.message_id} className={`flex ${m.from_me ? "justify-end" : "justify-start"}`} data-testid={`wa-msg-${m.message_id}`}>
                           <div className={`max-w-[75%] rounded-lg px-3 py-2 text-sm shadow-sm ${
                             m.from_me ? "bg-emerald-500 text-white" : "bg-white text-slate-900 border border-slate-200"
                           }`}>
-                            {/* For GROUP chats only: show sender phone (not push_name alias) */}
                             {!m.from_me && (activeJid?.includes("@g.us")) && m.sender_jid && (
                               <div className={`text-[10px] font-bold mb-0.5 font-mono ${m.from_me ? "text-emerald-100" : "text-emerald-600"}`} data-testid={`wa-msg-sender-${m.message_id}`}>
                                 {formatPhone(m.sender_jid)}
                               </div>
                             )}
-                            {mediaLabel && (
-                              <div className={`text-xs font-semibold mb-1 px-2 py-1 rounded ${
+                            {/* MEDIA RENDERING */}
+                            {mt && (mt === "image" || mt === "sticker") && mediaUrl && (
+                              <a href={mediaUrl} target="_blank" rel="noreferrer" className="block mb-1 -mx-1">
+                                <img
+                                  src={mediaUrl}
+                                  alt={m.media?.caption || "image"}
+                                  className="rounded-md max-w-[280px] max-h-[280px] object-cover cursor-zoom-in"
+                                  loading="lazy"
+                                  onError={(e) => { e.target.style.display = "none"; }}
+                                />
+                              </a>
+                            )}
+                            {mt === "video" && mediaUrl && (
+                              <video
+                                src={mediaUrl}
+                                controls
+                                preload="metadata"
+                                className="rounded-md max-w-[280px] max-h-[280px] mb-1 -mx-1"
+                              />
+                            )}
+                            {mt === "audio" && mediaUrl && (
+                              <audio src={mediaUrl} controls className="w-full mb-1" preload="metadata" />
+                            )}
+                            {mt && (mt === "document" || (!mediaUrl && mediaLabel)) && (
+                              <div className={`text-xs font-semibold mb-1 px-2 py-2 rounded flex items-center justify-between gap-2 ${
                                 m.from_me ? "bg-emerald-600/30" : "bg-slate-100"
                               }`}>
-                                {mediaLabel}
-                                {m.media?.file_length > 0 && (
-                                  <span className={`ml-2 text-[10px] ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
-                                    {(m.media.file_length / 1024).toFixed(1)} KB
+                                <div className="flex items-center gap-1 min-w-0 flex-1">
+                                  <span>{mediaLabel}</span>
+                                  {m.media?.file_length > 0 && (
+                                    <span className={`text-[10px] shrink-0 ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
+                                      ({m.media.file_length > 1024 * 1024
+                                        ? (m.media.file_length / 1024 / 1024).toFixed(1) + " MB"
+                                        : (m.media.file_length / 1024).toFixed(0) + " KB"})
+                                    </span>
+                                  )}
+                                </div>
+                                {mediaDlUrl ? (
+                                  <a
+                                    href={mediaDlUrl}
+                                    download={m.media?.file_name || true}
+                                    className={`text-[10px] font-bold underline ${m.from_me ? "text-white" : "text-emerald-600 hover:text-emerald-700"}`}
+                                    data-testid={`wa-media-dl-${m.message_id}`}
+                                  >
+                                    ⬇ Download
+                                  </a>
+                                ) : (
+                                  <span className={`text-[10px] italic ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
+                                    {m.media?.download_error ? "Gagal download" : "Memproses…"}
                                   </span>
                                 )}
                               </div>
