@@ -5022,22 +5022,70 @@ async def wa_list_accounts(user: dict = Depends(get_current_user)):
 
 class WAAccountUpdate(BaseModel):
     label: Optional[str] = None
+    default_assigned_user_id: Optional[str] = None  # null = unset (no auto-assign)
 
 
 @api.patch("/whatsapp/accounts/{sid}")
 async def wa_update_account(sid: str, payload: WAAccountUpdate, user: dict = Depends(get_current_user)):
-    """Rename a WA connection (gear icon). Only owner of the account or tenant Owner can rename."""
+    """Update connection settings (gear icon): label + default assignee for incoming chats.
+       Only owner of the account or tenant Owner can edit."""
     acc = await db.wa_accounts.find_one({"session_id": sid, "tenant_id": user["tenant_id"]})
     if not acc:
         raise HTTPException(404, "Akun WA tidak ditemukan")
     if acc["user_id"] != user["id"] and user.get("role") != "Owner":
-        raise HTTPException(403, "Hanya pemilik akun atau Owner yang bisa rename koneksi")
-    label = (payload.label or "").strip() or None
-    await db.wa_accounts.update_one(
-        {"session_id": sid},
-        {"$set": {"label": label}},
-    )
-    return {"ok": True, "session_id": sid, "label": label}
+        raise HTTPException(403, "Hanya pemilik akun atau Owner yang bisa edit koneksi")
+
+    update_doc = {}
+    # Allow partial updates: only set fields explicitly present in payload
+    payload_data = payload.model_dump(exclude_unset=True)
+    if "label" in payload_data:
+        update_doc["label"] = (payload.label or "").strip() or None
+    if "default_assigned_user_id" in payload_data:
+        target_id = payload.default_assigned_user_id
+        if target_id:
+            target = await db.users.find_one(
+                {"id": target_id, "tenant_id": user["tenant_id"]},
+                {"_id": 0, "id": 1, "name": 1, "email": 1},
+            )
+            if not target:
+                raise HTTPException(404, "User default tidak ditemukan di tenant")
+            update_doc["default_assigned_user_id"] = target_id
+            update_doc["default_assigned_user_name"] = target.get("name") or target.get("email")
+        else:
+            update_doc["default_assigned_user_id"] = None
+            update_doc["default_assigned_user_name"] = None
+
+    if update_doc:
+        await db.wa_accounts.update_one({"session_id": sid}, {"$set": update_doc})
+
+    # Optionally: backfill assignments for existing un-assigned chats when default changes
+    new_default = update_doc.get("default_assigned_user_id")
+    if "default_assigned_user_id" in update_doc and new_default:
+        # Find chats without an assignment and bulk-insert
+        existing_jids = await db.wa_chat_assignments.distinct(
+            "jid", {"session_id": sid, "tenant_id": user["tenant_id"]}
+        )
+        chats_without = await db.wa_chats.find(
+            {"session_id": sid, "jid": {"$nin": existing_jids}},
+            {"_id": 0, "jid": 1},
+        ).to_list(5000)
+        if chats_without:
+            ts = now_iso()
+            await db.wa_chat_assignments.insert_many([
+                {
+                    "session_id": sid,
+                    "jid": c["jid"],
+                    "tenant_id": user["tenant_id"],
+                    "assigned_user_id": new_default,
+                    "assigned_by": user["id"],
+                    "assigned_at": ts,
+                    "auto_assigned": True,
+                }
+                for c in chats_without
+            ])
+
+    fresh = await db.wa_accounts.find_one({"session_id": sid}, {"_id": 0})
+    return {"ok": True, **fresh}
 
 
 @api.post("/whatsapp/accounts")
@@ -5092,6 +5140,32 @@ async def wa_list_chats(sid: str, limit: int = 100, since_ts: Optional[str] = No
         params["since_ts"] = since_ts
     chats = await _wa_call("GET", f"/sessions/{sid}/chats", params=params)
 
+    # Auto-assign: if connection has a default_assigned_user_id, ensure every chat has an assignment.
+    default_uid = acc.get("default_assigned_user_id")
+    if default_uid and chats:
+        all_jids = [c["jid"] for c in chats]
+        existing = set(
+            await db.wa_chat_assignments.distinct(
+                "jid",
+                {"session_id": sid, "tenant_id": user["tenant_id"], "jid": {"$in": all_jids}},
+            )
+        )
+        missing = [j for j in all_jids if j not in existing]
+        if missing:
+            ts = now_iso()
+            await db.wa_chat_assignments.insert_many([
+                {
+                    "session_id": sid,
+                    "jid": j,
+                    "tenant_id": user["tenant_id"],
+                    "assigned_user_id": default_uid,
+                    "assigned_by": acc.get("user_id"),
+                    "assigned_at": ts,
+                    "auto_assigned": True,
+                }
+                for j in missing
+            ])
+
     # Build assignment map (jid -> {assigned_user_id, assigned_user_name})
     assignments = await db.wa_chat_assignments.find(
         {"session_id": sid, "tenant_id": user["tenant_id"]}
@@ -5117,6 +5191,7 @@ async def wa_list_chats(sid: str, limit: int = 100, since_ts: Optional[str] = No
                 "assigned_user_id": a["assigned_user_id"],
                 "assigned_user_name": user_name_map.get(a["assigned_user_id"]),
                 "assigned_at": a.get("assigned_at"),
+                "auto_assigned": a.get("auto_assigned", False),
                 "is_mine": a["assigned_user_id"] == user["id"],
             }
             if a

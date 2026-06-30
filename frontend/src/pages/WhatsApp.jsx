@@ -137,19 +137,30 @@ function QrModal({ open, onClose, account, onConnected }) {
   );
 }
 
-// ─── Rename Connection Modal ───
-function RenameModal({ open, onClose, account, onSaved }) {
+// ─── Connection Settings Modal (rename + default assignee) ───
+function ConnectionSettingsModal({ open, onClose, account, teamMembers, onSaved }) {
   const [label, setLabel] = useState("");
+  const [defaultUserId, setDefaultUserId] = useState("");
   const [saving, setSaving] = useState(false);
   useEffect(() => {
-    if (open) setLabel(account?.label || "");
+    if (open) {
+      setLabel(account?.label || "");
+      setDefaultUserId(account?.default_assigned_user_id || "");
+    }
   }, [open, account?.session_id]); // eslint-disable-line
   if (!open || !account) return null;
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.patch(`/whatsapp/accounts/${account.session_id}`, { label: label.trim() || null });
-      toast.success("Nama koneksi disimpan");
+      await api.patch(`/whatsapp/accounts/${account.session_id}`, {
+        label: label.trim() || null,
+        default_assigned_user_id: defaultUserId || null,
+      });
+      toast.success(
+        defaultUserId
+          ? "Setting tersimpan. Chat masuk akan otomatis di-route ke user yang dipilih."
+          : "Setting tersimpan."
+      );
       onSaved?.();
       onClose();
     } catch (err) {
@@ -158,7 +169,7 @@ function RenameModal({ open, onClose, account, onSaved }) {
   };
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-start sm:items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl max-w-md w-full my-auto" onClick={(e) => e.stopPropagation()} data-testid="wa-rename-modal">
+      <div className="bg-white rounded-xl shadow-xl max-w-md w-full my-auto" onClick={(e) => e.stopPropagation()} data-testid="wa-settings-modal">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
           <div className="flex items-center gap-2">
             <Gear size={20} weight="bold" className="text-indigo-500" />
@@ -166,7 +177,7 @@ function RenameModal({ open, onClose, account, onSaved }) {
           </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={18} /></button>
         </div>
-        <div className="p-5 space-y-3">
+        <div className="p-5 space-y-4">
           <div className="text-xs text-slate-500">
             Nomor: <span className="font-mono font-semibold text-slate-700">+{account.phone || "—"}</span>
           </div>
@@ -179,14 +190,43 @@ function RenameModal({ open, onClose, account, onSaved }) {
               placeholder="Contoh: CS Bali, Sales Jakarta, Admin Pusat"
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
               maxLength={64}
-              data-testid="wa-rename-input"
+              data-testid="wa-settings-label-input"
             />
-            <div className="text-[10px] text-slate-400 mt-1">Label ini memudahkan tim mengenali fungsi koneksi.</div>
+            <div className="text-[10px] text-slate-400 mt-1">Label memudahkan tim mengenali fungsi koneksi.</div>
+          </div>
+
+          <div className="border-t border-slate-100 pt-3">
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              <UserPlus size={11} weight="bold" className="inline mr-1" />
+              Assign Otomatis ke User (Default Penerima Chat)
+            </label>
+            <select
+              value={defaultUserId}
+              onChange={(e) => setDefaultUserId(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
+              data-testid="wa-settings-default-user"
+            >
+              <option value="">— Tidak ada (chat tetap di pemilik koneksi) —</option>
+              {teamMembers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name || u.email} ({u.role})
+                </option>
+              ))}
+            </select>
+            <div className="text-[10px] text-slate-400 mt-1">
+              Semua chat masuk dari koneksi ini akan <b>otomatis</b> di-route ke user yang dipilih.
+              Mereka akan melihatnya di tab <b>Inbox Tim</b> dan bisa membalas pakai koneksi ini.
+            </div>
+            {account?.default_assigned_user_name && account.default_assigned_user_id === defaultUserId && (
+              <div className="mt-2 text-[11px] text-emerald-700 bg-emerald-50 rounded px-2 py-1 flex items-center gap-1">
+                <CheckCircle size={11} weight="fill" /> Saat ini di-route ke: <b>{account.default_assigned_user_name}</b>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200 bg-slate-50 rounded-b-xl">
           <GhostButton onClick={onClose} disabled={saving}>Batal</GhostButton>
-          <PrimaryButton onClick={handleSave} disabled={saving} data-testid="wa-rename-save">
+          <PrimaryButton onClick={handleSave} disabled={saving} data-testid="wa-settings-save">
             {saving ? "Menyimpan…" : "Simpan"}
           </PrimaryButton>
         </div>
@@ -774,6 +814,12 @@ sudo supervisorctl restart hunter-backend`}
                         </span>
                       )}
                     </div>
+                    {acc.is_own && acc.default_assigned_user_name && (
+                      <div className="mt-1 text-[10px] text-indigo-700 bg-indigo-50 rounded px-1.5 py-0.5 inline-flex items-center gap-1 max-w-full">
+                        <UserPlus size={9} weight="bold" />
+                        <span className="truncate">Auto → {acc.default_assigned_user_name}</span>
+                      </div>
+                    )}
                   </div>
                   <div className="opacity-0 group-hover:opacity-100 transition flex flex-col gap-1">
                     {(acc.live_status === "qr" || acc.live_status === "logged_out") && acc.is_own && (
@@ -1055,9 +1101,10 @@ sudo supervisorctl restart hunter-backend`}
         onConnected={loadAccounts}
       />
 
-      <RenameModal
+      <ConnectionSettingsModal
         open={renameOpen}
         account={renameAccount}
+        teamMembers={teamMembers}
         onClose={() => setRenameOpen(false)}
         onSaved={loadAccounts}
       />
