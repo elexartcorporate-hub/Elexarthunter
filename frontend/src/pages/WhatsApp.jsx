@@ -789,19 +789,21 @@ export default function WhatsAppPage() {
   };
 
   const ownAccountsCount = accounts.filter((a) => a.user_id === user?.id).length;
-  const canAdd = ownAccountsCount < 3;
+  const isOwner = user?.role === "Owner";
+  // Owner: unlimited accounts. Other roles: max 3 per user.
+  const canAdd = isOwner || ownAccountsCount < 3;
 
   return (
     <div className="p-6 md:p-8 fade-up max-w-[1400px] mx-auto">
       <PageHeader
         title="WhatsApp"
-        subtitle={`Multi-account via Baileys · max 3 akun per user${user?.role === "Owner" ? " · (Owner sees all in tenant)" : ""}`}
+        subtitle={`Multi-account via Baileys${isOwner ? " · Owner: unlimited" : " · max 3 akun per user"}`}
         action={
           <div className="flex items-center gap-2">
             <GhostButton onClick={() => { loadAccounts(); loadHealth(); }} disabled={loading} data-testid="wa-refresh">
               <ArrowsClockwise size={14} weight="bold" className={loading ? "animate-spin" : ""} /> Refresh
             </GhostButton>
-            <PrimaryButton onClick={handleAdd} disabled={!canAdd} data-testid="wa-add-account" title={!canAdd ? "Sudah max 3 akun" : ""}>
+            <PrimaryButton onClick={handleAdd} disabled={!canAdd} data-testid="wa-add-account" title={!canAdd ? "Sudah max 3 akun (Owner unlimited)" : ""}>
               <Plus size={14} weight="bold" /> Add WhatsApp
             </PrimaryButton>
           </div>
@@ -1039,7 +1041,7 @@ sudo supervisorctl restart hunter-backend`}
               );
             })}
             <div className="text-[10px] text-slate-400 px-2 pt-2 border-t border-slate-100">
-              {ownAccountsCount}/3 akun milik Anda
+              {isOwner ? `${ownAccountsCount} akun milik Anda · Unlimited` : `${ownAccountsCount}/3 akun milik Anda`}
             </div>
           </Card>
 

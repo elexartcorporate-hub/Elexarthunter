@@ -5183,10 +5183,14 @@ async def wa_update_account(sid: str, payload: WAAccountUpdate, user: dict = Dep
 
 @api.post("/whatsapp/accounts")
 async def wa_create_account(payload: WAAccountCreate, user: dict = Depends(get_current_user)):
-    """Create a new WA session for current user. Limit: WA_MAX_ACCOUNTS_PER_USER per user."""
-    count = await db.wa_accounts.count_documents({"tenant_id": user["tenant_id"], "user_id": user["id"]})
-    if count >= WA_MAX_ACCOUNTS_PER_USER:
-        raise HTTPException(400, f"Maks {WA_MAX_ACCOUNTS_PER_USER} akun WA per user")
+    """Create a new WA session for current user.
+    Owner role: unlimited accounts.
+    Other roles: limited by WA_MAX_ACCOUNTS_PER_USER (default 3).
+    """
+    if user.get("role") != "Owner":
+        count = await db.wa_accounts.count_documents({"tenant_id": user["tenant_id"], "user_id": user["id"]})
+        if count >= WA_MAX_ACCOUNTS_PER_USER:
+            raise HTTPException(400, f"Maks {WA_MAX_ACCOUNTS_PER_USER} akun WA per user (Owner unlimited)")
     session_id = uuid.uuid4().hex
     res = await _wa_call(
         "POST", "/sessions",
