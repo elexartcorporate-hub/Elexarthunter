@@ -84,11 +84,13 @@ function SearchModal({ open, date, onClose, onAdded }) {
   const [results, setResults] = useState([]);
   const [adding, setAdding] = useState(null);
   const [resultMode, setResultMode] = useState(null);
+  const [hiddenCount, setHiddenCount] = useState(0);
   const [enrichingSlug, setEnrichingSlug] = useState(null);
-  useEffect(() => { if (open) { setKw(""); setResults([]); setResultMode(null); } }, [open]);
+  const [bulkEnriching, setBulkEnriching] = useState(false);
+  useEffect(() => { if (open) { setKw(""); setResults([]); setResultMode(null); setHiddenCount(0); } }, [open]);
   const doSearch = async () => {
     if (!kw.trim()) return;
-    setLoading(true); setResults([]); setResultMode(null);
+    setLoading(true); setResults([]); setResultMode(null); setHiddenCount(0);
     try {
       const { data } = await api.post("/linkedin/search-companies", {
         keyword: kw, country, limit: 15,
@@ -98,10 +100,13 @@ function SearchModal({ open, date, onClose, onAdded }) {
       });
       setResults(data.results || []);
       setResultMode(data.mode || null);
-      if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain.");
+      setHiddenCount(data.hidden_existing || 0);
+      if ((data.results || []).length === 0 && (data.hidden_existing || 0) > 0) {
+        toast.message(`Semua ${data.hidden_existing} hasil sudah pernah di-prospect — coba keyword lain.`);
+      } else if ((data.results || []).length === 0) toast.message("Tidak ada hasil. Coba keyword lain.");
       else if (data.stale) toast.warning(`${data.count} hasil dari cache lama`);
       else if (data.cached) toast.success(`${data.count} hasil ⚡ dari cache`);
-      else toast.success(`${data.count} hasil baru${data.mode === "scrapingdog" ? " · Scrapingdog (Google SERP)" : data.mode === "li-native" ? " · LinkedIn Native" : ""}`);
+      else toast.success(`${data.count} hasil baru${data.mode === "scrapingdog" ? " · Scrapingdog" : data.mode === "li-native" ? " · LinkedIn Native" : ""}`);
     } catch (err) {
       if (err?.response?.status === 404) {
         toast.warning("Endpoint search belum tersedia di backend VPS. Jalankan: bash wa-setup.sh");
@@ -128,6 +133,32 @@ function SearchModal({ open, date, onClose, onAdded }) {
       toast.success(`✓ ${r.company_name} di-enrich${data.cached ? " (cache)" : " (10 credits)"}`);
     } catch (err) { toast.error(formatApiError(err)); }
     finally { setEnrichingSlug(null); }
+  };
+
+  const bulkEnrichAll = async () => {
+    const toEnrich = results.filter(r => r.linkedin_slug && !r.scrapingdog_enriched);
+    if (toEnrich.length === 0) { toast.message("Semua sudah di-enrich"); return; }
+    const estimateCredits = toEnrich.length * 10;
+    if (!window.confirm(`Enrich ${toEnrich.length} companies sekaligus?\nEstimasi: ${estimateCredits} credits (~$${(estimateCredits * 0.0002).toFixed(3)}).\nHasil cache akan FREE.`)) return;
+    setBulkEnriching(true);
+    try {
+      const slugs = toEnrich.map(r => r.linkedin_slug);
+      const { data } = await api.post("/linkedin/bulk-enrich-scrapingdog", { slugs });
+      const bySlug = Object.fromEntries((data.enriched || []).map(e => [e.slug, e]));
+      setResults((prev) => prev.map((x) => {
+        if (!x.linkedin_slug || !bySlug[x.linkedin_slug]) return x;
+        const e = bySlug[x.linkedin_slug];
+        if (!e.ok) return x;
+        return { ...x, ...e, enriched: true, industry: e.industry, city: e.headquarters,
+                 snippet: e.description || x.snippet, company_size: e.company_size,
+                 tagline: e.tagline, employees: e.employees, scrapingdog_enriched: true };
+      }));
+      const ok = (data.enriched || []).filter(e => e.ok).length;
+      toast.success(`✓ ${ok}/${toEnrich.length} berhasil · ${data.total_credits_used} credits used · ${data.cached_count} dari cache (FREE)`);
+    } catch (err) {
+      if (err?.response?.status === 400) toast.error("Scrapingdog API key belum diset di Settings → API Keys");
+      else toast.error(formatApiError(err));
+    } finally { setBulkEnriching(false); }
   };
   const addOne = async (r) => {
     setAdding(r.domain || r.website);
@@ -238,6 +269,25 @@ function SearchModal({ open, date, onClose, onAdded }) {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {/* Header bar: hidden count + bulk enrich */}
+          {(results.length > 0 || hiddenCount > 0) && (
+            <div className="flex items-center justify-between px-1 mb-1 text-[11px]">
+              <div className="flex items-center gap-2">
+                {hiddenCount > 0 && (
+                  <Badge tone="neutral" data-testid="li-hidden-count">
+                    🙈 {hiddenCount} sudah pernah di-prospect (disembunyikan)
+                  </Badge>
+                )}
+              </div>
+              {results.length > 0 && useScrapingdog && results.some(r => r.linkedin_slug && !r.scrapingdog_enriched) && (
+                <button onClick={bulkEnrichAll} disabled={bulkEnriching}
+                  className="text-[11px] px-2.5 py-1 rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 font-semibold"
+                  data-testid="li-bulk-enrich-all">
+                  {bulkEnriching ? "Enriching…" : `🚀 Bulk Enrich All (${results.filter(r => r.linkedin_slug && !r.scrapingdog_enriched).length} × 10c)`}
+                </button>
+              )}
+            </div>
+          )}
           {loading && <div className="text-center text-sm text-slate-500 py-10">Mencari…</div>}
           {!loading && results.length === 0 && (
             <div className="text-center text-xs text-slate-400 py-10 px-4">

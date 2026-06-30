@@ -5067,6 +5067,53 @@ class LICompanySearch(BaseModel):
     use_scrapingdog: bool = False  # If True & tenant has scrapingdog key, use Google SERP
 
 
+async def _filter_existing_prospects(tenant_id: str, rows: List[dict]) -> tuple[List[dict], int]:
+    """Filter out companies that already exist in li_prospects for this tenant.
+    Match by linkedin_url, website, or normalized company_name."""
+    if not rows:
+        return rows, 0
+    # Collect candidate keys
+    li_urls = []
+    websites = []
+    names = []
+    for r in rows:
+        if r.get("company_linkedin_url"):
+            li_urls.append(r["company_linkedin_url"])
+        if r.get("website") and "linkedin.com" not in r["website"]:
+            websites.append(r["website"])
+        if r.get("company_name"):
+            names.append(r["company_name"].strip().lower())
+    # Single OR query against li_prospects
+    or_clauses = []
+    if li_urls:
+        or_clauses.append({"company_linkedin_url": {"$in": li_urls}})
+    if websites:
+        or_clauses.append({"website": {"$in": websites}})
+    if names:
+        # Use $regex-free $in with normalized lowercase for exact-match
+        or_clauses.append({"_company_name_lc": {"$in": names}})
+    if not or_clauses:
+        return rows, 0
+    cursor = db.li_prospects.find(
+        {"tenant_id": tenant_id, "$or": or_clauses},
+        {"_id": 0, "company_name": 1, "website": 1, "company_linkedin_url": 1},
+    )
+    existing = await cursor.to_list(length=500)
+    existing_li = {e.get("company_linkedin_url") for e in existing if e.get("company_linkedin_url")}
+    existing_web = {e.get("website") for e in existing if e.get("website")}
+    existing_names = {(e.get("company_name") or "").strip().lower() for e in existing}
+    filtered = []
+    hidden = 0
+    for r in rows:
+        if (r.get("company_linkedin_url") in existing_li or
+            r.get("website") in existing_web or
+            (r.get("company_name") or "").strip().lower() in existing_names):
+            hidden += 1
+            continue
+        filtered.append(r)
+    return filtered, hidden
+
+
 @api.post("/linkedin/search-companies")
 async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(get_current_user)):
     """Aggregator: search companies by keyword. Cached in MongoDB for 24 hours.
@@ -5123,7 +5170,10 @@ async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(
                           "results": rows, "cached_at": now_dt.isoformat(), "mode": mode}},
                 upsert=True,
             )
-        return {"keyword": payload.keyword, "count": len(rows), "results": rows, "cached": False, "mode": mode}
+        # Filter out already-prospected (don't waste sales' attention)
+        rows, hidden = await _filter_existing_prospects(user["tenant_id"], rows)
+        return {"keyword": payload.keyword, "count": len(rows), "results": rows,
+                "cached": False, "mode": mode, "hidden_existing": hidden}
 
     # Load LinkedIn session from sub_company if requested
     li_session = None
@@ -5151,7 +5201,64 @@ async def li_search_companies_ep(payload: LICompanySearch, user: dict = Depends(
                       "results": rows, "cached_at": now_dt.isoformat(), "mode": mode}},
             upsert=True,
         )
-    return {"keyword": payload.keyword, "count": len(rows), "results": rows, "cached": False, "mode": mode}
+    rows, hidden = await _filter_existing_prospects(user["tenant_id"], rows)
+    return {"keyword": payload.keyword, "count": len(rows), "results": rows,
+            "cached": False, "mode": mode, "hidden_existing": hidden}
+
+
+@api.post("/linkedin/bulk-enrich-scrapingdog")
+async def bulk_enrich_scrapingdog(payload: dict, user: dict = Depends(get_current_user)):
+    """Enrich multiple companies in parallel. Body: {slugs: List[str]}.
+    Each cached enrichment = 0 credits. New = 10 credits per company. Max 15 per call."""
+    slugs = payload.get("slugs") or []
+    if not isinstance(slugs, list) or not slugs:
+        raise HTTPException(400, "slugs[] required")
+    slugs = [s.strip() for s in slugs if s and isinstance(s, str)][:15]
+    tenant = await db.tenants.find_one({"id": user["tenant_id"]}, {"_id": 0, "scrapingdog_api_key": 1})
+    api_key = (tenant or {}).get("scrapingdog_api_key", "").strip()
+    if not api_key:
+        raise HTTPException(400, "Scrapingdog API key belum diset")
+    from scrapingdog_service import enrich_linkedin_company as sd_enrich
+    import asyncio as _asyncio
+    results = []
+    total_credits = 0
+    async def _one(slug):
+        nonlocal total_credits
+        # Normalize slug from URL if needed
+        m = re.search(r"linkedin\.com/company/([^/?#]+)", slug)
+        s = m.group(1).rstrip("/") if m else slug
+        cache_key = f"sd-enrich|{s}"
+        cached = await db.li_search_cache.find_one({"key": cache_key}, {"_id": 0})
+        if cached:
+            try:
+                cached_at = datetime.fromisoformat(cached["cached_at"])
+                if (datetime.now(timezone.utc) - cached_at).total_seconds() < 86400 * 30:
+                    return {**cached["results"][0], "cached": True, "slug": s}
+            except Exception:
+                pass
+        try:
+            data = await sd_enrich(api_key=api_key, slug_or_url=s)
+            total_credits += data.get("credits_used", 10) if data.get("ok") else 0
+            if data.get("ok"):
+                await db.li_search_cache.update_one(
+                    {"key": cache_key},
+                    {"$set": {"key": cache_key, "results": [data],
+                              "cached_at": datetime.now(timezone.utc).isoformat(), "mode": "sd-enrich"}},
+                    upsert=True,
+                )
+            return {**data, "cached": False, "slug": s}
+        except Exception as e:
+            return {"ok": False, "slug": s, "reason": str(e)[:200]}
+
+    results = await _asyncio.gather(*[_one(s) for s in slugs])
+    if total_credits > 0:
+        await db.scrapingdog_usage.insert_one({
+            "tenant_id": user["tenant_id"], "user_id": user["id"],
+            "type": "enrich", "credits": total_credits,
+            "bulk": True, "slug_count": len(slugs), "ts": now_iso(),
+        })
+    return {"enriched": results, "total_credits_used": total_credits,
+            "cached_count": sum(1 for r in results if r.get("cached"))}
 
 
 @api.post("/linkedin/enrich-scrapingdog")
@@ -5394,6 +5501,7 @@ async def li_create_prospect(payload: LIProspectCreate, user: dict = Depends(get
         "accepted_at": None,
         "first_message_sent_at": None,
         "last_reply_at": None,
+        "_company_name_lc": (payload.company_name or "").strip().lower(),  # for dedup
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
