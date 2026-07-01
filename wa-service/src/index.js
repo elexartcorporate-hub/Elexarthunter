@@ -2,6 +2,7 @@ import express from "express";
 import { MongoClient, GridFSBucket } from "mongodb";
 import baileysPkg from "@whiskeysockets/baileys";
 const { downloadMediaMessage } = baileysPkg;
+import fs from "fs";
 import {
   startSession,
   stopSession,
@@ -13,6 +14,9 @@ import {
   normJid,
   normJidWithLid,
   getSock,
+  diskPathFor,
+  findDiskFile,
+  WA_MEDIA_DIR,
 } from "./sessionManager.js";
 
 const PORT = parseInt(process.env.WA_SERVICE_PORT || "3002", 10);
@@ -65,7 +69,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/health", (req, res) => res.json({ ok: true }));
+app.get("/health", (req, res) => res.json({ ok: true, media_dir: WA_MEDIA_DIR }));
 
 // Create new account (FastAPI calls this)
 app.post("/sessions", async (req, res) => {
@@ -214,8 +218,8 @@ app.post("/sessions/:sid/chats/:jid/media", async (req, res) => {
   }
 });
 
-// Download persisted media. If not yet in GridFS, fetch on-demand from Baileys
-// using the raw message envelope we persisted. Streams large files efficiently.
+// Download persisted media. Priority: DISK → GridFS → on-demand fetch via Baileys.
+// Streams large files efficiently.
 app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
   try {
     const { sid, msgid } = req.params;
@@ -225,11 +229,45 @@ app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
     });
     if (!msg || !msg.media) return res.status(404).json({ error: "Message or media not found" });
 
+    const mimetype = msg.media.mimetype || "application/octet-stream";
+    const downloadAs = msg.media.file_name || `${msg.media.media_type}-${msgid}`;
+
+    // ─── STEP 1: Serve from DISK (fastest, most reliable) ───
+    const diskFile = msg.media.disk_path && fs.existsSync(msg.media.disk_path)
+      ? msg.media.disk_path
+      : findDiskFile(sid, msgid);
+    if (diskFile) {
+      const stat = fs.statSync(diskFile);
+      res.setHeader("Content-Type", mimetype);
+      res.setHeader("Content-Length", stat.size);
+      if (req.query.download === "1") {
+        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadAs)}"`);
+      } else {
+        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(downloadAs)}"`);
+      }
+      res.setHeader("Cache-Control", "private, max-age=86400");
+      // Persist disk_path if it was found via scan (backfill)
+      if (!msg.media.disk_path) {
+        await db.collection("wa_messages").updateOne(
+          { session_id: sid, message_id: msgid },
+          { $set: { "media.disk_path": diskFile } }
+        );
+      }
+      const stream = fs.createReadStream(diskFile);
+      stream.on("error", (e) => {
+        console.error("disk stream err:", e);
+        if (!res.headersSent) res.status(500).json({ error: e.message });
+      });
+      stream.pipe(res);
+      return;
+    }
+
+    // ─── STEP 2: GridFS (backup, older files) ───
     const bucket = new GridFSBucket(db, { bucketName: "wa_media" });
     const filename = `${sid}/${msgid}`;
     let file = await db.collection("wa_media.files").findOne({ filename });
 
-    // ON-DEMAND DOWNLOAD: if file is not in GridFS yet, decrypt+download via Baileys.
+    // ─── STEP 3: ON-DEMAND DOWNLOAD (decrypt via Baileys) ───
     if (!file && msg.raw_msg_message && msg.raw_msg_key) {
       const sock = getSock(sid);
       if (!sock) {
@@ -244,14 +282,18 @@ app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
           { reuploadRequest: sock.updateMediaMessage }
         );
         if (buffer && buffer.length > 0) {
+          // Save to DISK for future requests
+          let savedDisk = null;
+          try {
+            savedDisk = diskPathFor(sid, msgid, msg.media.mimetype, msg.media.file_name);
+            fs.writeFileSync(savedDisk, buffer);
+          } catch (e) { console.error("[on-demand] disk save fail:", e.message); }
+          // Also save to GridFS
           await new Promise((resolve, reject) => {
             const upload = bucket.openUploadStream(filename, {
               metadata: {
-                session_id: sid,
-                message_id: msgid,
-                jid: msg.jid,
-                media_type: msg.media.media_type,
-                mimetype: msg.media.mimetype,
+                session_id: sid, message_id: msgid, jid: msg.jid,
+                media_type: msg.media.media_type, mimetype: msg.media.mimetype,
                 file_name: msg.media.file_name,
               },
             });
@@ -261,9 +303,19 @@ app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
           });
           await db.collection("wa_messages").updateOne(
             { session_id: sid, message_id: msgid },
-            { $set: { "media.downloaded": true, "media.file_size": buffer.length } }
+            { $set: { "media.downloaded": true, "media.file_size": buffer.length, "media.disk_path": savedDisk } }
           );
-          file = await db.collection("wa_media.files").findOne({ filename });
+          // Serve directly from buffer (no need to re-read)
+          res.setHeader("Content-Type", mimetype);
+          res.setHeader("Content-Length", buffer.length);
+          if (req.query.download === "1") {
+            res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadAs)}"`);
+          } else {
+            res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(downloadAs)}"`);
+          }
+          res.setHeader("Cache-Control", "private, max-age=86400");
+          res.end(buffer);
+          return;
         }
       } catch (e) {
         console.error("[on-demand media] download failed:", e.message);
@@ -274,9 +326,9 @@ app.get("/sessions/:sid/messages/:msgid/media", async (req, res) => {
       return res.status(404).json({ error: "Media tidak tersedia (chat lama sebelum fitur ini ada — tidak punya encryption key)" });
     }
 
-    res.setHeader("Content-Type", msg.media.mimetype || "application/octet-stream");
+    // ─── Fallback: stream from GridFS ───
+    res.setHeader("Content-Type", mimetype);
     res.setHeader("Content-Length", file.length);
-    const downloadAs = msg.media.file_name || `${msg.media.media_type}-${msgid}`;
     if (req.query.download === "1") {
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadAs)}"`);
     } else {

@@ -5,7 +5,7 @@ import { PageHeader, Card, PrimaryButton, GhostButton, Badge, EmptyState } from 
 import {
   WhatsappLogo, Plus, Trash, Eye, ArrowsClockwise, X, PaperPlaneRight,
   ChatCircleDots, Phone, User, ShieldCheck, Warning, CheckCircle,
-  Paperclip, UsersThree, Gear, UserPlus, Users, Tag,
+  Paperclip, UsersThree, Gear, UserPlus, Users, Tag, DownloadSimple, MagnifyingGlassPlus,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -403,6 +403,8 @@ export default function WhatsAppPage() {
   const [renameAccount, setRenameAccount] = useState(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignJid, setAssignJid] = useState("");
+  // Image lightbox viewer state — { url, downloadUrl, caption }
+  const [lightbox, setLightbox] = useState(null);
   const [teamMembers, setTeamMembers] = useState([]);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteAccount, setDeleteAccount] = useState(null);
@@ -683,6 +685,14 @@ export default function WhatsAppPage() {
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, activeJid]);
+
+  // ESC key closes lightbox
+  useEffect(() => {
+    if (!lightbox) return;
+    const handler = (e) => { if (e.key === "Escape") setLightbox(null); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [lightbox]);
 
   const handleAdd = async () => {
     try {
@@ -1352,36 +1362,56 @@ sudo supervisorctl restart hunter-backend`}
                             )}
                             {/* MEDIA RENDERING */}
                             {mt && (mt === "image" || mt === "sticker") && mediaUrl && (
-                              <div className="relative mb-1 -mx-1">
-                                <a href={mediaUrl} target="_blank" rel="noreferrer" className="block">
-                                  <img
-                                    src={mediaUrl}
-                                    alt={m.media?.caption || "image"}
-                                    className="rounded-md max-w-[280px] max-h-[280px] object-cover cursor-zoom-in"
-                                    loading="lazy"
-                                    data-testid={`wa-img-${m.message_id}`}
-                                    onError={(e) => {
-                                      // Show inline fallback card if the image can't be loaded
-                                      e.target.style.display = "none";
-                                      const nx = e.target.nextElementSibling;
-                                      if (nx) nx.style.display = "flex";
-                                    }}
-                                  />
-                                  <div
-                                    style={{ display: "none" }}
-                                    className={`rounded-md p-3 text-xs items-center gap-2 ${
-                                      m.from_me ? "bg-emerald-600/30 text-white" : "bg-slate-100 text-slate-600"
-                                    }`}
+                              <div className="relative mb-1 -mx-1 group/img">
+                                <img
+                                  src={mediaUrl}
+                                  alt={m.media?.caption || "image"}
+                                  className="rounded-md max-w-[280px] max-h-[280px] object-cover cursor-zoom-in block"
+                                  loading="lazy"
+                                  data-testid={`wa-img-${m.message_id}`}
+                                  onClick={() => setLightbox({ url: mediaUrl, downloadUrl: mediaDlUrl, caption: m.media?.caption || m.media?.file_name || "" })}
+                                  onError={(e) => {
+                                    e.target.style.display = "none";
+                                    const nx = e.target.nextElementSibling;
+                                    if (nx) nx.style.display = "flex";
+                                  }}
+                                />
+                                {/* Hover overlay with eye + download icons */}
+                                <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover/img:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setLightbox({ url: mediaUrl, downloadUrl: mediaDlUrl, caption: m.media?.caption || m.media?.file_name || "" }); }}
+                                    className="bg-black/60 hover:bg-black/80 text-white p-1.5 rounded-full backdrop-blur-sm"
+                                    title="Lihat gambar"
+                                    data-testid={`wa-img-view-${m.message_id}`}
                                   >
-                                    <Warning size={14} weight="fill" className="shrink-0" />
-                                    <div className="flex-1">
-                                      <div className="font-semibold">Gambar tidak bisa dimuat</div>
-                                      <div className={`text-[10px] ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
-                                        Chat lama sebelum fitur download aktif. Klik untuk coba fetch ulang.
-                                      </div>
+                                    <Eye size={14} weight="bold" />
+                                  </button>
+                                  <a
+                                    href={mediaDlUrl}
+                                    download={m.media?.file_name || `image-${m.message_id}.jpg`}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="bg-black/60 hover:bg-black/80 text-white p-1.5 rounded-full backdrop-blur-sm"
+                                    title="Download gambar"
+                                    data-testid={`wa-img-dl-${m.message_id}`}
+                                  >
+                                    <DownloadSimple size={14} weight="bold" />
+                                  </a>
+                                </div>
+                                <div
+                                  style={{ display: "none" }}
+                                  className={`rounded-md p-3 text-xs items-center gap-2 ${
+                                    m.from_me ? "bg-emerald-600/30 text-white" : "bg-slate-100 text-slate-600"
+                                  }`}
+                                >
+                                  <Warning size={14} weight="fill" className="shrink-0" />
+                                  <div className="flex-1">
+                                    <div className="font-semibold">Gambar tidak bisa dimuat</div>
+                                    <div className={`text-[10px] ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
+                                      Chat lama sebelum fitur download aktif. Klik untuk coba fetch ulang.
                                     </div>
                                   </div>
-                                </a>
+                                </div>
                               </div>
                             )}
                             {mt === "video" && mediaUrl && (
@@ -1550,6 +1580,50 @@ sudo supervisorctl restart hunter-backend`}
         onClose={() => { setDeleteOpen(false); setDeleteAccount(null); }}
         onConfirm={handleDelete}
       />
+
+      {/* Image Lightbox — click image → open fullscreen viewer */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => setLightbox(null)}
+          data-testid="wa-lightbox"
+        >
+          {/* Close */}
+          <button
+            onClick={() => setLightbox(null)}
+            className="absolute top-4 right-4 bg-white/10 hover:bg-white/20 text-white p-2 rounded-full backdrop-blur-sm"
+            title="Tutup (Esc)"
+            data-testid="wa-lightbox-close"
+          >
+            <X size={22} weight="bold" />
+          </button>
+          {/* Download */}
+          {lightbox.downloadUrl && (
+            <a
+              href={lightbox.downloadUrl}
+              download
+              onClick={(e) => e.stopPropagation()}
+              className="absolute top-4 right-16 bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-full backdrop-blur-sm text-xs font-semibold flex items-center gap-1.5"
+              title="Download"
+              data-testid="wa-lightbox-download"
+            >
+              <DownloadSimple size={14} weight="bold" /> Download
+            </a>
+          )}
+          <img
+            src={lightbox.url}
+            alt={lightbox.caption || "preview"}
+            onClick={(e) => e.stopPropagation()}
+            className="max-w-[95vw] max-h-[90vh] object-contain rounded-md shadow-2xl"
+            data-testid="wa-lightbox-img"
+          />
+          {lightbox.caption && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/60 text-white text-xs px-3 py-1.5 rounded-full backdrop-blur-sm max-w-[80vw] truncate">
+              {lightbox.caption}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

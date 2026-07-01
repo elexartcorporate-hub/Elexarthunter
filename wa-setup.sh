@@ -180,6 +180,12 @@ else
 fi
 
 # ─── 3. WA Service supervisor config ──────────────────────────────────────
+# Media storage folder (persisted files: images, PDFs, videos)
+WA_MEDIA_DIR="${APP_DIR}/wa-media"
+sudo mkdir -p "$WA_MEDIA_DIR"
+sudo chown -R "$(id -u):$(id -g)" "$WA_MEDIA_DIR" 2>/dev/null || true
+ok "WA media folder → $WA_MEDIA_DIR"
+
 log "Writing supervisor config → $SUPERVISOR_CONF"
 sudo tee "$SUPERVISOR_CONF" > /dev/null <<EOF
 [program:${SUPERVISOR_NAME}]
@@ -187,7 +193,7 @@ command=${NODE_BIN} ${WA_DIR}/src/index.js
 directory=${WA_DIR}
 autostart=true
 autorestart=true
-environment=NODE_ENV="production",MONGO_URL="mongodb://localhost:27017",DB_NAME="lead_hunter_db",WA_SERVICE_PORT="3002",WA_SERVICE_SECRET="${SECRET}"
+environment=NODE_ENV="production",MONGO_URL="mongodb://localhost:27017",DB_NAME="lead_hunter_db",WA_SERVICE_PORT="3002",WA_SERVICE_SECRET="${SECRET}",WA_MEDIA_DIR="${WA_MEDIA_DIR}"
 stderr_logfile=/var/log/supervisor/${SUPERVISOR_NAME}.err.log
 stdout_logfile=/var/log/supervisor/${SUPERVISOR_NAME}.out.log
 stopsignal=TERM

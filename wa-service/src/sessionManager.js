@@ -13,8 +13,53 @@ import pino from "pino";
 import qrcode from "qrcode";
 import { GridFSBucket, ObjectId } from "mongodb";
 import { useMongoAuthState, deleteMongoAuthState } from "./mongoAuthState.js";
+import fs from "fs";
+import path from "path";
 
 const logger = pino({ level: "warn" });
+
+// Disk storage for WA media files (persistent server folder).
+// Set WA_MEDIA_DIR env to override (VPS example: /var/www/hunter.elexart.com/wa-media)
+export const WA_MEDIA_DIR = process.env.WA_MEDIA_DIR || "/app/wa-media-storage";
+try { fs.mkdirSync(WA_MEDIA_DIR, { recursive: true }); } catch (_) {}
+
+function extFromMimetype(mime, fallbackName) {
+  if (fallbackName && /\.[a-z0-9]{1,6}$/i.test(fallbackName)) {
+    return fallbackName.substring(fallbackName.lastIndexOf("."));
+  }
+  const map = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+    "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm",
+    "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/aac": ".aac",
+    "audio/wav": ".wav",
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/zip": ".zip",
+    "text/plain": ".txt",
+  };
+  return map[(mime || "").toLowerCase()] || ".bin";
+}
+
+export function diskPathFor(sessionId, messageId, mimetype, fileName) {
+  const dir = path.join(WA_MEDIA_DIR, sessionId);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  const ext = extFromMimetype(mimetype, fileName);
+  return path.join(dir, `${messageId}${ext}`);
+}
+
+export function findDiskFile(sessionId, messageId) {
+  // Match by prefix since we saved with extension
+  const dir = path.join(WA_MEDIA_DIR, sessionId);
+  if (!fs.existsSync(dir)) return null;
+  try {
+    const files = fs.readdirSync(dir);
+    const hit = files.find((f) => f.startsWith(`${messageId}.`) || f === messageId);
+    return hit ? path.join(dir, hit) : null;
+  } catch (_) { return null; }
+}
 
 const sessions = new Map(); // sessionId -> { sock, state: {status, qr, phone, name, error}, lastQrAt }
 
@@ -424,14 +469,24 @@ async function persistMessage(db, sessionId, sock, msg) {
   );
 
   // Auto-download incoming media so client can later open/download it from the inbox.
-  // We use GridFS to store binary safely (handles files >16MB MongoDB doc limit).
+  // Primary storage: DISK (persistent server folder) — reliable, easy to access.
+  // Secondary: GridFS (backup + backward compat).
   if (media && !fromMe) {
     try {
       const buffer = await downloadMediaMessage(msg, "buffer", {}, { logger, reuploadRequest: sock.updateMediaMessage });
       if (buffer && buffer.length > 0) {
+        // ─── DISK SAVE (primary) ───
+        let diskPath = null;
+        try {
+          diskPath = diskPathFor(sessionId, msg.key.id, media.mimetype, media.file_name);
+          fs.writeFileSync(diskPath, buffer);
+        } catch (diskErr) {
+          console.error(`[persistMessage] disk save failed for ${msg.key.id}:`, diskErr.message);
+        }
+
+        // ─── GridFS SAVE (backup) ───
         const bucket = new GridFSBucket(db, { bucketName: "wa_media" });
         const filename = `${sessionId}/${msg.key.id}`;
-        // Remove any existing copy (idempotent)
         const existing = await db.collection("wa_media.files").findOne({ filename });
         if (existing) {
           await bucket.delete(existing._id).catch(() => {});
@@ -459,6 +514,7 @@ async function persistMessage(db, sessionId, sock, msg) {
               "media.downloaded": true,
               "media.file_id": String(fileId),
               "media.file_size": buffer.length,
+              "media.disk_path": diskPath || null,
             },
           }
         );

@@ -5446,19 +5446,37 @@ async def wa_get_media(sid: str, msgid: str, request: Request, download: int = 0
     headers = {"X-WA-Secret": os.environ.get("WA_SERVICE_SECRET", "dev-secret")}
     url = f"{WA_SERVICE_URL}/sessions/{sid}/messages/{msgid}/media"
     params = {"download": "1"} if download else {}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        resp = await client.get(url, headers=headers, params=params)
+    # Stream the response so large files (100MB PDF/video) don't hog memory.
+    # 300s timeout because Baileys re-fetch of media can be slow.
+    client = httpx.AsyncClient(timeout=httpx.Timeout(300.0))
+    req_stream = client.build_request("GET", url, headers=headers, params=params)
+    resp = await client.send(req_stream, stream=True)
     if resp.status_code >= 400:
+        # Read body (small — it's an error JSON/HTML), then close.
+        body = await resp.aread()
+        await resp.aclose()
+        await client.aclose()
         try:
-            detail = resp.json().get("error", "Media tidak tersedia")
+            import json as _json
+            detail = _json.loads(body).get("error", "Media tidak tersedia")
         except Exception:
-            detail = resp.text or "Media tidak tersedia"
+            detail = (body.decode("utf-8", errors="replace") or "Media tidak tersedia")[:500]
         raise HTTPException(resp.status_code, detail)
-    return FastAPIResponse(
-        content=resp.content,
+
+    async def _stream():
+        try:
+            async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _stream(),
         media_type=resp.headers.get("content-type", "application/octet-stream"),
         headers={
             "Content-Disposition": resp.headers.get("content-disposition", "inline"),
+            "Content-Length": resp.headers.get("content-length", ""),
             "Cache-Control": "private, max-age=86400",
         },
     )
