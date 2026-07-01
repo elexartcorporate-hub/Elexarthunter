@@ -1251,12 +1251,20 @@ sudo supervisorctl restart hunter-backend`}
                     <User size={14} weight="bold" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-slate-900 truncate font-mono" data-testid="wa-active-header">
-                      {jidName(activeJid, chats.find((x) => x.jid === activeJid)?.name)}
+                    <div className="font-semibold text-slate-900 truncate" data-testid="wa-active-header">
+                      {(() => {
+                        // Prefer name from chat row; fallback to latest push_name in messages state.
+                        const chatRow = chats.find((x) => x.jid === activeJid);
+                        const msgPushName = messages.find((m) => !m.from_me && m.push_name)?.push_name;
+                        const displayName = chatRow?.name || msgPushName;
+                        if (displayName) return displayName;
+                        return jidName(activeJid);
+                      })()}
                     </div>
                     {isLidOnly(activeJid) && (
-                      <div className="text-[10px] text-amber-700 italic -mt-0.5">
-                        🔒 Nama dari profil WhatsApp — nomor asli disembunyikan (privacy)
+                      <div className="text-[10px] text-slate-500 -mt-0.5 flex items-center gap-1">
+                        <span className="text-amber-600">🔒</span>
+                        <span className="font-mono">LID: {activeJid.split("@")[0].split(":")[0]}</span>
                       </div>
                     )}
                     {/* CRM Pipeline status changer */}
