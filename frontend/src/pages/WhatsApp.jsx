@@ -412,6 +412,8 @@ export default function WhatsAppPage() {
   const [pipelineCounts, setPipelineCounts] = useState({ hot: 0, cold: 0, warm: 0, hold: 0, deal: 0, lost: 0, follow_up: 0 });
   // Backend feature support — detect if VPS backend has the new PATCH/assign endpoints
   const [backendSupport, setBackendSupport] = useState({ patch: null, assign: null });
+  // Download progress state: { [message_id]: { pct: 0-100, active: bool, error: str } }
+  const [dlProgress, setDlProgress] = useState({});
   const messagesEnd = useRef(null);
   const lastChatSyncRef = useRef(null);
   const lastMsgSyncRef = useRef({});
@@ -507,6 +509,68 @@ export default function WhatsAppPage() {
         c.jid === jid ? { ...c, name: cleaned || c.name, custom_name: cleaned || null } : c
       ));
     } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  // Robust media download with progress bar + proper error toasts.
+  // Fetches full response as blob, tracks bytes via ReadableStream reader, then triggers save-as.
+  const downloadMedia = async (mediaUrl, filename, messageId) => {
+    if (!mediaUrl) return;
+    setDlProgress((p) => ({ ...p, [messageId]: { pct: 0, active: true, error: null } }));
+    try {
+      const resp = await fetch(mediaUrl);
+      if (!resp.ok) {
+        let msg = `HTTP ${resp.status}`;
+        try {
+          const j = await resp.json();
+          msg = j.detail || j.error || msg;
+        } catch (_) { /* ignore */ }
+        throw new Error(msg);
+      }
+      const total = parseInt(resp.headers.get("content-length") || "0", 10);
+      const reader = resp.body?.getReader();
+      const chunks = [];
+      let received = 0;
+      if (reader) {
+        // Stream chunks & report progress
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          if (total > 0) {
+            const pct = Math.min(99, Math.round((received / total) * 100));
+            setDlProgress((p) => ({ ...p, [messageId]: { pct, active: true, error: null } }));
+          }
+        }
+      } else {
+        // Fallback for browsers without ReadableStream
+        chunks.push(new Uint8Array(await resp.arrayBuffer()));
+      }
+      const blob = new Blob(chunks, { type: resp.headers.get("content-type") || "application/octet-stream" });
+      // Trigger save-as via anchor
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || `download-${messageId}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setDlProgress((p) => ({ ...p, [messageId]: { pct: 100, active: false, error: null } }));
+      toast.success(`Downloaded: ${filename}`);
+      // Clear state after 2s so bar disappears
+      setTimeout(() => {
+        setDlProgress((p) => {
+          const nx = { ...p };
+          delete nx[messageId];
+          return nx;
+        });
+      }, 2000);
+    } catch (err) {
+      const errMsg = err?.message || "Gagal download";
+      setDlProgress((p) => ({ ...p, [messageId]: { pct: 0, active: false, error: errMsg } }));
+      toast.error(`Download gagal: ${errMsg}`);
+    }
   };
 
   // Filter chats by pipeline tab (client-side for current session's chat list).
@@ -1433,16 +1497,23 @@ sudo supervisorctl restart hunter-backend`}
                                   >
                                     <Eye size={14} weight="bold" />
                                   </button>
-                                  <a
-                                    href={mediaDlUrl}
-                                    download={m.media?.file_name || `image-${m.message_id}.jpg`}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="bg-black/60 hover:bg-black/80 text-white p-1.5 rounded-full backdrop-blur-sm"
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      downloadMedia(mediaDlUrl, m.media?.file_name || `image-${m.message_id}.jpg`, m.message_id);
+                                    }}
+                                    disabled={dlProgress[m.message_id]?.active}
+                                    className="bg-black/60 hover:bg-black/80 text-white p-1.5 rounded-full backdrop-blur-sm disabled:opacity-70"
                                     title="Download gambar"
                                     data-testid={`wa-img-dl-${m.message_id}`}
                                   >
-                                    <DownloadSimple size={14} weight="bold" />
-                                  </a>
+                                    {dlProgress[m.message_id]?.active ? (
+                                      <ArrowsClockwise size={14} weight="bold" className="animate-spin" />
+                                    ) : (
+                                      <DownloadSimple size={14} weight="bold" />
+                                    )}
+                                  </button>
                                 </div>
                                 <div
                                   style={{ display: "none" }}
@@ -1472,32 +1543,63 @@ sudo supervisorctl restart hunter-backend`}
                               <audio src={mediaUrl} controls className="w-full mb-1" preload="metadata" />
                             )}
                             {mt && (mt === "document" || (!mediaUrl && mediaLabel)) && (
-                              <div className={`text-xs font-semibold mb-1 px-2 py-2 rounded flex items-center justify-between gap-2 ${
+                              <div className={`text-xs font-semibold mb-1 px-2 py-2 rounded ${
                                 m.from_me ? "bg-emerald-600/30" : "bg-slate-100"
                               }`}>
-                                <div className="flex items-center gap-1 min-w-0 flex-1">
-                                  <span>{mediaLabel}</span>
-                                  {m.media?.file_length > 0 && (
-                                    <span className={`text-[10px] shrink-0 ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
-                                      ({m.media.file_length > 1024 * 1024
-                                        ? (m.media.file_length / 1024 / 1024).toFixed(1) + " MB"
-                                        : (m.media.file_length / 1024).toFixed(0) + " KB"})
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1 min-w-0 flex-1">
+                                    <span className="truncate">{mediaLabel}</span>
+                                    {m.media?.file_length > 0 && (
+                                      <span className={`text-[10px] shrink-0 ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
+                                        ({m.media.file_length > 1024 * 1024
+                                          ? (m.media.file_length / 1024 / 1024).toFixed(1) + " MB"
+                                          : (m.media.file_length / 1024).toFixed(0) + " KB"})
+                                      </span>
+                                    )}
+                                  </div>
+                                  {mediaDlUrl ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => downloadMedia(mediaDlUrl, m.media?.file_name || `document-${m.message_id}`, m.message_id)}
+                                      disabled={dlProgress[m.message_id]?.active}
+                                      className={`text-[10px] font-bold flex items-center gap-1 px-2 py-1 rounded transition ${
+                                        m.from_me
+                                          ? "bg-white/90 text-emerald-700 hover:bg-white disabled:opacity-70"
+                                          : "bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-70"
+                                      }`}
+                                      data-testid={`wa-media-dl-${m.message_id}`}
+                                    >
+                                      {dlProgress[m.message_id]?.active ? (
+                                        <>
+                                          <ArrowsClockwise size={11} weight="bold" className="animate-spin" />
+                                          {dlProgress[m.message_id].pct}%
+                                        </>
+                                      ) : (
+                                        <>
+                                          <DownloadSimple size={11} weight="bold" />
+                                          Download
+                                        </>
+                                      )}
+                                    </button>
+                                  ) : (
+                                    <span className={`text-[10px] italic ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
+                                      {m.media?.download_error ? "Gagal download" : "Memproses…"}
                                     </span>
                                   )}
                                 </div>
-                                {mediaDlUrl ? (
-                                  <a
-                                    href={mediaDlUrl}
-                                    download={m.media?.file_name || true}
-                                    className={`text-[10px] font-bold underline ${m.from_me ? "text-white" : "text-emerald-600 hover:text-emerald-700"}`}
-                                    data-testid={`wa-media-dl-${m.message_id}`}
-                                  >
-                                    ⬇ Download
-                                  </a>
-                                ) : (
-                                  <span className={`text-[10px] italic ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
-                                    {m.media?.download_error ? "Gagal download" : "Memproses…"}
-                                  </span>
+                                {/* Progress bar under button while downloading */}
+                                {dlProgress[m.message_id]?.active && (
+                                  <div className="mt-2 w-full h-1.5 bg-slate-300/40 rounded overflow-hidden">
+                                    <div
+                                      className={`h-full transition-all ${m.from_me ? "bg-white/80" : "bg-emerald-500"}`}
+                                      style={{ width: `${dlProgress[m.message_id].pct || 0}%` }}
+                                    />
+                                  </div>
+                                )}
+                                {dlProgress[m.message_id]?.error && !dlProgress[m.message_id]?.active && (
+                                  <div className={`mt-1 text-[10px] ${m.from_me ? "text-rose-200" : "text-rose-600"}`}>
+                                    ✗ {dlProgress[m.message_id].error}
+                                  </div>
                                 )}
                               </div>
                             )}
@@ -1645,16 +1747,19 @@ sudo supervisorctl restart hunter-backend`}
           </button>
           {/* Download */}
           {lightbox.downloadUrl && (
-            <a
-              href={lightbox.downloadUrl}
-              download
-              onClick={(e) => e.stopPropagation()}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                const lbId = `lightbox-${Date.now()}`;
+                downloadMedia(lightbox.downloadUrl, lightbox.caption || `image-${Date.now()}.jpg`, lbId);
+              }}
               className="absolute top-4 right-16 bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-full backdrop-blur-sm text-xs font-semibold flex items-center gap-1.5"
               title="Download"
               data-testid="wa-lightbox-download"
             >
               <DownloadSimple size={14} weight="bold" /> Download
-            </a>
+            </button>
           )}
           <img
             src={lightbox.url}
