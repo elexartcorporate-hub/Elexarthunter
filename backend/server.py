@@ -5389,6 +5389,21 @@ async def wa_send_text(sid: str, jid: str, payload: WASendText, user: dict = Dep
     return await _wa_call("POST", f"/sessions/{sid}/chats/{jid}/messages", json={"text": payload.text})
 
 
+class WAChatRename(BaseModel):
+    custom_name: Optional[str] = None  # empty/None → clears the custom name
+
+
+@api.patch("/whatsapp/accounts/{sid}/chats/{jid}/rename")
+async def wa_rename_chat(sid: str, jid: str, payload: WAChatRename, user: dict = Depends(get_current_user)):
+    """Rename a chat with a custom label (great for LID chats where push_name isn't resolved).
+    Account owner OR Owner/Admin can rename."""
+    await _wa_check_account_access(sid, user)
+    return await _wa_call(
+        "PATCH", f"/sessions/{sid}/chats/{jid}/rename",
+        json={"custom_name": payload.custom_name},
+    )
+
+
 class WASendMedia(BaseModel):
     kind: Literal["image", "video", "document", "audio"]
     base64: str

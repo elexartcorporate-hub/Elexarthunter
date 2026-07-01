@@ -14,11 +14,10 @@ function formatPhone(jid) {
   if (!jid) return "";
   if (jid.includes("@g.us")) return "";
   // @lid = LID (Anonymous WhatsApp privacy ID) — NOT a real phone number.
-  // Show with explicit marker so user knows real number is hidden.
+  // Show a friendly "Kontak #xxxx" label (no scary lock icon).
   if (jid.includes("@lid")) {
     const lidId = jid.split("@")[0].split(":")[0];
-    // Show last 4 digits only to make clear it's anonymous
-    return `🔒 LID#${lidId.slice(-6)}`;
+    return `Kontak #${lidId.slice(-6)}`;
   }
   const num = jid.split("@")[0].split(":")[0]; // strip device part :12
   return num.startsWith("+") ? num : "+" + num;
@@ -26,15 +25,15 @@ function formatPhone(jid) {
 function jidName(jid, fallback) {
   if (!jid) return fallback || "Unknown";
   if (jid.includes("@g.us")) return fallback || "Group";
-  // For LID (Anonymous WhatsApp privacy ID) — real number tersembunyi.
-  // Prefer push_name (nama profil WhatsApp lawan bicara) sebagai display utama.
-  // Fallback ke LID#xxx kalau push_name tidak ada.
+  // For LID (Anonymous WhatsApp privacy ID) — prefer name (push_name or custom_name).
+  // Fallback ke "Kontak #xxx" (bukan "🔒 LID#xxx") supaya lebih ramah.
   if (jid.includes("@lid")) {
     if (fallback && fallback.trim()) return fallback.trim();
     const lidId = jid.split("@")[0].split(":")[0];
-    return `🔒 LID#${lidId.slice(-6)}`;
+    return `Kontak #${lidId.slice(-6)}`;
   }
-  // For regular private chats: ALWAYS show phone (push_name shown sebagai secondary).
+  // For regular private chats: prefer name if provided, else phone number.
+  if (fallback && fallback.trim()) return fallback.trim();
   return formatPhone(jid);
 }
 // Is this JID an anonymous LID (no real PN resolved)?
@@ -491,6 +490,22 @@ export default function WhatsAppPage() {
       // Optimistic local update
       setChats((prev) => prev.map((c) => c.jid === activeJid ? { ...c, pipeline_status: newStatus, pipeline_stage: 0 } : c));
       loadPipelineCounts();
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  const renameChat = async (jid, newName) => {
+    if (!activeSid || !jid) return;
+    try {
+      await api.patch(
+        `/whatsapp/accounts/${activeSid}/chats/${encodeURIComponent(jid)}/rename`,
+        { custom_name: newName || null }
+      );
+      const cleaned = (newName || "").trim();
+      toast.success(cleaned ? `Nama disimpan: ${cleaned}` : "Nama custom dihapus");
+      // Optimistic local update — set both name & custom_name so it shows immediately
+      setChats((prev) => prev.map((c) =>
+        c.jid === jid ? { ...c, name: cleaned || c.name, custom_name: cleaned || null } : c
+      ));
     } catch (err) { toast.error(formatApiError(err)); }
   };
 
@@ -1164,7 +1179,7 @@ sudo supervisorctl restart hunter-backend`}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline gap-2">
-                        <div className="text-sm font-semibold text-slate-900 truncate flex-1 font-mono" data-testid={`wa-chat-name-${c.jid}`}>
+                        <div className="text-sm font-semibold text-slate-900 truncate flex-1" data-testid={`wa-chat-name-${c.jid}`}>
                           {jidName(c.jid, c.name)}
                           {(c.is_group || c.jid?.includes("@g.us")) && c.group_size > 0 && (
                             <span className="ml-1 text-[10px] text-emerald-600 font-normal">({c.group_size})</span>
@@ -1177,12 +1192,6 @@ sudo supervisorctl restart hunter-backend`}
                       {!c.is_group && !c.jid?.includes("@g.us") && !c.jid?.includes("@lid") && c.name && (
                         <div className="text-[10px] text-slate-500 italic truncate -mt-0.5" data-testid={`wa-chat-alias-${c.jid}`}>
                           ~{c.name}
-                        </div>
-                      )}
-                      {/* For LID chats: show the anonymous ID as small secondary so admin still has reference */}
-                      {!c.is_group && c.jid?.includes("@lid") && c.name && (
-                        <div className="text-[10px] text-amber-600 italic truncate -mt-0.5" data-testid={`wa-chat-lid-${c.jid}`}>
-                          🔒 LID#{c.jid.split("@")[0].split(":")[0].slice(-6)} (anonim)
                         </div>
                       )}
                       {c.assignment && (
@@ -1230,14 +1239,33 @@ sudo supervisorctl restart hunter-backend`}
                       </div>
                     </div>
                     {isAdmin && isAccountOwner && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setAssignJid(c.jid); setAssignOpen(true); }}
-                        className="opacity-0 group-hover:opacity-100 transition p-1 rounded hover:bg-indigo-100 text-indigo-600 shrink-0"
-                        title={c.assignment ? "Edit assignment" : "Assign chat ke user"}
-                        data-testid={`wa-assign-btn-${c.jid}`}
-                      >
-                        <UserPlus size={14} weight="bold" />
-                      </button>
+                      <div className="flex flex-col gap-0.5 shrink-0">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setAssignJid(c.jid); setAssignOpen(true); }}
+                          className="opacity-0 group-hover:opacity-100 transition p-1 rounded hover:bg-indigo-100 text-indigo-600"
+                          title={c.assignment ? "Edit assignment" : "Assign chat ke user"}
+                          data-testid={`wa-assign-btn-${c.jid}`}
+                        >
+                          <UserPlus size={14} weight="bold" />
+                        </button>
+                        {/* Rename button — visible for @lid chats only */}
+                        {c.jid?.includes("@lid") && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const cur = c.custom_name || c.name || "";
+                              const next = window.prompt("Nama untuk kontak ini:", cur);
+                              if (next === null) return;
+                              renameChat(c.jid, next.trim());
+                            }}
+                            className="opacity-0 group-hover:opacity-100 transition p-1 rounded hover:bg-emerald-100 text-emerald-600"
+                            title="Rename kontak"
+                            data-testid={`wa-rename-btn-${c.jid}`}
+                          >
+                            <Tag size={12} weight="bold" />
+                          </button>
+                        )}
+                      </div>
                     )}
                   </button>
                 ))
@@ -1261,22 +1289,40 @@ sudo supervisorctl restart hunter-backend`}
                     <User size={14} weight="bold" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-slate-900 truncate" data-testid="wa-active-header">
-                      {(() => {
-                        // Prefer name from chat row; fallback to latest push_name in messages state.
-                        const chatRow = chats.find((x) => x.jid === activeJid);
-                        const msgPushName = messages.find((m) => !m.from_me && m.push_name)?.push_name;
-                        const displayName = chatRow?.name || msgPushName;
-                        if (displayName) return displayName;
-                        return jidName(activeJid);
-                      })()}
-                    </div>
-                    {isLidOnly(activeJid) && (
-                      <div className="text-[10px] text-slate-500 -mt-0.5 flex items-center gap-1">
-                        <span className="text-amber-600">🔒</span>
-                        <span className="font-mono">LID: {activeJid.split("@")[0].split(":")[0]}</span>
-                      </div>
-                    )}
+                    {(() => {
+                      // Prefer name from chat row; fallback to latest push_name in messages state.
+                      const chatRow = chats.find((x) => x.jid === activeJid);
+                      const msgPushName = messages.find((m) => !m.from_me && m.push_name)?.push_name;
+                      const resolvedName = chatRow?.name || msgPushName || "";
+                      const displayName = resolvedName || jidName(activeJid);
+                      return (
+                        <div className="flex items-center gap-2">
+                          <div className="font-semibold text-slate-900 truncate" data-testid="wa-active-header">
+                            {displayName}
+                          </div>
+                          {/* Rename pencil — visible only for @lid chats to let user set a friendly label */}
+                          {isLidOnly(activeJid) && !activeJid?.includes("@g.us") && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = chatRow?.custom_name || resolvedName || "";
+                                const next = window.prompt(
+                                  "Nama untuk kontak ini:",
+                                  cur
+                                );
+                                if (next === null) return; // cancelled
+                                renameChat(activeJid, next.trim());
+                              }}
+                              className="text-[10px] text-indigo-600 hover:text-indigo-700 hover:underline shrink-0"
+                              title="Ubah nama kontak ini"
+                              data-testid="wa-rename-btn"
+                            >
+                              ✏️ Rename
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {/* CRM Pipeline status changer */}
                     {(() => {
                       const cur = chats.find((x) => x.jid === activeJid);

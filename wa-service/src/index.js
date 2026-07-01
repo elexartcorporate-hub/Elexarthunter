@@ -141,13 +141,23 @@ app.get("/sessions/:sid/chats", async (req, res) => {
     .toArray();
 
   // Backfill name from latest push_name for chats that don't have one yet.
-  // Useful for legacy chats (LID#xxx) that came in before we synced push_name to wa_chats.
-  const missingNameChats = chats.filter((c) => !c.name && (c.jid || "").includes("@lid"));
+  // We check BOTH matching `jid` field AND `raw_jid` field (in case chat was stored
+  // as canonical @lid but messages were saved under raw @s.whatsapp.net form).
+  // Also allow custom_name (user's manual rename) to override push_name.
+  const missingNameChats = chats.filter((c) => !c.custom_name && !c.name && (c.jid || "").includes("@lid"));
   if (missingNameChats.length > 0) {
     for (const c of missingNameChats) {
       try {
+        // Search by canonical jid OR raw_jid (dual-jid case)
+        const jidCandidates = [c.jid];
+        if (c.raw_jid) jidCandidates.push(c.raw_jid);
         const recent = await db.collection("wa_messages").findOne(
-          { session_id: req.params.sid, jid: c.jid, from_me: false, push_name: { $ne: null, $ne: "" } },
+          {
+            session_id: req.params.sid,
+            $or: [{ jid: { $in: jidCandidates } }, { raw_jid: { $in: jidCandidates } }],
+            from_me: false,
+            push_name: { $nin: [null, ""] },
+          },
           { sort: { timestamp: -1 }, projection: { push_name: 1 } }
         );
         if (recent && recent.push_name) {
@@ -162,7 +172,30 @@ app.get("/sessions/:sid/chats", async (req, res) => {
     }
   }
 
-  res.json(chats.map(({ _id, ...c }) => c));
+  // Apply custom_name override on serialized output (user's manual rename wins)
+  res.json(chats.map(({ _id, ...c }) => {
+    if (c.custom_name && c.custom_name.trim()) {
+      return { ...c, name: c.custom_name.trim(), _has_custom_name: true };
+    }
+    return c;
+  }));
+});
+
+// Rename a chat (manual label — great for LID chats with no push_name resolved)
+app.patch("/sessions/:sid/chats/:jid/rename", async (req, res) => {
+  try {
+    const { custom_name } = req.body || {};
+    const upd = custom_name && String(custom_name).trim()
+      ? { $set: { custom_name: String(custom_name).trim() } }
+      : { $unset: { custom_name: "" } };
+    await db.collection("wa_chats").updateOne(
+      { session_id: req.params.sid, jid: req.params.jid },
+      upd
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Messages for a chat
