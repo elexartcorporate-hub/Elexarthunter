@@ -414,7 +414,7 @@ export default function WhatsAppPage() {
   const [deleteAccount, setDeleteAccount] = useState(null);
   // CRM Pipeline
   const [pipelineFilter, setPipelineFilter] = useState("all"); // all | follow_up | hot | cold | warm | hold | deal | lost
-  const [pipelineCounts, setPipelineCounts] = useState({ hot: 0, cold: 0, warm: 0, hold: 0, deal: 0, lost: 0, follow_up: 0 });
+  const [pipelineCounts, setPipelineCounts] = useState({ hot: 0, cold: 0, warm: 0, hold: 0, deal: 0, lost: 0, follow_up: 0, unread: 0, per_session_unread: {} });
   // Sidebar deep-link: /whatsapp?filter=hot|cold|warm|deal|lost|follow_up → auto apply
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
@@ -762,9 +762,9 @@ export default function WhatsAppPage() {
 
   useEffect(() => { loadAccounts(); loadHealth(); loadTeamMembers(); loadPipelineCounts(); }, []); // eslint-disable-line
 
-  // Poll pipeline counts every 30s so the tab badges stay current.
+  // Poll pipeline counts every 10s so tab badges + per-account badges stay current.
   useEffect(() => {
-    const t = setInterval(() => loadPipelineCounts(), 30000);
+    const t = setInterval(() => loadPipelineCounts(), 10000);
     return () => clearInterval(t);
   }, []);
 
@@ -1156,6 +1156,16 @@ sudo supervisorctl restart hunter-backend`}
                       <div className="text-sm font-semibold text-slate-900 truncate">
                         {acc.label || (acc.phone ? `+${acc.phone}` : "Pending")}
                       </div>
+                      {/* Per-account unread badge — count of chats belum dibalas on this session */}
+                      {(pipelineCounts.per_session_unread?.[acc.session_id] || 0) > 0 && (
+                        <span
+                          className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full text-[10px] font-bold bg-rose-500 text-white"
+                          title={`${pipelineCounts.per_session_unread[acc.session_id]} chat belum dibalas`}
+                          data-testid={`wa-account-unread-${acc.session_id}`}
+                        >
+                          {pipelineCounts.per_session_unread[acc.session_id] > 99 ? "99+" : pipelineCounts.per_session_unread[acc.session_id]}
+                        </span>
+                      )}
                       {acc.is_assigned_inbox && (
                         <Badge tone="info" className="!text-[9px]" data-testid={`wa-badge-inbox-${acc.session_id}`}>
                           <Tag size={9} weight="bold" /> Assign

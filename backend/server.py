@@ -5642,7 +5642,7 @@ async def wa_pipeline_counts(user: dict = Depends(get_current_user)):
     )
     accessible_sids = list(set(own_sids) | set(assigned_sids))
     if not accessible_sids:
-        return {"cold": 0, "hot": 0, "warm": 0, "hold": 0, "deal": 0, "lost": 0, "follow_up": 0, "unread": 0}
+        return {"cold": 0, "hot": 0, "warm": 0, "hold": 0, "deal": 0, "lost": 0, "follow_up": 0, "unread": 0, "per_session_unread": {}}
     q = {"session_id": {"$in": accessible_sids}}
     # For non-Owner/Admin using assigned inbox, restrict to their assigned chats only
     if user.get("role") not in ("Owner", "Admin"):
@@ -5657,7 +5657,8 @@ async def wa_pipeline_counts(user: dict = Depends(get_current_user)):
         # For simplicity in aggregation, fetch all and filter in memory (small scale MVP)
     counts = {s: 0 for s in PIPELINE_STATUSES}
     counts["follow_up"] = 0
-    counts["unread"] = 0  # chats needing attention: unread OR last message from customer (belum dibalas)
+    counts["unread"] = 0  # total: chats butuh reply (unread OR last from customer)
+    per_session_unread: dict = {}  # {session_id: count} for per-account badges
     async for chat in db.wa_chats.find(q, {"_id": 0}):
         # Filter for non-admin users on assigned inbox
         if user.get("role") not in ("Owner", "Admin"):
@@ -5679,6 +5680,10 @@ async def wa_pipeline_counts(user: dict = Depends(get_current_user)):
             last_from_me = chat.get("last_from_me")  # True | False | None (new chat)
             if unread_c > 0 or last_from_me is False:
                 counts["unread"] += 1
+                sid_key = chat.get("session_id")
+                if sid_key:
+                    per_session_unread[sid_key] = per_session_unread.get(sid_key, 0) + 1
+    counts["per_session_unread"] = per_session_unread
     return counts
 
 
