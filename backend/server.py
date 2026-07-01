@@ -4887,6 +4887,8 @@ async def version_endpoint(request: Request):
     # (e.g. missing the /media or /rename routes we added recently).
     wa_service_status = "unknown"
     wa_service_media_route = "unknown"
+    wa_service_features = {}
+    wa_service_build_marker = None
     try:
         import httpx as _hx
         headers = {"X-WA-Secret": os.environ.get("WA_SERVICE_SECRET", "dev-secret")}
@@ -4894,6 +4896,12 @@ async def version_endpoint(request: Request):
             hr = await _c.get(f"{WA_SERVICE_URL}/health", headers=headers)
             if hr.status_code == 200:
                 wa_service_status = "ok"
+                try:
+                    body = hr.json()
+                    wa_service_features = body.get("features") or {}
+                    wa_service_build_marker = body.get("build_marker")
+                except Exception:
+                    pass
             # Probe media route via a fake sid/msgid — expect JSON 404 (route exists),
             # if we get HTML "Cannot GET" then wa-service is outdated.
             mr = await _c.get(
@@ -4926,6 +4934,8 @@ async def version_endpoint(request: Request):
         "wa_service": {
             "status": wa_service_status,
             "media_route": wa_service_media_route,
+            "features": wa_service_features,
+            "build_marker": wa_service_build_marker,
         },
     }
 
