@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { PageHeader, Card, PrimaryButton, GhostButton, Badge, EmptyState } from "@/components/term";
@@ -410,6 +411,16 @@ export default function WhatsAppPage() {
   // CRM Pipeline
   const [pipelineFilter, setPipelineFilter] = useState("all"); // all | follow_up | hot | cold | warm | hold | deal | lost
   const [pipelineCounts, setPipelineCounts] = useState({ hot: 0, cold: 0, warm: 0, hold: 0, deal: 0, lost: 0, follow_up: 0 });
+  // Sidebar deep-link: /whatsapp?filter=hot|cold|warm|deal|lost|follow_up → auto apply
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const f = searchParams.get("filter");
+    const allowed = ["all", "follow_up", "hot", "cold", "warm", "hold", "deal", "lost"];
+    if (f && allowed.includes(f) && f !== pipelineFilter) {
+      setPipelineFilter(f);
+      setTab("inbox"); // pipeline lives in inbox tab
+    }
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
   // Backend feature support — detect if VPS backend has the new PATCH/assign endpoints
   const [backendSupport, setBackendSupport] = useState({ patch: null, assign: null });
   // Download progress state: { [message_id]: { pct: 0-100, active: bool, error: str } }
