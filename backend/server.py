@@ -5464,6 +5464,184 @@ async def wa_get_media(sid: str, msgid: str, request: Request, download: int = 0
     )
 
 
+# ─── WhatsApp CRM Pipeline ─────────────────────────────────────────────────
+# Statuses: cold, hot, warm, hold, deal, lost
+# Follow-up = DYNAMIC queue (not a status) — computed from time rules.
+# Rules (from user spec):
+#   Cold: 3 days no reply → in follow-up list. After follow-up sent, hides for 3 days.
+#         Repeated no-reply after N follow-ups → auto Lost.
+#   Hot : 2 days no reply → in follow-up list. After follow-up sent, hides for 3 days.
+#         2 consecutive follow-ups without reply → downgrade to Cold.
+#   Lost/Deal: no follow-up reminders.
+#   Any incoming reply from customer while Lost/Cold → auto-recycle to Hot.
+
+PIPELINE_STATUSES = {"cold", "hot", "warm", "hold", "deal", "lost"}
+FOLLOWUP_DAYS = {"cold": 3, "hot": 2, "warm": 3, "hold": 5}
+FOLLOWUP_INTERVAL_AFTER = 3  # days between follow-ups after first one sent
+MAX_STAGES_BEFORE_DOWNGRADE = 2  # after this many outgoing follow-ups with no reply → status change
+
+
+def _compute_followup_due(chat: dict, now: datetime) -> bool:
+    status = chat.get("pipeline_status") or "cold"
+    if status in ("deal", "lost", "hold"):
+        return False
+    # Time reference = last incoming from customer (fallback to last_message_ts)
+    ref = chat.get("last_incoming_ts") or chat.get("last_message_ts")
+    if not ref:
+        return True  # never contacted
+    if isinstance(ref, str):
+        try: ref_dt = datetime.fromisoformat(ref.replace("Z", "+00:00"))
+        except Exception: return False
+    else:
+        ref_dt = ref
+    if ref_dt.tzinfo is None:
+        ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+    stage = chat.get("pipeline_stage") or 0
+    # Interval: first follow-up per status rule; subsequent = 3 days
+    days = FOLLOWUP_DAYS.get(status, 3) if stage == 0 else FOLLOWUP_INTERVAL_AFTER
+    # If our last outgoing (follow-up sent) is newer than incoming, use that + interval instead
+    last_out = chat.get("last_outgoing_ts")
+    if last_out:
+        if isinstance(last_out, str):
+            try: last_out_dt = datetime.fromisoformat(last_out.replace("Z", "+00:00"))
+            except Exception: last_out_dt = ref_dt
+        else:
+            last_out_dt = last_out
+        if last_out_dt.tzinfo is None:
+            last_out_dt = last_out_dt.replace(tzinfo=timezone.utc)
+        if last_out_dt > ref_dt:
+            ref_dt = last_out_dt
+    return (now - ref_dt) >= timedelta(days=days)
+
+
+class PipelineStatusUpdate(BaseModel):
+    status: str  # cold|hot|warm|hold|deal|lost
+
+
+@api.patch("/whatsapp/accounts/{sid}/chats/{jid}/pipeline")
+async def wa_set_pipeline_status(sid: str, jid: str, payload: PipelineStatusUpdate, user: dict = Depends(get_current_user)):
+    """Change pipeline status (Hot/Cold/Warm/Hold/Deal/Lost) manually."""
+    acc = await _wa_check_account_access(sid, user)
+    status = payload.status.lower()
+    if status not in PIPELINE_STATUSES:
+        raise HTTPException(400, f"Invalid status. Must be one of {sorted(PIPELINE_STATUSES)}")
+    # Only account owner or assignee can change status (or Owner/Admin)
+    can_edit = (
+        acc["user_id"] == user["id"]
+        or user.get("role") in ("Owner", "Admin")
+        or await _wa_user_has_assignment(sid, user["id"], user["tenant_id"])
+    )
+    if not can_edit:
+        raise HTTPException(403, "Anda tidak punya akses ke chat ini")
+    # Reset stage when status manually changed
+    await db.wa_chats.update_one(
+        {"session_id": sid, "jid": jid},
+        {"$set": {
+            "pipeline_status": status,
+            "pipeline_stage": 0,
+            "pipeline_updated_at": now_iso(),
+            "pipeline_updated_by": user["id"],
+        }},
+    )
+    return {"ok": True, "session_id": sid, "jid": jid, "pipeline_status": status}
+
+
+@api.get("/whatsapp/pipeline/counts")
+async def wa_pipeline_counts(user: dict = Depends(get_current_user)):
+    """Return chat counts per pipeline status + follow-up queue count.
+    Scope: tenant-wide (Owner/Admin see all), else only chats on user's accounts or assignments.
+    """
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc)
+    # Find accessible sessions
+    own_sids = await db.wa_accounts.distinct("session_id", _wa_scope_query(user))
+    assigned_sids = await db.wa_chat_assignments.distinct(
+        "session_id", {"tenant_id": user["tenant_id"], "assigned_user_id": user["id"]},
+    )
+    accessible_sids = list(set(own_sids) | set(assigned_sids))
+    if not accessible_sids:
+        return {"cold": 0, "hot": 0, "warm": 0, "hold": 0, "deal": 0, "lost": 0, "follow_up": 0}
+    q = {"session_id": {"$in": accessible_sids}}
+    # For non-Owner/Admin using assigned inbox, restrict to their assigned chats only
+    if user.get("role") not in ("Owner", "Admin"):
+        assign_jids = await db.wa_chat_assignments.find(
+            {"tenant_id": user["tenant_id"], "assigned_user_id": user["id"], "session_id": {"$in": assigned_sids}},
+            {"_id": 0, "session_id": 1, "jid": 1},
+        ).to_list(5000)
+        assigned_jid_by_sid = {}
+        for a in assign_jids:
+            assigned_jid_by_sid.setdefault(a["session_id"], set()).add(a["jid"])
+        # Chats: from own_sids all, from assigned_sids only assigned jids
+        # For simplicity in aggregation, fetch all and filter in memory (small scale MVP)
+    counts = {s: 0 for s in PIPELINE_STATUSES}
+    counts["follow_up"] = 0
+    async for chat in db.wa_chats.find(q, {"_id": 0}):
+        # Filter for non-admin users on assigned inbox
+        if user.get("role") not in ("Owner", "Admin"):
+            sid_ = chat["session_id"]
+            if sid_ in assigned_sids and sid_ not in own_sids:
+                if chat["jid"] not in assigned_jid_by_sid.get(sid_, set()):
+                    continue
+        st = chat.get("pipeline_status") or "cold"
+        if st in counts:
+            counts[st] += 1
+        if _compute_followup_due(chat, now):
+            counts["follow_up"] += 1
+    return counts
+
+
+@api.get("/whatsapp/pipeline/chats")
+async def wa_pipeline_chats(
+    filter: str = "follow_up",
+    limit: int = 200,
+    user: dict = Depends(get_current_user),
+):
+    """List chats filtered by pipeline: hot|cold|warm|hold|deal|lost|follow_up (all sessions)."""
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc)
+    own_sids = await db.wa_accounts.distinct("session_id", _wa_scope_query(user))
+    assigned_sids = await db.wa_chat_assignments.distinct(
+        "session_id", {"tenant_id": user["tenant_id"], "assigned_user_id": user["id"]},
+    )
+    accessible_sids = list(set(own_sids) | set(assigned_sids))
+    if not accessible_sids:
+        return []
+    q = {"session_id": {"$in": accessible_sids}}
+    if filter in PIPELINE_STATUSES:
+        q["pipeline_status"] = filter
+
+    assigned_jid_by_sid = {}
+    if user.get("role") not in ("Owner", "Admin"):
+        assigns = await db.wa_chat_assignments.find(
+            {"tenant_id": user["tenant_id"], "assigned_user_id": user["id"], "session_id": {"$in": assigned_sids}},
+            {"_id": 0, "session_id": 1, "jid": 1},
+        ).to_list(5000)
+        for a in assigns:
+            assigned_jid_by_sid.setdefault(a["session_id"], set()).add(a["jid"])
+
+    # Attach account label for display
+    accs = await db.wa_accounts.find({"session_id": {"$in": accessible_sids}}, {"_id": 0, "session_id": 1, "label": 1, "phone": 1}).to_list(200)
+    acc_map = {a["session_id"]: a for a in accs}
+
+    result = []
+    async for chat in db.wa_chats.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit * 3):
+        if user.get("role") not in ("Owner", "Admin"):
+            sid_ = chat["session_id"]
+            if sid_ in assigned_sids and sid_ not in own_sids:
+                if chat["jid"] not in assigned_jid_by_sid.get(sid_, set()):
+                    continue
+        due = _compute_followup_due(chat, now)
+        if filter == "follow_up" and not due:
+            continue
+        chat["is_followup_due"] = due
+        chat["_account"] = acc_map.get(chat["session_id"], {})
+        result.append(chat)
+        if len(result) >= limit:
+            break
+    return result
+
+
+
 @api.get("/whatsapp/accounts/{sid}/groups")
 async def wa_list_groups(sid: str, user: dict = Depends(get_current_user)):
     """Fetch all WhatsApp groups for this account (fresh from WA)."""

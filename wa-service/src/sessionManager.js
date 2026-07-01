@@ -473,8 +473,6 @@ async function persistMessage(db, sessionId, sock, msg) {
     }
   }
   // upsert chat last message — using CANONICAL jid so outgoing/incoming converge.
-  // Also keep `name` field synced with the latest push_name so LID chats can show
-  // a human-friendly name instead of the anonymous "LID#xxx" identifier.
   const pushName = msg.pushName || null;
   const chatUpdate = {
     session_id: sessionId,
@@ -484,11 +482,42 @@ async function persistMessage(db, sessionId, sock, msg) {
     last_from_me: fromMe,
     updated_at: new Date(),
   };
-  // Only set `name` from push_name for incoming messages (from_me=false), and only
-  // when we actually have a push_name. Outgoing messages don't carry the contact's name.
   if (!fromMe && pushName && pushName.trim()) {
     chatUpdate.name = pushName.trim();
   }
+  // Track last incoming timestamp separately — CRM pipeline uses this to detect
+  // "customer replied" events and to compute follow-up due timers.
+  if (!fromMe) {
+    chatUpdate.last_incoming_ts = ts;
+  } else {
+    chatUpdate.last_outgoing_ts = ts;
+  }
+
+  // Fetch existing chat to know current pipeline status
+  const existing = await db.collection("wa_chats").findOne({ session_id: sessionId, jid });
+
+  if (!existing) {
+    // New chat — always start as Cold, stage 0
+    chatUpdate.pipeline_status = "cold";
+    chatUpdate.pipeline_stage = 0;
+    chatUpdate.pipeline_updated_at = new Date();
+  } else if (!fromMe) {
+    // Incoming reply from customer — RECYCLE rules:
+    //   - Lost / Cold → promote to Hot (they came back!)
+    //   - Any active status → reset stage counter to 0
+    const current = existing.pipeline_status || "cold";
+    if (current === "lost" || current === "cold") {
+      chatUpdate.pipeline_status = "hot";
+      chatUpdate.pipeline_updated_at = new Date();
+    }
+    // Reset the stage counter (customer engaged, follow-up sequence restarts)
+    chatUpdate.pipeline_stage = 0;
+  } else {
+    // Outgoing message (sales rep replied / followed up) — advance stage counter
+    // so we know how many follow-ups have been sent without reply.
+    chatUpdate.pipeline_stage = (existing.pipeline_stage || 0) + 1;
+  }
+
   await db.collection("wa_chats").updateOne(
     { session_id: sessionId, jid },
     {

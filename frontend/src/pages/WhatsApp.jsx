@@ -406,6 +406,9 @@ export default function WhatsAppPage() {
   const [teamMembers, setTeamMembers] = useState([]);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteAccount, setDeleteAccount] = useState(null);
+  // CRM Pipeline
+  const [pipelineFilter, setPipelineFilter] = useState("all"); // all | follow_up | hot | cold | warm | hold | deal | lost
+  const [pipelineCounts, setPipelineCounts] = useState({ hot: 0, cold: 0, warm: 0, hold: 0, deal: 0, lost: 0, follow_up: 0 });
   // Backend feature support — detect if VPS backend has the new PATCH/assign endpoints
   const [backendSupport, setBackendSupport] = useState({ patch: null, assign: null });
   const messagesEnd = useRef(null);
@@ -467,6 +470,48 @@ export default function WhatsAppPage() {
       setTeamMembers(data || []);
     } catch (_) { /* ignore */ }
   };
+
+  const loadPipelineCounts = async () => {
+    try {
+      const { data } = await api.get("/whatsapp/pipeline/counts");
+      setPipelineCounts(data);
+    } catch (_) { /* ignore — backend may not support yet */ }
+  };
+
+  const changePipelineStatus = async (newStatus) => {
+    if (!activeSid || !activeJid) return;
+    try {
+      await api.patch(
+        `/whatsapp/accounts/${activeSid}/chats/${encodeURIComponent(activeJid)}/pipeline`,
+        { status: newStatus }
+      );
+      toast.success(`Status → ${newStatus.toUpperCase()}`);
+      // Optimistic local update
+      setChats((prev) => prev.map((c) => c.jid === activeJid ? { ...c, pipeline_status: newStatus, pipeline_stage: 0 } : c));
+      loadPipelineCounts();
+    } catch (err) { toast.error(formatApiError(err)); }
+  };
+
+  // Filter chats by pipeline tab (client-side for current session's chat list).
+  // For 'follow_up' filter, we also need is_followup_due which is not computed client-side —
+  // but we approximate: chats where pipeline_status is hot/cold and last message is older than threshold.
+  const pipelineFilteredChats = useMemo(() => {
+    if (pipelineFilter === "all") return chats;
+    if (pipelineFilter === "follow_up") {
+      const now = Date.now();
+      const thresholds = { cold: 3, hot: 2, warm: 3 };
+      return chats.filter((c) => {
+        const st = c.pipeline_status || "cold";
+        if (st === "deal" || st === "lost" || st === "hold") return false;
+        const ref = c.last_incoming_ts || c.last_outgoing_ts || c.last_message_ts;
+        if (!ref) return true;
+        const stage = c.pipeline_stage || 0;
+        const days = stage === 0 ? (thresholds[st] || 3) : 3;
+        return (now - new Date(ref).getTime()) >= days * 24 * 60 * 60 * 1000;
+      });
+    }
+    return chats.filter((c) => (c.pipeline_status || "cold") === pipelineFilter);
+  }, [chats, pipelineFilter]);
 
   const loadHealth = async () => {
     try {
@@ -594,7 +639,13 @@ export default function WhatsAppPage() {
     finally { if (!delta) setMessagesLoading(false); }
   };
 
-  useEffect(() => { loadAccounts(); loadHealth(); loadTeamMembers(); }, []); // eslint-disable-line
+  useEffect(() => { loadAccounts(); loadHealth(); loadTeamMembers(); loadPipelineCounts(); }, []); // eslint-disable-line
+
+  // Poll pipeline counts every 30s so the tab badges stay current.
+  useEffect(() => {
+    const t = setInterval(() => loadPipelineCounts(), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   // Reset active selection when switching tabs
   useEffect(() => {
@@ -1052,15 +1103,42 @@ sudo supervisorctl restart hunter-backend`}
               {isMonitorView && <Badge tone="warning" className="!text-[9px]"><ShieldCheck size={9} weight="bold" /> Monitoring</Badge>}
               {isAssignedInbox && <Badge tone="info" className="!text-[9px]"><Users size={9} weight="bold" /> Inbox Tim</Badge>}
             </div>
+            {/* CRM Pipeline tabs — sales workflow filter */}
+            <div className="flex flex-wrap gap-1 px-2 py-1.5 border-b border-slate-200 bg-white text-[10px] font-semibold" data-testid="wa-pipeline-tabs">
+              {[
+                { key: "all", label: "Semua", color: "bg-slate-100 text-slate-700", active: "bg-slate-800 text-white" },
+                { key: "follow_up", label: "📋 Follow Up", color: "bg-purple-50 text-purple-700", active: "bg-purple-600 text-white", badge: pipelineCounts.follow_up },
+                { key: "hot", label: "🔥 Hot", color: "bg-rose-50 text-rose-700", active: "bg-rose-500 text-white", badge: pipelineCounts.hot },
+                { key: "cold", label: "❄️ Cold", color: "bg-sky-50 text-sky-700", active: "bg-sky-500 text-white", badge: pipelineCounts.cold },
+                { key: "deal", label: "✅ Deal", color: "bg-emerald-50 text-emerald-700", active: "bg-emerald-500 text-white", badge: pipelineCounts.deal },
+                { key: "lost", label: "❌ Lost", color: "bg-slate-100 text-slate-500", active: "bg-slate-500 text-white", badge: pipelineCounts.lost },
+              ].map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setPipelineFilter(t.key)}
+                  className={`px-2 py-1 rounded-full uppercase tracking-wide transition ${pipelineFilter === t.key ? t.active : t.color + " hover:opacity-80"}`}
+                  data-testid={`wa-pipeline-tab-${t.key}`}
+                >
+                  {t.label}
+                  {t.badge > 0 && (
+                    <span className={`ml-1 rounded-full px-1 text-[9px] ${pipelineFilter === t.key ? "bg-white/25" : "bg-white/70"}`}>
+                      {t.badge}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
             <div className="flex-1 overflow-y-auto">
               {chatsLoading ? (
                 <div className="p-6 text-center text-sm text-slate-500">Memuat chats…</div>
-              ) : chats.length === 0 ? (
+              ) : pipelineFilteredChats.length === 0 ? (
                 <div className="p-6 text-center text-sm text-slate-500">
-                  {activeAccount?.live_status === "connected" ? "Belum ada chat. Tunggu pesan masuk." : "Akun belum connect. Scan QR dulu."}
+                  {pipelineFilter !== "all"
+                    ? `Belum ada chat di kategori "${pipelineFilter.replace("_", " ")}"`
+                    : activeAccount?.live_status === "connected" ? "Belum ada chat. Tunggu pesan masuk." : "Akun belum connect. Scan QR dulu."}
                 </div>
               ) : (
-                chats.map((c) => (
+                pipelineFilteredChats.map((c) => (
                   <button
                     key={c.jid}
                     onClick={() => setActiveJid(c.jid)}
@@ -1111,6 +1189,23 @@ sudo supervisorctl restart hunter-backend`}
                             ? "Di-assign ke saya"
                             : `→ ${c.assignment.assigned_user_name}`}
                         </div>
+                      )}
+                      {/* CRM Pipeline status badge */}
+                      {c.pipeline_status && (
+                        <span
+                          className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide inline-block ml-1 ${
+                            c.pipeline_status === "hot" ? "bg-rose-100 text-rose-700"
+                              : c.pipeline_status === "cold" ? "bg-sky-100 text-sky-700"
+                              : c.pipeline_status === "warm" ? "bg-amber-100 text-amber-700"
+                              : c.pipeline_status === "deal" ? "bg-emerald-100 text-emerald-700"
+                              : c.pipeline_status === "lost" ? "bg-slate-200 text-slate-600"
+                              : "bg-slate-100 text-slate-700"
+                          }`}
+                          data-testid={`wa-pipeline-badge-${c.jid}`}
+                        >
+                          {c.pipeline_status === "hot" ? "🔥" : c.pipeline_status === "cold" ? "❄️" : c.pipeline_status === "warm" ? "☀️" : c.pipeline_status === "deal" ? "✅" : c.pipeline_status === "lost" ? "✗" : c.pipeline_status === "hold" ? "⏸" : ""}
+                          {" "}{c.pipeline_status}
+                        </span>
                       )}
                       <div className="flex items-center gap-2 mt-0.5">
                         <div className="text-xs text-slate-600 truncate flex-1">
@@ -1164,6 +1259,37 @@ sudo supervisorctl restart hunter-backend`}
                         🔒 Nama dari profil WhatsApp — nomor asli disembunyikan (privacy)
                       </div>
                     )}
+                    {/* CRM Pipeline status changer */}
+                    {(() => {
+                      const cur = chats.find((x) => x.jid === activeJid);
+                      const status = cur?.pipeline_status || "cold";
+                      const options = [
+                        { k: "hot", l: "🔥 Hot", cls: "bg-rose-500 hover:bg-rose-600" },
+                        { k: "warm", l: "☀️ Warm", cls: "bg-amber-500 hover:bg-amber-600" },
+                        { k: "cold", l: "❄️ Cold", cls: "bg-sky-500 hover:bg-sky-600" },
+                        { k: "hold", l: "⏸ Hold", cls: "bg-slate-500 hover:bg-slate-600" },
+                        { k: "deal", l: "✅ Deal", cls: "bg-emerald-500 hover:bg-emerald-600" },
+                        { k: "lost", l: "✗ Lost", cls: "bg-rose-700 hover:bg-rose-800" },
+                      ];
+                      return (
+                        <div className="flex flex-wrap gap-1 mt-1" data-testid="wa-status-changer">
+                          <span className="text-[10px] text-slate-500 self-center mr-1">Status:</span>
+                          {options.map((o) => (
+                            <button
+                              key={o.k}
+                              onClick={() => changePipelineStatus(o.k)}
+                              className={`text-[10px] px-2 py-0.5 rounded font-semibold text-white transition ${
+                                status === o.k ? o.cls + " ring-2 ring-offset-1 ring-slate-400" : o.cls + " opacity-50 hover:opacity-100"
+                              }`}
+                              data-testid={`wa-status-btn-${o.k}`}
+                              title={status === o.k ? `Saat ini: ${o.k.toUpperCase()}` : `Ubah ke ${o.k.toUpperCase()}`}
+                            >
+                              {o.l}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                     {(() => {
                       const c = chats.find((x) => x.jid === activeJid);
                       const alias = c?.name;
