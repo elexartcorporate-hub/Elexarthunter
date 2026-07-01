@@ -1344,15 +1344,37 @@ sudo supervisorctl restart hunter-backend`}
                             )}
                             {/* MEDIA RENDERING */}
                             {mt && (mt === "image" || mt === "sticker") && mediaUrl && (
-                              <a href={mediaUrl} target="_blank" rel="noreferrer" className="block mb-1 -mx-1">
-                                <img
-                                  src={mediaUrl}
-                                  alt={m.media?.caption || "image"}
-                                  className="rounded-md max-w-[280px] max-h-[280px] object-cover cursor-zoom-in"
-                                  loading="lazy"
-                                  onError={(e) => { e.target.style.display = "none"; }}
-                                />
-                              </a>
+                              <div className="relative mb-1 -mx-1">
+                                <a href={mediaUrl} target="_blank" rel="noreferrer" className="block">
+                                  <img
+                                    src={mediaUrl}
+                                    alt={m.media?.caption || "image"}
+                                    className="rounded-md max-w-[280px] max-h-[280px] object-cover cursor-zoom-in"
+                                    loading="lazy"
+                                    data-testid={`wa-img-${m.message_id}`}
+                                    onError={(e) => {
+                                      // Show inline fallback card if the image can't be loaded
+                                      e.target.style.display = "none";
+                                      const nx = e.target.nextElementSibling;
+                                      if (nx) nx.style.display = "flex";
+                                    }}
+                                  />
+                                  <div
+                                    style={{ display: "none" }}
+                                    className={`rounded-md p-3 text-xs items-center gap-2 ${
+                                      m.from_me ? "bg-emerald-600/30 text-white" : "bg-slate-100 text-slate-600"
+                                    }`}
+                                  >
+                                    <Warning size={14} weight="fill" className="shrink-0" />
+                                    <div className="flex-1">
+                                      <div className="font-semibold">Gambar tidak bisa dimuat</div>
+                                      <div className={`text-[10px] ${m.from_me ? "text-emerald-100" : "text-slate-500"}`}>
+                                        Chat lama sebelum fitur download aktif. Klik untuk coba fetch ulang.
+                                      </div>
+                                    </div>
+                                  </div>
+                                </a>
+                              </div>
                             )}
                             {mt === "video" && mediaUrl && (
                               <video
@@ -1396,9 +1418,16 @@ sudo supervisorctl restart hunter-backend`}
                               </div>
                             )}
                             {(m.text || (m.media && m.media.caption)) && (
-                              <div className="whitespace-pre-wrap break-words">
-                                {m.text || m.media?.caption}
-                              </div>
+                              (() => {
+                                const txt = (m.text || m.media?.caption || "").trim();
+                                // Hide placeholder text like "[image]", "[document]", "[video]", "[audio]", "[sticker]"
+                                // when we already render the actual media above.
+                                const isPlaceholder = /^\[(image|document|video|audio|sticker|media)\]$/i.test(txt);
+                                if (isPlaceholder && mt) return null;
+                                return (
+                                  <div className="whitespace-pre-wrap break-words">{txt}</div>
+                                );
+                              })()
                             )}
                             <div className={`text-[9px] mt-0.5 text-right flex items-center justify-end gap-1 ${m.from_me ? "text-emerald-100" : "text-slate-400"}`}>
                               {fmtTime(m.timestamp)}
