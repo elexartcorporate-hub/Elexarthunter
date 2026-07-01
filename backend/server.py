@@ -5647,7 +5647,7 @@ async def wa_pipeline_counts(user: dict = Depends(get_current_user)):
         # For simplicity in aggregation, fetch all and filter in memory (small scale MVP)
     counts = {s: 0 for s in PIPELINE_STATUSES}
     counts["follow_up"] = 0
-    counts["unread"] = 0  # total chats with unread messages (across all statuses)
+    counts["unread"] = 0  # chats needing attention: unread OR last message from customer (belum dibalas)
     async for chat in db.wa_chats.find(q, {"_id": 0}):
         # Filter for non-admin users on assigned inbox
         if user.get("role") not in ("Owner", "Admin"):
@@ -5660,9 +5660,15 @@ async def wa_pipeline_counts(user: dict = Depends(get_current_user)):
             counts[st] += 1
         if _compute_followup_due(chat, now):
             counts["follow_up"] += 1
-        # Count unread — chat has unread_count > 0
-        if int(chat.get("unread_count") or 0) > 0:
-            counts["unread"] += 1
+        # "Belum dibalas" — chat butuh reply. Kriteria:
+        #   1. Ada unread_count > 0 (pesan belum dibaca), ATAU
+        #   2. Last message from customer (last_from_me is False)
+        # Skip closed statuses (deal/lost) — those don't need reply.
+        if st not in ("deal", "lost"):
+            unread_c = int(chat.get("unread_count") or 0)
+            last_from_me = chat.get("last_from_me")  # True | False | None (new chat)
+            if unread_c > 0 or last_from_me is False:
+                counts["unread"] += 1
     return counts
 
 

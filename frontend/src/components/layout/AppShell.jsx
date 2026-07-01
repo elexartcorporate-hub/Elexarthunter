@@ -84,7 +84,7 @@ export default function AppShell({ children }) {
       } catch (_) { /* silent — sidebar badges are best-effort */ }
     };
     fetchCounts();
-    pollRef.current = setInterval(fetchCounts, 20000);
+    pollRef.current = setInterval(fetchCounts, 10000); // poll every 10s for fast badge refresh
     return () => { cancelled = true; if (pollRef.current) clearInterval(pollRef.current); };
   }, [hasPermission]);
 
@@ -154,6 +154,7 @@ export default function AppShell({ children }) {
                         ? "bg-indigo-50 text-indigo-700"
                         : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
                     }`}
+                    title={waCounts.unread > 0 ? `${waCounts.unread} chat belum dibalas` : "WhatsApp"}
                   >
                     <WhatsappLogo size={18} weight={isWaActive ? "fill" : "regular"} />
                     <span>WhatsApp</span>
