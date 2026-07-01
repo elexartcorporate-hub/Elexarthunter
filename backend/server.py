@@ -4883,6 +4883,31 @@ async def version_endpoint(request: Request):
     has_patch_account = any("PATCH" in r and "/whatsapp/accounts/{sid}" in r and not r.endswith("/chats") for r in registered_routes)
     has_assign = any("/assign" in r and "POST" in r for r in registered_routes)
 
+    # Also probe wa-service (Node.js sidecar) to detect if it's running an outdated build
+    # (e.g. missing the /media or /rename routes we added recently).
+    wa_service_status = "unknown"
+    wa_service_media_route = "unknown"
+    try:
+        import httpx as _hx
+        headers = {"X-WA-Secret": os.environ.get("WA_SERVICE_SECRET", "dev-secret")}
+        async with _hx.AsyncClient(timeout=_hx.Timeout(3.0)) as _c:
+            hr = await _c.get(f"{WA_SERVICE_URL}/health", headers=headers)
+            if hr.status_code == 200:
+                wa_service_status = "ok"
+            # Probe media route via a fake sid/msgid — expect JSON 404 (route exists),
+            # if we get HTML "Cannot GET" then wa-service is outdated.
+            mr = await _c.get(
+                f"{WA_SERVICE_URL}/sessions/probe-nope/messages/probe-nope/media",
+                headers=headers,
+            )
+            body_start = mr.text[:60] if mr.text else ""
+            if "Cannot GET" in body_start:
+                wa_service_media_route = "MISSING — wa-service outdated"
+            else:
+                wa_service_media_route = "ok"
+    except Exception as e:
+        wa_service_status = f"unreachable: {e}"
+
     return {
         "ok": True,
         "service": "lead-hunter-backend",
@@ -4898,6 +4923,10 @@ async def version_endpoint(request: Request):
             "assign_chat": "ok" if has_assign else "MISSING",
         },
         "whatsapp_routes_registered": sorted(set(registered_routes)),
+        "wa_service": {
+            "status": wa_service_status,
+            "media_route": wa_service_media_route,
+        },
     }
 
 
@@ -5471,11 +5500,21 @@ async def wa_get_media(sid: str, msgid: str, request: Request, download: int = 0
         body = await resp.aread()
         await resp.aclose()
         await client.aclose()
+        body_txt = body.decode("utf-8", errors="replace")
         try:
             import json as _json
             detail = _json.loads(body).get("error", "Media tidak tersedia")
         except Exception:
-            detail = (body.decode("utf-8", errors="replace") or "Media tidak tersedia")[:500]
+            # Detect Express default 404 HTML — happens when wa-service is running
+            # an outdated build that doesn't have the /media route.
+            if "Cannot GET" in body_txt or "<!DOCTYPE html>" in body_txt:
+                detail = (
+                    "WA-service di VPS belum di-update (endpoint media tidak ada). "
+                    "SSH ke VPS lalu jalankan: cd /var/www/hunter.elexart.com && "
+                    "git pull && sudo bash wa-setup.sh"
+                )
+            else:
+                detail = (body_txt or "Media tidak tersedia")[:500]
         raise HTTPException(resp.status_code, detail)
 
     async def _stream():

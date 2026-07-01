@@ -259,10 +259,20 @@ else
 fi
 
 # C. Backend /api/version — confirms which git sha is actually loaded by uvicorn
-VERSION_RESP="$(curl -fsS --max-time 5 http://localhost:8001/api/version 2>&1 || true)"
+VERSION_RESP="$(curl -fsS --max-time 8 http://localhost:8001/api/version 2>&1 || true)"
 if echo "$VERSION_RESP" | grep -q '"git_sha"'; then
   ok "Backend /api/version OK:"
   echo "    $VERSION_RESP" | head -1
+  # Check if wa-service media route is present (detects outdated wa-service)
+  if echo "$VERSION_RESP" | grep -q '"media_route":"ok"'; then
+    ok "wa-service media route: OK"
+  elif echo "$VERSION_RESP" | grep -q '"media_route":"MISSING'; then
+    err "wa-service masih OUTDATED — media route TIDAK ADA."
+    warn "Fix definitif:"
+    warn "  1. cd $WA_DIR && rm -rf node_modules && yarn install"
+    warn "  2. sudo supervisorctl restart $SUPERVISOR_NAME"
+    warn "  3. Cek ulang: curl -s http://localhost:8001/api/version | grep media_route"
+  fi
 else
   warn "Backend /api/version belum tersedia (endpoint baru — perlu re-deploy backend)"
 fi
