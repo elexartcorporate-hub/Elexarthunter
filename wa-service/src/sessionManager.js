@@ -551,26 +551,22 @@ async function persistMessage(db, sessionId, sock, msg) {
 
   // Fetch existing chat to know current pipeline status
   const existing = await db.collection("wa_chats").findOne({ session_id: sessionId, jid });
+  const currentStatus = existing?.pipeline_status;
 
-  if (!existing) {
-    // New chat — always start as Cold, stage 0
+  if (!currentStatus) {
+    // First-time pipeline entry (new chat OR legacy chat without status)
+    // → LOCK as Cold. User must manually promote (Hot/Warm/Deal/Lost).
     chatUpdate.pipeline_status = "cold";
     chatUpdate.pipeline_stage = 0;
     chatUpdate.pipeline_updated_at = new Date();
   } else if (!fromMe) {
-    // Incoming reply from customer — RECYCLE rules:
-    //   - Lost / Cold → promote to Hot (they came back!)
-    //   - Any active status → reset stage counter to 0
-    const current = existing.pipeline_status || "cold";
-    if (current === "lost" || current === "cold") {
-      chatUpdate.pipeline_status = "hot";
-      chatUpdate.pipeline_updated_at = new Date();
-    }
-    // Reset the stage counter (customer engaged, follow-up sequence restarts)
+    // Customer replied — DO NOT auto-change status.
+    // Manual curation (Hot/Warm/Cold/Deal/Lost/Hold) is preserved.
+    // Only reset the follow-up stage counter since customer engaged again.
     chatUpdate.pipeline_stage = 0;
   } else {
     // Outgoing message (sales rep replied / followed up) — advance stage counter
-    // so we know how many follow-ups have been sent without reply.
+    // so we know how many follow-ups sent without reply (for follow-up UI).
     chatUpdate.pipeline_stage = (existing.pipeline_stage || 0) + 1;
   }
 

@@ -398,7 +398,11 @@ export default function WhatsAppPage() {
   const [qrAccount, setQrAccount] = useState(null);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [health, setHealth] = useState(null);
-  const [tab, setTab] = useState("own"); // "own" | "inbox"
+  // Default tab: Staff (non-Owner/Admin) → "inbox" (their team inbox). Owner/Admin → "own" (their WA accounts).
+  const [tab, setTab] = useState(() => {
+    const role = user?.role;
+    return (role === "Owner" || role === "Admin") ? "own" : "inbox";
+  });
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameAccount, setRenameAccount] = useState(null);
   const [assignOpen, setAssignOpen] = useState(false);

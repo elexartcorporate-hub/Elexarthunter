@@ -140,6 +140,24 @@ app.get("/sessions/:sid/chats", async (req, res) => {
     .limit(limit)
     .toArray();
 
+  // Backfill pipeline_status = "cold" for chats that don't have one yet (legacy chats
+  // created via chats.upsert before pipeline was introduced). Ensures every chat has
+  // a status "locked" at Cold by default — matches spec: new leads always start Cold.
+  const missingPipelineIds = chats.filter((c) => !c.pipeline_status).map((c) => c._id);
+  if (missingPipelineIds.length > 0) {
+    await db.collection("wa_chats").updateMany(
+      { _id: { $in: missingPipelineIds } },
+      { $set: { pipeline_status: "cold", pipeline_stage: 0, pipeline_updated_at: new Date() } }
+    );
+    // Reflect in the response array so client sees it immediately
+    for (const c of chats) {
+      if (!c.pipeline_status) {
+        c.pipeline_status = "cold";
+        c.pipeline_stage = 0;
+      }
+    }
+  }
+
   // Backfill name from latest push_name for chats that don't have one yet.
   // Aggressive: normalize JID via Baileys sock + also match by LID id (last part before @lid)
   // so we catch messages stored under any variant.
