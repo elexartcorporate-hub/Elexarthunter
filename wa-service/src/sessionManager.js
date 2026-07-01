@@ -249,18 +249,23 @@ async function connectSession(db, sessionId) {
     for (const c of chats) {
       const jid = await normJidWithLid(c.id, sock);
       const isGroup = jid?.endsWith("@g.us");
+      // Only update `name` when we actually got a fresh non-empty value from Baileys.
+      // Baileys often sends chats.upsert with name=null on reconnect — that MUST NOT
+      // wipe out a name we already backfilled from push_name.
+      const incomingName = c.name || c.subject || null;
+      const setFields = {
+        session_id: sessionId,
+        jid,
+        is_group: isGroup,
+        unread_count: c.unreadCount || 0,
+        updated_at: new Date(),
+      };
+      if (incomingName && incomingName.trim()) {
+        setFields.name = incomingName.trim();
+      }
       await db.collection("wa_chats").updateOne(
         { session_id: sessionId, jid },
-        {
-          $set: {
-            session_id: sessionId,
-            jid,
-            name: c.name || c.subject || null,
-            is_group: isGroup,
-            unread_count: c.unreadCount || 0,
-            updated_at: new Date(),
-          },
-        },
+        { $set: setFields },
         { upsert: true }
       );
       if (isGroup) {
@@ -274,7 +279,8 @@ async function connectSession(db, sessionId) {
       if (!u.id) continue;
       const jid = await normJidWithLid(u.id, sock);
       const set = { updated_at: new Date() };
-      if (u.name !== undefined) set.name = u.name;
+      // Same guard as chats.upsert — don't overwrite name with null.
+      if (u.name && String(u.name).trim()) set.name = String(u.name).trim();
       if (u.unreadCount !== undefined) set.unread_count = u.unreadCount;
       await db.collection("wa_chats").updateOne(
         { session_id: sessionId, jid },

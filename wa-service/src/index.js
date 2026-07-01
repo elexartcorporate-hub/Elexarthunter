@@ -78,9 +78,10 @@ app.get("/health", (req, res) => res.json({
     rename_endpoint: true,
     pipeline_no_auto_recycle: true, // fix: cold/lost stay after customer reply
     pipeline_cold_lock_new_leads: true,
+    name_preserve_on_reconnect: true, // fix: chats.upsert no longer overwrites name with null
   },
   // Build marker so we know exactly which code is running
-  build_marker: "2026-02-lid-pipeline-lock-cold",
+  build_marker: "2026-02-name-preserve-fix",
 }));
 
 // Create new account (FastAPI calls this)
