@@ -141,28 +141,55 @@ app.get("/sessions/:sid/chats", async (req, res) => {
     .toArray();
 
   // Backfill name from latest push_name for chats that don't have one yet.
-  // We check BOTH matching `jid` field AND `raw_jid` field (in case chat was stored
-  // as canonical @lid but messages were saved under raw @s.whatsapp.net form).
-  // Also allow custom_name (user's manual rename) to override push_name.
+  // Aggressive: normalize JID via Baileys sock + also match by LID id (last part before @lid)
+  // so we catch messages stored under any variant.
   const missingNameChats = chats.filter((c) => !c.custom_name && !c.name && (c.jid || "").includes("@lid"));
   if (missingNameChats.length > 0) {
+    const sock = getSock(req.params.sid);
     for (const c of missingNameChats) {
       try {
-        // Search by canonical jid OR raw_jid (dual-jid case)
-        const jidCandidates = [c.jid];
-        if (c.raw_jid) jidCandidates.push(c.raw_jid);
-        const recent = await db.collection("wa_messages").findOne(
-          {
-            session_id: req.params.sid,
-            $or: [{ jid: { $in: jidCandidates } }, { raw_jid: { $in: jidCandidates } }],
-            from_me: false,
-            push_name: { $nin: [null, ""] },
-          },
+        // Build broad list of jid variants: canonical + raw + normJid + LID-id-only match
+        const jidCandidates = new Set();
+        jidCandidates.add(c.jid);
+        if (c.raw_jid) jidCandidates.add(c.raw_jid);
+        try { jidCandidates.add(normJid(c.jid)); } catch (_) {}
+        if (sock) {
+          try {
+            const canonical = await normJidWithLid(c.jid, sock);
+            if (canonical) jidCandidates.add(canonical);
+          } catch (_) {}
+        }
+        const jidsArr = [...jidCandidates];
+        // Also extract LID id (before @lid) to do a regex/prefix match on any jid variant
+        const lidId = (c.jid || "").split("@")[0].split(":")[0];
+        const jidRegex = lidId ? new RegExp(`^${lidId}(:|@)`) : null;
+
+        // Broad query: match jid OR raw_jid via $in OR regex (LID id prefix), from anyone (not just from_me:false)
+        // We prefer non-from_me push_names first, then fallback to any push_name.
+        const orClauses = [
+          { jid: { $in: jidsArr } },
+          { raw_jid: { $in: jidsArr } },
+        ];
+        if (jidRegex) {
+          orClauses.push({ jid: jidRegex });
+          orClauses.push({ raw_jid: jidRegex });
+        }
+        const query = {
+          session_id: req.params.sid,
+          $or: orClauses,
+          push_name: { $nin: [null, ""] },
+        };
+        // Prefer messages NOT from-me (that's the contact's push_name, not our own).
+        const preferred = await db.collection("wa_messages").findOne(
+          { ...query, from_me: false },
+          { sort: { timestamp: -1 }, projection: { push_name: 1 } }
+        );
+        const recent = preferred || await db.collection("wa_messages").findOne(
+          query,
           { sort: { timestamp: -1 }, projection: { push_name: 1 } }
         );
         if (recent && recent.push_name) {
           c.name = recent.push_name;
-          // Persist for future requests so we don't re-query every time
           await db.collection("wa_chats").updateOne(
             { session_id: req.params.sid, jid: c.jid },
             { $set: { name: recent.push_name } }

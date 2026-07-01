@@ -716,6 +716,31 @@ export default function WhatsAppPage() {
       if (!delta) {
         try { await api.post(`/whatsapp/accounts/${sid}/chats/${encodeURIComponent(jid)}/read`); } catch (_) { /* ignore */ }
       }
+      // ─── Auto-sync push_name for LID chats ───
+      // If this is an @lid chat and its wa_chats.name is empty, find first push_name from
+      // any incoming message and:
+      //   1. Optimistic update chats state so chat list shows the name immediately
+      //   2. Persist to server via rename endpoint (custom_name — survives across sessions)
+      if (jid.includes("@lid") && data && data.length > 0) {
+        const pushName = data.find((m) => !m.from_me && m.push_name && m.push_name.trim())?.push_name?.trim();
+        if (pushName) {
+          setChats((prev) => {
+            const target = prev.find((c) => c.jid === jid);
+            if (!target || target.name === pushName || target.custom_name) return prev;
+            return prev.map((c) => c.jid === jid ? { ...c, name: pushName } : c);
+          });
+          // Persist to backend once per chat (only if not already saved)
+          const existing = chats.find((c) => c.jid === jid);
+          if (existing && !existing.name && !existing.custom_name) {
+            try {
+              await api.patch(
+                `/whatsapp/accounts/${sid}/chats/${encodeURIComponent(jid)}/rename`,
+                { custom_name: pushName }
+              );
+            } catch (_) { /* best-effort */ }
+          }
+        }
+      }
     } catch (err) { if (!delta) toast.error(formatApiError(err)); }
     finally { if (!delta) setMessagesLoading(false); }
   };
